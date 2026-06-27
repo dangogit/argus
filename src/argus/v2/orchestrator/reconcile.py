@@ -2,6 +2,7 @@
 NOTIFY only adds latency. Idempotent; safe to run on a timer."""
 from __future__ import annotations
 
+import logging
 import shutil
 
 import psycopg
@@ -14,6 +15,8 @@ from argus.v2.ingress.media import run_root
 from argus.v2.orchestrator import context_router, pipeline
 from argus.v2.queue import jobs
 from argus.v2.queue.models import ActionIntent, Job
+
+log = logging.getLogger("argus.orchestrator")
 
 
 def route_events(conn, cfg) -> int:
