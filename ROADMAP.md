@@ -35,7 +35,7 @@ them, capabilities built on top inherit the same silent failures.
 ## Next - capabilities (the agents help with more)
 
 - MCP client support so Argus agents use the whole MCP tool ecosystem without a
-  new connector each time. See [docs/specs/mcp-support.md](docs/specs/mcp-support.md).
+  new connector each time. See [docs/mcp-support.md](docs/mcp-support.md).
 - MCP server (`argus mcp serve`) exposing status, alerts, proposed PRs, and
   lessons, so Claude Code / Codex / IDEs can drive Argus.
 - Provider breadth: OpenRouter and Ollama paths so users are not locked to one

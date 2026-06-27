@@ -16,7 +16,7 @@ Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
 - [ ] 6. Orchestrator resilience: re-acquire advisory lock + re-LISTEN after DB connection drop
 
 ## Next - capabilities
-- [ ] 7. MCP client P0 (per docs/specs/mcp-support.md): config, engine tool exposure, untrusted+capped output, doctor check, echo-safe
+- [ ] 7. MCP client P0 (per docs/mcp-support.md): config, engine tool exposure, untrusted+capped output, doctor check, echo-safe
 - [ ] 8. MCP server read-only: argus mcp serve exposing status/alerts/proposals/lessons
 - [ ] 9. Provider breadth: OpenRouter + Ollama engine paths
 - [ ] 10. More channels: Discord + generic email gateway behind a capability-optional interface
