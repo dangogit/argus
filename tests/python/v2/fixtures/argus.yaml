@@ -1,0 +1,19 @@
+company:
+  name: testco
+  defaults:
+    engine: { engine: echo }
+    autonomy:
+      reversible_internal: auto
+      irreversible_outward: approval
+teams:
+  - name: dev
+    roles:
+      - { name: manager, kind: front, prompt: "you are the manager" }
+      - { name: developer, kind: builder, prompt: "you are the developer" }
+      - { name: qa, kind: judge, prompt: "you are qa" }
+      - { name: senior, kind: judge, prompt: "you are the senior" }
+    pipeline:
+      stages: [developer, qa, senior]
+      max_iters: 2
+    channels:
+      - { type: cli, role: control, channel_id: "local" }

@@ -4,6 +4,7 @@
 .env.*.local
 argus.config.yaml
 argus.yaml
+!tests/python/v2/fixtures/argus.yaml
 *.key
 *.pem
 
