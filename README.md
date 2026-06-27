@@ -73,6 +73,40 @@ Setup questions belong in
 | Always-on operation | Render launchd or systemd units for `serve`, `up`, `poll`, watchdog, backup, and daily brief jobs. |
 | Agent-friendly install | `AGENTS.md`, `llms.txt`, and an installer skill tell Codex or Claude Code how to inspect, configure, and prove the setup. |
 
+## How Argus Compares
+
+Most open-source agents are **personal assistants that act on your behalf by
+default**. Argus is the opposite by design: a **propose-only company of agents
+for software operations** that watches your real systems and routes work to
+humans who decide. It is the only one of the three below built around a durable
+Postgres runtime and a software-project trust boundary.
+
+| | **Argus** | OpenClaw | Hermes Agent |
+|---|:---:|:---:|:---:|
+| **Built for** | Software ops (a company of agents) | Personal assistant | Personal agent |
+| **Default trust model** | ✅ **Propose-only, approval-gated** | Auto-executes on host | Auto-executes + gates |
+| **Reads your stack as signals** | ✅ **13 ops connectors** | – | – |
+| **GitHub / Sentry / Vercel / PostHog / Supabase / Fly / uptime aware** | ✅ **First-class** | – | – |
+| **Draft-PR loop with QA + eval judge** | ✅ **Built-in** | – | – |
+| **Durable runtime (Postgres queues, approvals, retries)** | ✅ **Yes** | Chat gateway | Gateway + TUI |
+| **Role pipeline (builder → QA → senior)** | ✅ **Yes** | – | – |
+| **Daily retro / learning loop** | ✅ **Curated lessons** | – | Self-modeling |
+| **Engine-agnostic workers** | ✅ **echo / Codex / Claude Code / Hermes** | own loop | own loop |
+| **Self-hosted, you own DB + secrets** | ✅ **Always** | ✅ | ✅ |
+| Consumer messaging channels | 3 (Slack/WA/TG) | 22+ | 8 |
+| Model-provider breadth | engine CLIs | "all major" | 200+ |
+| MCP support | on the roadmap | – | ✅ |
+
+Argus even **runs Hermes Agent as one of its execution engines** - the two are
+complementary, not just rivals.
+
+**What Argus does not do, on purpose:** it is not a general personal assistant,
+it does not auto-merge or auto-deploy, it is not a hosted SaaS that holds your
+keys, and it stays out of voice assistants, smart home, and social media. The
+focus is one job done safely: a private agent layer over your software projects.
+
+See [docs/competitive.md](docs/competitive.md) for the full matrix and roadmap.
+
 ## Install
 
 Recommended source install:
