@@ -1,0 +1,92 @@
+# Copy to argus.config.yaml and edit.
+engine:
+  # echo (test) | claude-code (default agent runtime) | codex (agent runtime).
+  default: claude-code
+  # Engine to try if the default has an outage. Use null for none.
+  fallback: codex
+hermes:
+  # Default non-PM Hermes calls stay read-only by omitting terminal.
+  toolset: file,web,memory
+  # Terminal-capable PM roles (Developer, QA) need terminal to run project
+  # checks. Researcher and Senior-review stay read-only by default
+  # (pm_readonly_toolset, default file,web,memory). Per-role keys override
+  # either default, e.g. pm_qa_toolset or pm_senior_review_toolset.
+  pm_toolset: file,web,memory,terminal
+overlay:
+  # Path to a private overlay repo (projects/, gatherers/, notifiers/, jobs/),
+  # or null for none. ARGUS_OVERLAY_DIR overrides this.
+  dir: null
+# Informational pin of the extension contract this config targets. Run
+# "argus validate" after an Argus upgrade to confirm your projects still match.
+contract: 1.0.0
+# Where Argus keeps runtime state (alerts.jsonl, triage/, pm/, memory/,
+# content/, retro/). Default is run/ under the repo; point it outside the repo
+# tree (recommended for a live install) so git clean or a re-clone can never
+# touch live state. ARGUS_RUN_ROOT overrides this. ~ expands to $HOME.
+# run_root: ~/argus-run
+# Triage writes findings + digests under <run_root>/triage and alerts to
+# <run_root>/alerts.jsonl. Override with ARGUS_RUN_DIR and ARGUS_ALERT_STORE.
+# Per-project triage toggles (enabled + which gatherers) live in each
+# projects/<name>/project.yaml.
+# Auto-fix pipeline (PM). Each project's autofix.mode in projects/<name>/project.yaml
+# is propose-only (default: write a patch, never push) or autonomous (explicit
+# opt-in, reserved for a later plan). pm.daily_limit (per project) caps how many
+# PM dispatches a project gets per UTC day; the circuit breaker enforces it.
+# PM results + patches are written under run/pm by default; override with ARGUS_PM_DIR.
+pm:
+  # Master switch for the conversational autonomous PM in WhatsApp groups. When
+  # true (or env ARGUS_WA_PM_CONVERSE=1), a routed group whose route entry has
+  # "conversational": true lets the owner talk to the project's PM in free text;
+  # the PM acts with full tools in the project checkout and messages back into the
+  # group. Default false. Per-group opt-in via the group-routes file is still
+  # required, so flipping this on alone changes nothing until a group opts in.
+  # Owner-only by construction (the responder rejects non-owner senders first).
+  conversational: false
+content:
+  # Optional "marketing team" capability. Off by default. Propose-only: a draft
+  # is never posted without an explicit owner "publish <id>".
+  enabled: false
+  # echo (no deps, default) | gemini (BYO GEMINI_API_KEY) | <overlay driver>.
+  image_driver: echo
+  # echo (no deps, default) | browser-use (BYO logged-in profile) | <overlay driver>.
+  # publisher_driver: echo posts NOTHING (safe default). A real driver (e.g.
+  # browser-use) also requires ARGUS_CONTENT_PUBLISH_ENABLED=1 and an
+  # ARGUS_CONTENT_PLATFORMS allowlist, and every post needs owner approval
+  # (publish <id>) over the command channel. See docs/content.md.
+  publisher_driver: echo
+  # Max drafts per project per UTC day (a rate limit, not a safety gate).
+  daily_limit: 5
+retro:
+  # The retro + continuous-improvement cycle (per-project Facilitator + company
+  # Chief of Staff) turns run history into a gated improvement backlog.
+  #   propose (default): produce the gated backlog and bridge only `lesson`
+  #     decisions into per-project memory. NEVER edits files or self-modifies.
+  #   auto-changes: enqueue internal PM requests for evidence-backed prompt,
+  #     skill, or process changes. Merge, deploy, outward sends, destructive
+  #     changes, and secrets still use the normal approval gates.
+  authority: propose
+  # company_change_team: dev
+# Retro stores records + backlog under run/retro by default; override with
+# ARGUS_RETRO_DIR. It is not scheduled by default: add a jobs/retro.yaml to your
+# overlay (see docs/retro.md) to run "argus retro run" on a timer.
+# Context (facts vault + commitment reminders). Disabled by default; the owner
+# overlay sets the ARGUS_CONTEXT_* env (vault path, source DB, column map,
+# personal-DM destination) and flips context.enabled true. See docs/context.md.
+context:
+  enabled: false
+  source: sqlite          # source driver: sqlite | echo
+  projects: general       # comma scalar of vault buckets (e.g. luma,tadam,general)
+  batch_limit: 200        # per-run cost ceiling (one engine call per message)
+  checkpoint_every: 25    # persist the contiguous-done watermark every N rows
+  surface_hours: 48       # surface a commitment due within this many hours
+  defer_min: 10           # human-edit defer window (minutes)
+  value_max: 500          # fact value length cap (chars)
+# Personal assistant (owner-DM cross-project assistant). Disabled by default.
+# Env vars win over config values (house rule). Secrets (the SA key FILE) stay
+# in the overlay; config holds only the path. No YAML lists: use comma scalars.
+#assistant:
+#  enabled: false           # ARGUS_WA_ASSISTANT: accept owner DMs (0 or 1)
+#  tools: read-only         # ARGUS_ASSISTANT_TOOLS: read-only | full
+#  engine: ""               # ARGUS_ASSISTANT_ENGINE: override engine for ask calls
+#  cwd: ""                  # ARGUS_ASSISTANT_CWD: engine working dir (default $HOME)
+#  actions: "pm,calendar,content"  # ARGUS_ASSISTANT_ACTIONS: allowed action prefixes

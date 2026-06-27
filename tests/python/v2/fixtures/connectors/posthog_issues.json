@@ -1,0 +1,25 @@
+{
+  "results": [
+    {
+      "id": "iss_1",
+      "status": "active",
+      "name": "Upload failed",
+      "occurrences": 12,
+      "last_seen": "2026-06-15T09:00:00Z"
+    },
+    {
+      "id": "iss_2",
+      "status": "resolved",
+      "name": "Already fixed",
+      "occurrences": 3,
+      "last_seen": "2026-06-15T09:30:00Z"
+    },
+    {
+      "id": "iss_3",
+      "status": "active",
+      "title": "Checkout timeout",
+      "count": 5,
+      "last_seen": "2026-06-15T10:00:00Z"
+    }
+  ]
+}

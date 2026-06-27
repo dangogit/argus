@@ -1,0 +1,9 @@
+# Dependencies and Next build output. Never commit these.
+/node_modules/
+/.next/
+
+# Next + Vite caches and logs
+/out/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*

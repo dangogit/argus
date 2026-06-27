@@ -1,0 +1,8 @@
+{"results": [
+  {"id": "9001", "activity": "alert_fired", "created_at": "2026-06-15T09:00:00Z",
+   "detail": {"name": "Signups dropped", "value": 12}},
+  {"id": "9002", "activity": "insight_viewed", "created_at": "2026-06-15T09:30:00Z",
+   "detail": {"name": "Dashboard"}},
+  {"id": "9003", "activity": "alert_fired", "created_at": "2026-06-15T10:00:00Z",
+   "detail": {"name": "Errors spiked", "value": 99}}
+]}

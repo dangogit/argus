@@ -1,0 +1,141 @@
+name: Release
+
+"on":
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+      - name: Check distribution metadata
+        run: |
+          python -m pip install twine
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+
+  smoke-python-wheel:
+    needs: build-python
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: argus
+          POSTGRES_PASSWORD: argus
+          POSTGRES_DB: argus
+        ports:
+          - 5440:5432
+        options: >-
+          --health-cmd "pg_isready -U argus -d argus"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ARGUS_DB_DSN: host=127.0.0.1 port=5440 dbname=argus user=argus password=argus
+      ARGUS_RUN_ROOT: ${{ runner.temp }}/argus-run
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+      - name: Install built wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+      - name: Smoke installed wheel outside source tree
+        run: |
+          mkdir -p "$RUNNER_TEMP/argus-wheel-smoke"
+          cd "$RUNNER_TEMP/argus-wheel-smoke"
+          argus --version
+          argus init --config argus.yaml --force
+          export ARGUS_CONFIG="$PWD/argus.yaml"
+          export ARGUS_CONFIG_V2="$PWD/argus.yaml"
+          argus db migrate
+          argus validate
+          argus doctor
+
+  smoke-python-sdist:
+    needs: build-python
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: argus
+          POSTGRES_PASSWORD: argus
+          POSTGRES_DB: argus
+        ports:
+          - 5440:5432
+        options: >-
+          --health-cmd "pg_isready -U argus -d argus"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ARGUS_DB_DSN: host=127.0.0.1 port=5440 dbname=argus user=argus password=argus
+      ARGUS_RUN_ROOT: ${{ runner.temp }}/argus-run
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+      - name: Install built sdist
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.tar.gz
+      - name: Smoke installed sdist outside source tree
+        run: |
+          mkdir -p "$RUNNER_TEMP/argus-sdist-smoke"
+          cd "$RUNNER_TEMP/argus-sdist-smoke"
+          argus --version
+          argus init --config argus.yaml --force
+          export ARGUS_CONFIG="$PWD/argus.yaml"
+          export ARGUS_CONFIG_V2="$PWD/argus.yaml"
+          argus db migrate
+          argus validate
+          argus doctor
+
+  publish-pypi:
+    if: github.event_name == 'release'
+    needs:
+      - build-python
+      - smoke-python-wheel
+      - smoke-python-sdist
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/argus-agent
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

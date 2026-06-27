@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="argus-slack-icon-title argus-slack-icon-desc" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title id="argus-slack-icon-title">Argus Slack app icon</title>
+  <desc id="argus-slack-icon-desc">Premium square Argus icon for Slack app preview.</desc>
+  <defs>
+    <linearGradient id="argus-slack-bg" x1="120" y1="72" x2="904" y2="952" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1e293b"/>
+      <stop offset=".52" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="argus-slack-border" x1="100" y1="88" x2="924" y2="936" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#64748b"/>
+      <stop offset=".45" stop-color="#182033"/>
+      <stop offset="1" stop-color="#d6a84f"/>
+    </linearGradient>
+    <linearGradient id="argus-slack-line" x1="156" y1="332" x2="868" y2="692" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset=".48" stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#d6a84f"/>
+    </linearGradient>
+    <radialGradient id="argus-slack-iris" cx="48%" cy="38%" r="62%">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset=".34" stop-color="#7dd3fc"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
+    </radialGradient>
+    <filter id="argus-slack-shadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="38" stdDeviation="32" flood-color="#000000" flood-opacity=".48"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="22" flood-color="#38bdf8" flood-opacity=".23"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="#0f172a"/>
+  <rect x="56" y="56" width="912" height="912" rx="174" fill="none" stroke="url(#argus-slack-border)" stroke-width="5" opacity=".56"/>
+  <g transform="translate(512 512) scale(1.16) translate(-512 -512)">
+  <path d="M158 512c92-198 252-300 354-300s262 102 354 300c-92 198-252 300-354 300S250 710 158 512Z" fill="#050816" stroke="#111827" stroke-width="4"/>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M166 512c158-70 232-198 346-198s188 128 346 198c-158 70-232 198-346 198S324 582 166 512Z" stroke="url(#argus-slack-line)" stroke-width="18"/>
+    <path d="M264 376c-48 38-82 82-106 136 24 54 58 98 106 136" stroke="#38bdf8" stroke-width="8" opacity=".74"/>
+    <path d="M760 376c48 38 82 82 106 136-24 54-58 98-106 136" stroke="#d6a84f" stroke-width="8" opacity=".82"/>
+    <path d="M512 214c-142 0-247 72-298 188M512 810c142 0 247-72 298-188" stroke="#38bdf8" stroke-width="6" opacity=".34"/>
+    <path d="M214 622c51 116 156 188 298 188M810 402C759 286 654 214 512 214" stroke="#d6a84f" stroke-width="6" opacity=".38"/>
+  </g>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" opacity=".62">
+    <path d="M512 214v100M512 710v100M214 512h100M710 512h100" stroke="#94a3b8" stroke-width="8"/>
+    <path d="M292 292l72 72M732 292l-72 72M292 732l72-72M732 732l-72-72" stroke="#475569" stroke-width="7"/>
+  </g>
+
+  <g filter="url(#argus-slack-shadow)">
+    <circle cx="512" cy="512" r="138" fill="#07111f" stroke="url(#argus-slack-line)" stroke-width="8"/>
+    <circle cx="512" cy="512" r="99" fill="#38bdf8"/>
+    <circle cx="486" cy="476" r="44" fill="#e0f2fe" opacity=".42"/>
+    <path d="M512 414l27 72 72 26-72 26-27 72-27-72-72-26 72-26 27-72Z" fill="none" stroke="#e0f2fe" stroke-width="6" opacity=".62"/>
+    <circle cx="512" cy="512" r="44" fill="#020617"/>
+    <circle cx="544" cy="480" r="18" fill="#f8fafc" opacity=".96"/>
+  </g>
+
+  <g stroke="#020617" stroke-width="14">
+    <circle cx="512" cy="214" r="24" fill="#e0f2fe"/>
+    <circle cx="810" cy="512" r="24" fill="#d6a84f"/>
+    <circle cx="512" cy="810" r="24" fill="#38bdf8"/>
+    <circle cx="214" cy="512" r="24" fill="#e0f2fe"/>
+  </g>
+  </g>
+</svg>

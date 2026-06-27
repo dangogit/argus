@@ -1,0 +1,5 @@
+{"ok": true, "result": [
+  {"update_id": 555, "message": {"message_id": 12, "chat": {"id": -100123},
+   "from": {"username": "daniel"}, "text": "deploy staging"}},
+  {"update_id": 556, "edited_message": {"message_id": 9, "chat": {"id": -100123}, "text": "typo"}}
+]}

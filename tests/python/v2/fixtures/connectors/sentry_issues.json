@@ -1,0 +1,11 @@
+[
+  {"id": "1001", "level": "error", "title": "NullPointer in checkout",
+   "lastSeen": "2026-06-15T10:00:00Z", "permalink": "https://sentry.io/i/1001",
+   "count": "42", "status": "unresolved"},
+  {"id": "1002", "level": "warning", "title": "Slow query",
+   "lastSeen": "2026-06-15T11:00:00Z", "permalink": "https://sentry.io/i/1002",
+   "count": "3", "status": "unresolved"},
+  {"id": "1003", "level": "fatal", "title": "OOM killed",
+   "lastSeen": "2026-06-15T12:00:00Z", "permalink": "https://sentry.io/i/1003",
+   "count": "7", "status": "unresolved"}
+]

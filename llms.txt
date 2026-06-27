@@ -1,0 +1,178 @@
+# Argus
+
+> Self-hosted company of AI agents for software projects.
+
+## Start Here
+
+- [Agent Guide](AGENTS.md): exact source-checkout steps for Codex, Claude Code,
+  and coding agents.
+- [Argus Live Onboarding Skill](skills/argus-live-onboarding/SKILL.md): an
+  agent-facing installer skill for Codex, Claude Code, and skill-aware coding
+  agents. It inspects local projects, asks only missing setup questions, writes
+  private config, and proves live operation.
+- [Quickstart](docs/quickstart.md): first local echo-engine runtime loop.
+- [FAQ](docs/faq.md): common setup, safety, channel, engine, and operational
+  questions for new users.
+- [Updating](docs/updating.md): update, rollback, restart, and uninstall paths
+  for pipx, uv, and source installs.
+- [Showcase](docs/showcase.md): common `chat-only`, `monitor-only`, and
+  `pm-propose-pr` deployment paths with proof points.
+- [Public Launch Checklist](docs/public-launch.md): repo, GitHub, package, and
+  smoke-test checks before making Argus public.
+- [GitHub Releases](https://github.com/dangogit/argus/releases): current source
+  distribution and wheel artifacts.
+- [GitHub Discussions](https://github.com/dangogit/argus/discussions): setup
+  questions for install, Slack, Telegram, connectors, and `go-live`.
+- [Support Policy](SUPPORT.md): what to include in public setup questions and
+  what to redact.
+- [Configuration](docs/configuration.md): config model, defaults, teams,
+  projects, secrets, and safety policy.
+- [Live Onboarding](docs/live-onboarding.md): smoke-to-live flow, manager roles,
+  continuous workers, draft PR agents, launchd caveats, and stable webhook URLs.
+- [Inbound Channels](docs/inbound.md): WhatsApp, Telegram, Slack, and local
+  webhook smoke tests.
+- [Live Slack Setup](docs/slack-live.md): Slack app scopes, signing secret,
+  tunnel, one-channel-per-team routing, and smoke commands.
+- [Slack App Manifest](examples/slack-app-manifest.yaml): copy this into
+  Slack's "Create New App from manifest" flow after replacing the request URL.
+- [Engines](docs/engines.md): `echo`, `scripted`, `codex`, `claude-code`, and
+  `hermes` engine names.
+- [Operations](docs/operations.md): launchd/systemd, backups, watchdog, and
+  always-on jobs.
+- [Threat Model](docs/threat-model.md): approval gates, outbound actions, and
+  secret boundaries.
+
+## Install From GitHub
+
+Unix-like shell:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dangogit/argus/main/scripts/install.sh | sh
+argus --version
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/dangogit/argus/main/scripts/install.ps1 | iex
+argus --version
+```
+
+Manual `pipx` install:
+
+```bash
+pipx install --python python3.12 "git+https://github.com/dangogit/argus.git"
+argus --version
+```
+
+Package name is `argus-agent`; installed command is `argus`. Keep the GitHub
+install path as primary until PyPI publishing is live.
+
+## Install From Source
+
+```bash
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+
+docker compose up -d postgres
+until docker compose exec -T postgres pg_isready -U argus -d argus; do sleep 1; done
+
+argus init --config argus.yaml --force
+export ARGUS_CONFIG="$PWD/argus.yaml"
+export ARGUS_CONFIG_V2="$PWD/argus.yaml"
+export ARGUS_DB_DSN="host=127.0.0.1 port=5440 dbname=argus user=argus password=argus"
+export ARGUS_RUN_ROOT="$PWD/run"
+
+argus db migrate
+argus validate
+argus validate-roles
+argus doctor
+```
+
+## First Agent Loop
+
+```bash
+argus submit --team demo "Review this repo and propose one small improvement"
+argus up --iterations 1
+argus status
+```
+
+Start with `echo`. Switch to `codex` or `claude-code` only after local smoke
+passes, then run `argus doctor --live`.
+
+## Operational Onboarding
+
+```bash
+argus onboard project /absolute/path/to/project --mode chat-only \
+  --config /absolute/path/to/private/argus.yaml \
+  --out-dir /absolute/path/to/private/onboarding \
+  --channel slack --channel-id C1234567890
+
+argus doctor --deep --json
+argus go-live --mode chat-only --public-url https://argus.example.com/slack
+```
+
+Onboarding modes are `chat-only`, `monitor-only`, and `pm-propose-pr`.
+Generated files are private: `argus.yaml`, `argus.env.example.generated`, and
+`argus.onboarding.md`. Secret values are never copied from `.env`.
+Load private env files with `ARGUS_ENV_FILES=/absolute/path/to/argus.env`, or
+use `set -a` before sourcing. Vercel sources can use `VERCEL_TOKEN`; local Mac
+installs may omit `secret_ref` after `vercel login` so Argus refreshes CLI auth.
+Sentry sources need `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, and `SENTRY_PROJECT`.
+PostHog sources need `POSTHOG_PERSONAL_API_KEY`, `POSTHOG_PROJECT_ID`, and
+`POSTHOG_HOST`. Browser DSNs and `NEXT_PUBLIC_POSTHOG_KEY` do not prove
+monitoring is live.
+Use `--require-source-type sentry` and `--require-source-type posthog` with
+`doctor --deep` or `go-live` when those providers are required; missing source
+types then block `operational` status.
+Use `--require-team-source-type team:type` when one specific project needs that
+provider; one configured source must not prove every team.
+Prefer `--require-each-team-source-type sentry` and
+`--require-each-team-source-type posthog` when every configured team must have
+that provider.
+
+## Verification
+
+```bash
+python scripts/gate.py
+python -m pytest tests/python/test_no_u2014.py tests/python/test_package.py -q
+python scripts/public_launch_check.py --repo dangogit/argus --pypi-package argus-agent
+python scripts/public_launch_check.py --repo dangogit/argus --pypi-package argus-agent --json
+```
+
+Dashboard checks live under `dashboard` and are separate.
+
+## Community And Support
+
+- Setup questions: <https://github.com/dangogit/argus/discussions>
+- Bugs and feature requests: <https://github.com/dangogit/argus/issues>
+- Security reports: use GitHub Security Advisories, not public issues.
+- Public setup questions should include OS, install path, `argus --version`,
+  onboarding mode, and redacted `argus doctor --deep --json` output.
+- Never paste tokens, webhook secrets, phone numbers, private repo names,
+  customer data, Slack payloads with user data, or full `.env` files.
+
+## Public Launch External Checks
+
+Agent installers must verify external GitHub state before calling a public
+launch ready:
+
+```bash
+python scripts/public_launch_check.py --repo dangogit/argus --pypi-package argus-agent
+
+gh repo view dangogit/argus \
+  --json description,homepageUrl,isPrivate,hasDiscussionsEnabled,hasIssuesEnabled,latestRelease,repositoryTopics
+
+gh api repos/dangogit/argus --jq '{private, has_pages, homepage}'
+gh api repos/dangogit/argus/community/profile --jq '{health_percentage}'
+gh release view --repo dangogit/argus --json tagName,name,publishedAt,url
+gh run list --repo dangogit/argus --limit 5
+```
+
+Code changes do not prove repo visibility, GitHub Pages, PyPI trusted
+publishing, or hosted Actions runner health. Treat private repo status, missing
+Pages, missing PyPI package, and zero-step Actions failures as external
+blockers until GitHub and PyPI prove otherwise.
+The script reports these as named checks including `repo.visibility`,
+`docs.homepage`, `actions.ci`, `actions.release`, and `package.pypi`.

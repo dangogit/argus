@@ -1,0 +1,22 @@
+{
+  "documents": [
+    {
+      "name": "projects/demo/databases/(default)/documents/bug_reports/abc",
+      "fields": {
+        "title": { "stringValue": "Push fails on iOS" },
+        "severity": { "stringValue": "high" },
+        "created_at": { "timestampValue": "2026-06-15T09:00:00Z" },
+        "count": { "integerValue": "3" },
+        "blocked": { "booleanValue": true }
+      }
+    },
+    {
+      "name": "projects/demo/databases/(default)/documents/bug_reports/def",
+      "fields": {
+        "description": { "stringValue": "Checkout copy is unclear" },
+        "severity": { "stringValue": "low" },
+        "updated_at": { "timestampValue": "2026-06-15T10:00:00Z" }
+      }
+    }
+  ]
+}

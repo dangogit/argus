@@ -1,0 +1,22 @@
+# sample-app-pm: a core fixture project with triage on and autofix in the
+# default propose-only mode, used by the PM runner tests and the `argus verify`
+# pm smoke. It points at no live repo; the runner uses an injected fixture
+# checkout and the echo engine, so a run is fully hermetic and never pushes.
+name: sample-app-pm
+contract: 1.0.0
+description: PM fixture: triage on, autofix propose-only, fixture-driven.
+repo: null
+triage:
+  enabled: true
+  gatherers:
+    github: true
+    uptime: false
+autofix:
+  mode: propose-only
+  # Per-role engine overrides (default: every role on the project engine).
+  # Uncomment to run judges on an independent engine, builders on the default:
+  # senior_review_engine: claude-code
+  # qa_engine: claude-code
+pm:
+  daily_limit: 3
+  max_rework_attempts: 2

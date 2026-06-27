@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup question
+    url: https://github.com/dangogit/argus/discussions/new/choose
+    about: Ask install, onboarding, Slack, Telegram, connector, or go-live questions in Discussions.
+  - name: Security report
+    url: https://github.com/dangogit/argus/security/policy
+    about: Report vulnerabilities privately. Do not open public security issues.

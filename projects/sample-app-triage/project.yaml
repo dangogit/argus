@@ -1,0 +1,15 @@
+# sample-app-triage: a core fixture project with triage turned on and both v0.1
+# gatherers enabled, used by the triage runner tests and the `argus verify`
+# smoke. It points at no live repo and no live endpoint; the gatherers read
+# offline fixtures, so a run is fully hermetic.
+name: sample-app-triage
+contract: 1.0.0
+description: Triage fixture: both gatherers enabled, fixture-driven.
+repo: null
+triage:
+  enabled: true
+  gatherers:
+    github: true
+    uptime: true
+autofix:
+  mode: propose-only

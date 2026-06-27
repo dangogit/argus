@@ -1,0 +1,42 @@
+# Secrets and local state
+.env
+.env.local
+.env.*.local
+argus.config.yaml
+argus.yaml
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Agent-local skill installs
+.agents/
+skills-lock.json
+
+# Build / deps
+node_modules/
+dist/
+build/
+*.log
+*.egg-info/
+__pycache__/
+.pytest_cache/
+
+# Local runtime data
+/run/
+*.db
+*.db-wal
+*.db-shm
+
+# Internal working notes. Keep public docs under docs/*.md.
+/docs/plans/
+/docs/specs/
+/docs/superpowers/plans/
+/docs/superpowers/specs/
+
+.venv/
+.coverage

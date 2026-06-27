@@ -1,0 +1,55 @@
+# Copy to argus.yaml and edit. Source of truth for v2 structure.
+company:
+  name: mycompany
+  defaults:
+    engine: { engine: echo }           # hermetic default; use codex/claude-code/hermes for real agent work
+    autonomy:
+      reversible_internal: auto        # ready PR after checks, deploy staging, draft reply
+      irreversible_outward: approval   # merge, deploy prod, message a customer
+    notifications:
+      timezone: UTC                    # set owner-local timezone for quiet hours
+      quiet_hours: "22:30-08:30"       # set to "off" to disable the hold gate
+      quiet_hours_delivery: hold       # hold low-priority control notifications
+      urgent_severities: [error, critical, urgent, emergency, page, wake]
+    pipeline:
+      stages: [developer, qa, senior]
+      max_iters: 2
+    project:
+      autofix: { mode: propose-pr, draft: false, force_draft_on_fail: false }
+      pm: { daily_limit: 3 }
+    support:
+      mode: propose
+      transport: apps-script
+      daily_limit: 10
+      escalation_keywords: [refund, chargeback, legal, lawyer, GDPR, delete my account]
+  sources: []                          # add Sentry/GitHub/etc. sources after the quickstart works
+retro:
+  authority: propose                    # propose | auto-changes
+  # company_change_team: dev            # target team for company-level auto-change PR work
+teams:
+  - name: dev
+    project:
+      repo: .
+      base_branch: main
+      work_branch_prefix: argus/dev
+      test_cmd: "pytest -q"
+      test_timeout_seconds: 900
+    roles:
+      # The manager (front) TRIAGES every monitoring signal: it decides exactly
+      # one action: investigate (hand to the researcher), dispatch (open a fix
+      # via developer->qa->senior), or ignore, and ends with
+      # ARGUS_RESULT: {"action": "investigate|dispatch|ignore", "task": "<for dev/researcher>"}.
+      # (For a chat message it instead replies: action answer|dispatch|ignore.)
+      - { name: manager,   kind: front,   skills: [concise-manager-reply], prompt: "Triage and route." }
+      # Read-only researcher: investigates a signal, changes NO files, returns
+      # ARGUS_RESULT: {"recommend": "fix|no_fix", "summary": "...", "implicated_files": [...], "confidence": "high|medium|low"}.
+      - { name: researcher, kind: worker, prompt: "Investigate read-only; recommend fix or no_fix." }
+      - { name: developer, kind: builder, skills: [minimal-change, simplify-change, security-sensitive-change], prompt: "Implement the change. If a research brief is present, do NOT re-investigate." }
+      - { name: qa,        kind: judge,   skills: [minimal-change, simplify-change], prompt: "Run and judge the tests." }
+      - { name: senior,    kind: judge,   prompt: "Review before merge." }
+    # pipeline omitted here because company.defaults.pipeline supplies it.
+    # Optional team override. Example:
+    # notifications:
+    #   quiet_hours: "off"
+    channels:
+      - { type: cli, role: control, channel_id: "local" }

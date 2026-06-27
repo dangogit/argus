@@ -1,0 +1,5 @@
+{"deployments": [
+  {"uid": "dpl_1", "name": "sample-app", "state": "READY", "url": "sample-app.vercel.app", "createdAt": 1000},
+  {"uid": "dpl_2", "name": "sample-app", "state": "ERROR", "url": "sample-app-x.vercel.app", "createdAt": 2000},
+  {"uid": "dpl_3", "name": "sample-app", "state": "ERROR", "url": "sample-app-y.vercel.app", "createdAt": 3000}
+]}

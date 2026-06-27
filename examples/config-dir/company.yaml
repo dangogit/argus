@@ -1,0 +1,23 @@
+name: mycompany
+defaults:
+  engine: { engine: echo }           # hermetic default; use codex/claude-code/hermes for real agent work
+  autonomy:
+    reversible_internal: auto        # ready PR after checks, deploy staging, draft reply
+    irreversible_outward: approval   # merge, deploy prod, message a customer
+  notifications:
+    timezone: UTC                    # set owner-local timezone for quiet hours
+    quiet_hours: "22:30-08:30"       # set to "off" to disable the hold gate
+    quiet_hours_delivery: hold       # hold low-priority control notifications
+    urgent_severities: [error, critical, urgent, emergency, page, wake]
+  pipeline:
+    stages: [developer, qa, senior]
+    max_iters: 2
+  project:
+    autofix: { mode: propose-pr, draft: false, force_draft_on_fail: false }
+    pm: { daily_limit: 3 }
+  support:
+    mode: propose
+    transport: apps-script
+    daily_limit: 10
+    escalation_keywords: [refund, chargeback, legal, lawyer, GDPR, delete my account]
+sources: []                          # add Sentry/GitHub/etc. sources after the quickstart works

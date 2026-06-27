@@ -1,0 +1,30 @@
+[
+  {
+    "number": 12,
+    "state": "open",
+    "title": "Login button fails",
+    "body": "Clicking the button does nothing.",
+    "html_url": "https://github.com/example/app/issues/12"
+  },
+  {
+    "number": 13,
+    "state": "closed",
+    "title": "Already fixed",
+    "body": "",
+    "html_url": "https://github.com/example/app/issues/13"
+  },
+  {
+    "number": 14,
+    "state": "open",
+    "title": "Pull request should be ignored",
+    "pull_request": { "url": "https://api.github.com/repos/example/app/pulls/14" },
+    "html_url": "https://github.com/example/app/pull/14"
+  },
+  {
+    "number": 15,
+    "state": "OPEN",
+    "title": "Checkout copy is confusing",
+    "body": "",
+    "html_url": "https://github.com/example/app/issues/15"
+  }
+]

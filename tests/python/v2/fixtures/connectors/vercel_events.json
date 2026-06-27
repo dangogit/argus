@@ -1,0 +1,50 @@
+[
+  {
+    "type": "proxy",
+    "created": 1780000001000,
+    "payload": {
+      "id": "evt_500",
+      "deploymentId": "dpl_live",
+      "requestId": "req_500",
+      "statusCode": 500,
+      "proxy": {
+        "method": "GET",
+        "host": "example.vercel.app",
+        "path": "/api/fail",
+        "statusCode": 500
+      }
+    }
+  },
+  {
+    "type": "proxy",
+    "created": 1780000002000,
+    "payload": {
+      "id": "evt_404",
+      "deploymentId": "dpl_live",
+      "requestId": "req_404",
+      "statusCode": 404,
+      "proxy": {
+        "method": "GET",
+        "host": "example.vercel.app",
+        "path": "/missing",
+        "statusCode": 404
+      }
+    }
+  },
+  {
+    "type": "proxy",
+    "created": 1780000003000,
+    "payload": {
+      "id": "evt_502",
+      "deploymentId": "dpl_live",
+      "requestId": "req_502",
+      "statusCode": 502,
+      "proxy": {
+        "method": "POST",
+        "host": "example.vercel.app",
+        "path": "/api/webhook",
+        "statusCode": 502
+      }
+    }
+  }
+]

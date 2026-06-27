@@ -1,0 +1,16 @@
+name: dev
+project:
+  repo: .
+  base_branch: main
+  work_branch_prefix: argus/dev
+  test_cmd: "pytest -q"
+  test_timeout_seconds: 900
+roles:
+  # Prompts live in roles/<name>.md; everything else stays structured here.
+  - { name: manager,    kind: front,   skills: [concise-manager-reply] }
+  - { name: researcher, kind: worker }
+  - { name: developer,  kind: builder, skills: [minimal-change, simplify-change, security-sensitive-change] }
+  - { name: qa,         kind: judge,   skills: [minimal-change, simplify-change] }
+  - { name: senior,     kind: judge }
+channels:
+  - { type: cli, role: control, channel_id: "local" }
