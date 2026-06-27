@@ -60,6 +60,28 @@ relationship is partly complementary, not purely competitive.
 5. **Engine-agnostic.** Runs Claude Code, Codex, or Hermes as interchangeable
    workers, with least-privilege toolsets per role.
 
+## Engineering substance behind "propose-only"
+
+These are implemented mechanisms (not positioning) that back the safety claim and
+that the competitors largely lack. Advertise them.
+
+- **Server-side risk override** (`worker/worker.py:137`, `actions/executor.py:46`).
+  The model's declared `risk` is discarded and recomputed server-side before the
+  gate. Converse jobs force the PR repo + number server-side, so a prompt-injected
+  model cannot redirect a PR to another repo.
+- **Fail-closed eval gate** (`evals/judge.py:48`). Judge error, garbled JSON, or a
+  missing marker all yield score 0.0, which holds the draft. Never fails open.
+- **Fencing-token CAS on finalize** (`queue/jobs.py:106`). A reclaimed job rotates
+  its claim token, so a stale/zombie worker is provably locked out. Claim uses
+  `FOR UPDATE SKIP LOCKED` - no thundering herd, no app-level mutex.
+- **Diff secret-scan before a PR opens** (`pm/scan.py`). Scans added lines for
+  PEM keys, AKIA tokens, `sk-` keys, `password=`. CRITICAL findings block the PR.
+- **Retro injection quarantine** (`retro.py:361`). Learned candidates are scanned
+  for injection phrases before they can bridge to knowledge or auto-change.
+- **SAVEPOINT-per-action drain** (`actions/executor.py:209`), **atomic vault writes**
+  (`context/vault.py:139`), **per-source connector transaction isolation**
+  (`connectors/driver.py:75`).
+
 ## What we deliberately do NOT do (non-goals)
 
 These are design choices, not missing features. Do not "fix" them without a
@@ -76,6 +98,10 @@ deliberate scope change.
   purpose for an unattended ops agent.
 
 ## Improvement backlog
+
+[`ROADMAP.md`](../ROADMAP.md) is the canonical short list (Now / Next / Later).
+This section is the detailed design rationale behind those items, plus the
+internal-audit hardening work that informs them.
 
 Prioritized for the next cycle. P0 = highest leverage.
 
@@ -123,6 +149,20 @@ is low-friction and makes the ecosystems interoperable.
 tool, **Discord**, **Signal**, and a **generic email gateway** are the
 highest-value additions. Mobile apps and the long tail (WeChat, LINE, Matrix,
 ...) are explicitly out of scope.
+
+**Pattern to adopt (OpenClaw, clean MIT):** before adding channels one-off,
+define a capability-optional channel/connector interface like OpenClaw's
+`ChannelPlugin` (`src/channels/plugins/types.plugin.ts`): one contract with ~30
+*optional* fields grouped by capability (inbound, outbound, pairing, allowlist,
+doctor, threading, streaming), auto-discovered from a manifest. OpenClaw runs
+118 channels off that one interface; a channel only implements the fields it
+needs. Argus connectors currently hardcode their integration points - refactor
+to this shape once, then Discord / Signal / email are thin adapters.
+
+Also worth adopting from OpenClaw: a file-based per-channel pairing-code flow +
+allowlist (vs today's `OWNER_ALLOWLIST` env var), and a security-posture check
+in `argus doctor` that flags dangerous config combos (open group + outbound
+actions enabled), not just connectivity.
 
 ### P4 - Linux runtime parity (mostly done - verify, don't rebuild)
 

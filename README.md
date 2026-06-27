@@ -34,6 +34,7 @@ fixes, and open safe pull requests.
 [Quickstart](docs/quickstart.md) |
 [Docs](docs/index.md) |
 [Vision](VISION.md) |
+[Roadmap](ROADMAP.md) |
 [FAQ](docs/faq.md) |
 [Showcase](docs/showcase.md) |
 [Slack Setup](docs/slack-live.md) |
