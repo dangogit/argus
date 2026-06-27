@@ -1,33 +1,58 @@
 # Roadmap
 
-Argus is a self-hosted company of AI agents for software projects. The roadmap
-stays focused on operational usefulness, safe defaults, and public install
-quality.
+Argus is a self-hosted company of AI agents for software projects. The priority
+order is what makes operators adopt and keep the system: **more capability** (the
+agents help with more) and **reliability** (the agents do not silently break).
+Pure-security hardening is tracked and will land, but is sequenced after - except
+where a fix is also a reliability fix, in which case it rides in the reliability
+lane below.
 
-## Now
+## Now - reliability foundation (adoption blockers)
 
+These are the "it just works, and when it doesn't I can see why" basics. Without
+them, capabilities built on top inherit the same silent failures.
+
+- Runtime observability: structured logging across orchestrator, worker, and
+  queue, plus crash backoff so a stalled pipeline is visible, not silent. Today
+  a crashed sweep exits with no trace - operators cannot debug it.
+- Deterministic run-liveness detection: classify planning-only, blocked, and
+  approval-required runs from evidence, without a second model call, so stuck
+  jobs surface instead of hanging.
+- Connector hardening: backoff on failure, clear missing-secret / expired-key
+  states, and dry-run output - so a dead provider degrades loudly, not as a
+  silent retry storm.
+- Approval reliability: an approval can currently collide and get stuck forever
+  (a click that never opens the PR). Make approvals idempotency-keyed and bound
+  to their action id, with retry on collision. (Also closes the weak-nonce
+  security gap as a side effect.)
+- Cost ceiling: a global daily spend cap that pauses new work, so a signal storm
+  cannot run away with the bill and erode trust.
+- Orchestrator resilience: re-acquire the advisory lock and re-`LISTEN` after a
+  database connection drop, instead of silently degrading to slow polling.
 - Keep public install green: source install, wheel smoke, Docker smoke, and
-  public launch checker.
-- Improve live onboarding: Slack, Telegram, local engine detection, and go-live
-  checks.
-- Harden public repo operations: issue templates, labels, CI, branch protection,
-  release workflow, and security reporting.
-- Document the operational path for Codex and Claude Code users.
+  public launch checker; improve live onboarding and Codex/Claude Code docs.
 
-## Next
+## Next - capabilities (the agents help with more)
 
-- MCP client support for connector and tool access.
-- MCP server support exposing Argus status, alerts, proposed PRs, and lessons.
-- Provider breadth: OpenRouter and Ollama paths for users who do not want to
-  depend on one agent CLI.
+- MCP client support so Argus agents use the whole MCP tool ecosystem without a
+  new connector each time. See [docs/specs/mcp-support.md](docs/specs/mcp-support.md).
+- MCP server (`argus mcp serve`) exposing status, alerts, proposed PRs, and
+  lessons, so Claude Code / Codex / IDEs can drive Argus.
+- Provider breadth: OpenRouter and Ollama paths so users are not locked to one
+  agent CLI.
+- More ops channels behind one capability-optional connector interface, starting
+  with Discord and a generic email gateway.
+- Richer multi-agent work and human interactions: typed ask / confirm / suggest
+  (not only approve / reject), and per-agent budgets with warn + hard-stop.
 - Linux runtime parity for the opinionated always-on bundle.
-- Connector hardening: dry-run output, backoff, clearer missing-secret states.
 
-## Later
+## Later - hardening and polish
 
+- Code-mode execution sandbox: run generated code in a no-egress worktree
+  container with a credential broker, so the agent never holds raw secrets.
+- Source-trust tiering: quarantine untrusted inbound content (GitHub, chat)
+  until a human promotes it, before it enters an agent's context.
 - agentskills.io compatibility for portable skills.
-- Additional ops channels where they make sense, starting with Discord and a
-  generic email gateway.
 - Better public examples for monitor-only and pm-propose-pr modes.
 - Hosted docs site if README and docs directory become hard to navigate.
 

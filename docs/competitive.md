@@ -7,58 +7,76 @@ Last reviewed: 2026-06-27.
 
 ## Who we compare against
 
-| Project | One-line | Scope |
-|---|---|---|
-| **Argus** | Self-hosted, propose-only company of agents for software ops | Team / project |
-| [OpenClaw](https://github.com/openclaw/openclaw) | Personal AI assistant, any OS, any channel | Single user |
-| [Hermes Agent](https://github.com/nousresearch/hermes-agent) | Personal agent that "grows with you" | Single user |
+| Project | One-line | Scope | Closeness |
+|---|---|---|---|
+| **Argus** | Self-hosted, propose-only company of agents for software ops | Team / project | - |
+| [Paperclip](https://github.com/paperclipai/paperclip) | "The company" - agent org + kanban for work (TS, 71k★) | Team / project | **Direct peer** |
+| [Hermes Agent](https://github.com/nousresearch/hermes-agent) | Personal agent that "grows with you" (204k★) | Single user | Different altitude |
+| [OpenClaw](https://github.com/openclaw/openclaw) | Personal AI assistant, any OS, any channel (380k★) | Single user | Different altitude |
+| [NanoClaw](https://github.com/nanocoai/nanoclaw) | "OpenClaw but small enough to understand" (~31k LoC, 30k★) | Single user | Different altitude |
 
-Both competitors are general-purpose **personal assistants that auto-execute on
-the host by default**. Argus occupies a different point: a **propose-only
-operations layer** with software-project domain awareness. Surface overlap (LLM
-agents + integrations) is real; the use case and trust model are not the same.
+Two camps:
+
+- **Personal assistants** (OpenClaw, Hermes, NanoClaw) auto-execute on the host
+  by default and serve one individual. Different altitude from Argus; surface
+  overlap only (LLM agent + integrations).
+- **Paperclip is the one true peer** - same "company of agents for work"
+  framing, self-hosted, Postgres, multi-agent org, pluggable engines. The honest
+  comparison lives below: Paperclip is **ahead** on orchestration UI, named
+  agent org, per-agent budgets, and typed human interactions; Argus is **ahead**
+  on production-signal monitoring, propose-only default, retro learning, and
+  push-to-chat. Paperclip is execute-first with optional gates; Argus is
+  propose-only by default. That trust line is the core distinction.
 
 Note: Argus already integrates the Hermes Agent CLI (`hermes -z`) as one of its
-four execution engines (`src/argus/hermes/`, `src/argus/engine/adapters/`). The
-relationship is partly complementary, not purely competitive.
+execution engines (`src/argus/hermes/`). Paperclip also ships claude / codex /
+hermes / openclaw adapters - the engine layer is a shared commodity, not a moat.
 
 ## Full feature matrix
 
-| Axis | Argus | OpenClaw | Hermes Agent |
+Argus and Paperclip side by side (the peer comparison), with the
+personal-assistant camp for reference.
+
+| Axis | Argus | Paperclip (peer) | Hermes / OpenClaw / NanoClaw |
 |---|---|---|---|
-| Core identity | Dev-ops company layer | Personal assistant | Personal agent |
-| Default trust | **Propose-only, 3-tier approval gates** | Auto-execute (full host) | Auto-execute + targeted gates |
-| Domain awareness | repo / PR / prod / support / incident | none | none |
-| Signal connectors | **13** (github, branch_drift, sentry, vercel, posthog, supabase, fly, firebase, uptime, postgres, openapi, webhook, email_imap) | n/a | n/a |
-| Inbound channels | 3 (Slack, WhatsApp, Telegram) | 22+ | 8 |
-| Execution engines | echo, Codex, Claude Code, Hermes | own loop | own loop |
-| Model providers | via engine CLI | "all major" (WIP) | 200+ (OpenRouter, Ollama, ...) |
-| MCP | none | unclear | client + server |
-| Skills | local, team-curated | ClawHub registry | autonomous self-improving + agentskills.io |
-| Sandbox | git worktree isolation | Docker / SSH | 6 backends |
-| Memory / learning | retro + context vault (curated) | SOUL/AGENTS.md | Honcho user-model + FTS5 |
-| Runtime | **Postgres queues + advisory lock + LISTEN/NOTIFY** | WS gateway daemon | gateway + TUI |
-| Role pipeline | **builder → QA → senior** | – | delegate subagents |
-| Eval / judge | **rubric scoring on diffs** | – | – |
-| Draft-PR loop | **worktree + QA + secret scan + caps** | – | – |
-| Deploy targets | macOS launchd + Linux systemd (`host render`) | launchd + systemd | broad-OS 1-liner |
-| Voice | WhatsApp voice-in (whisper) | wake word + TTS/STT | Whisper + ElevenLabs |
-| Mobile apps | – | iOS / Android nodes | – |
+| Core identity | Dev-ops company, propose-only | Agent org + kanban for work | Personal assistants |
+| Default trust | **Propose-only, 3-tier gates** | Execute-first, gates opt-in | Auto-execute |
+| Watches production | **13 connectors** (sentry, vercel, posthog, fly, uptime, github, supabase, ...) | – (inbound = own UI + routines) | – |
+| Retro / learning loop | **Daily, with injection quarantine** | – | Hermes self-models |
+| Output channels | **Slack / WhatsApp / Telegram** | Web UI + webhooks | many (personal) |
+| Eval / judge | **rubric scoring gates the PR** | promptfoo evals (offline) | – |
+| Runtime | Postgres + advisory lock + NOTIFY | Embedded/external Postgres (Drizzle) | SQLite / gateway |
+| Multi-agent | builder → QA → senior pipeline | **Named org chart, persistent identities** | subagents (Hermes) |
+| Per-agent budgets | – (no global cap yet) | **monthly/lifetime, warn + hard-stop + incidents** | cost observability only |
+| Human interactions | nonce approval (weak, see below) | **typed: ask/confirm/suggest, idempotency-keyed** | approval cards |
+| Source-trust defense | retro quarantine only | **trust tier + quarantine + promotion on all content** | varies |
+| Sandbox | git worktree | VM plugin sandbox; K8s/e2b/Daytona/Modal backends | Docker (`--internal` egress in NanoClaw) |
+| Engines | echo/Codex/Claude/Hermes | claude/codex/cursor/gemini/grok/hermes/openclaw | own loop |
+| MCP | none | ✅ (via hermes adapter + plugins) | Hermes client+server |
+| Pipeline model | linear propose flow | **configurable Kanban, per-stage autonomy + gates** | n/a |
+| Stars / age | pre-1.0 alpha | 71k★, ~4 mo | 30k-380k★ |
 
 ## What Argus does better
 
-1. **Propose-only by default.** The only one of the three that will not act on
-   production without an explicit human approval. The right trust model for
-   company infrastructure.
-2. **Software-ops domain.** 13 connectors turn repos, Sentry, Vercel, PostHog,
-   Fly, and uptime into routed, deduplicated work. The competitors have zero
-   PR / incident / support-ticket awareness.
-3. **Durable Postgres runtime.** Queues, single-orchestrator advisory lock,
-   wake-on-`NOTIFY`. Survives restarts; it is not a chat loop.
-4. **Role pipeline + eval gate.** builder → QA → senior with an LLM judge
-   scoring the diff before a human ever sees the PR.
-5. **Engine-agnostic.** Runs Claude Code, Codex, or Hermes as interchangeable
-   workers, with least-privilege toolsets per role.
+Measured honestly against the **peer (Paperclip)**, not just the
+personal-assistant camp. Durable Postgres and engine-agnostic workers are *not*
+on this list - Paperclip has both; they are table stakes, not a moat.
+
+1. **Propose-only by default.** None of the five act this conservatively;
+   Paperclip is execute-first with opt-in gates. For company production infra,
+   propose-by-default is the right floor.
+2. **Watches production.** 13 connectors turn Sentry, Vercel, PostHog, Fly, and
+   uptime into routed, deduplicated work. Paperclip and the assistants have no
+   production-signal monitoring - they wait for a human to file an issue. Argus
+   reacts to the incident.
+3. **Retro / learning loop with injection quarantine.** Daily retrospective that
+   promotes lessons back into context, with candidates scanned for injection
+   before they can auto-change anything. No competitor has an equivalent.
+4. **Eval-judged draft-PR loop.** builder → QA → senior with an LLM judge that
+   gates the diff (fail-closed) before a human sees it. Paperclip has pipeline
+   approval but no inline eval gate on the work product.
+5. **Pushes to chat.** Proposals land in Slack / WhatsApp / Telegram where the
+   operator already is. Paperclip is web-UI + webhooks only.
 
 ## Engineering substance behind "propose-only"
 
@@ -96,6 +114,23 @@ deliberate scope change.
 - **No mobile apps, voice assistant, smart home, or social media** surfaces.
 - **Skills are curated, not autonomously self-mutating.** Conservative on
   purpose for an unattended ops agent.
+
+## Patterns worth adopting (peer review)
+
+Concrete mechanisms read out of competitor source. All repos are MIT - patterns
+are adoptable; do not copy code verbatim. Several directly fix audit bugs below.
+
+| Pattern | Source | What it is | Adopt for |
+|---|---|---|---|
+| **Per-agent / per-company budget** | Paperclip `services/budget*` | monthly + lifetime windows, warn %, hard-stop threshold, budget-incident records, pause-on-hit | Fixes HIGH "no global cost cap". Add a `budgets` table + `SUM(cost_usd)` gate in `sweep_once`. |
+| **Typed human interaction + idempotency key** | Paperclip `issue-thread-interactions.ts` (uniq constraint) | `ask_user_questions` / `request_confirmation` / `suggest_tasks` are DB entities; an `idempotencyKey` unique constraint blocks duplicate prompts on retry | Fixes CRITICAL nonce design. Replace the bare 32-bit nonce with an idempotency-keyed approval row bound to `action_id`. |
+| **Egress lockdown + credential proxy** | NanoClaw `egress-lockdown.ts` | agent container on a Docker `--internal` network; only exit is a gateway that injects creds, so the agent never holds raw keys; fails hard if gateway absent | Fixes HIGH `bash -lc` secret exposure. Run code-mode in a no-egress worktree container with a credential broker. |
+| **Deterministic stuck detection** | NanoClaw `decideStuckAction()` (pure fn) + Paperclip `run-liveness.ts` (regex corpus) | classify planning-only / blocked / approval-required from stdout + evidence counts, no LLM call; pure function = unit-testable | Fixes blocked-job detection + observability gap. Add a pure `classify_run()` over Postgres job columns. |
+| **Source-trust tier + quarantine + promotion** | Paperclip `source-trust.ts` | every doc/comment carries a trust preset; low-trust output substituted with a quarantine string in higher-trust context until a human promotes it | Argus injects GitHub/Slack text into agent context untrusted - tier inbound content, do not feed unreviewed external text into a system prompt. |
+| **Capability-optional channel adapter** | OpenClaw `ChannelPlugin` | one interface, ~30 optional capability fields, manifest auto-discovery; 118 channels off one contract | The clean path to Discord / Signal / email (ROADMAP "Later"). Refactor connectors to this shape once. |
+| **Routine catch-up cap** | Paperclip cron (`MAX_CATCH_UP_RUNS = 25`) | after downtime, cap backfilled scheduled runs + dedupe live runs before scheduling | Prevents a wake-up storm when Argus restarts after being down. |
+| **Hook-module graceful degradation** | NanoClaw `router.ts` | core exposes named hooks; optional modules self-register via side-effect import; absent module = safe no-op default | Cleaner than scattered `if connector_enabled` checks for optional connectors. |
+| **Deterministic context pre-pass** | Hermes `context_compressor.py` | collapse old tool results to 1-liners, dedup reads by hash, strip screenshots before any LLM summarize call | Free token savings on long worker runs. |
 
 ## Improvement backlog
 
@@ -184,3 +219,26 @@ deploy system.
 - Connector error back-off (today polling is a fixed `StartInterval`).
 - The single-orchestrator advisory lock blocks horizontal scale; fine for now,
   note it as a known ceiling.
+
+## Security & robustness hardening (internal audit)
+
+These are implementation bugs found in a critical read of the v2 core, not
+competitive gaps. The safety positioning makes them higher priority than most
+features. Ranked by severity.
+
+| Sev | Issue | Location | Fix direction |
+|---|---|---|---|
+| **CRITICAL** | Approval nonce is `token_hex(4)` = 32-bit bearer token that authorizes irreversible_outward actions; brute-forceable over the 24h TTL, and `ON CONFLICT (nonce) DO NOTHING` leaves a collided action stuck forever | `actions/executor.py:344`, `actions/approvals.py:15` | `token_hex(16)` (128-bit) + retry on collision; bind the consume check to `action_id` as well as nonce |
+| HIGH | No logging in orchestrator / reconcile / worker / queue. If `sweep_once` raises, the orchestrator exits silently with no trace | `orchestrator/loop.py`, `worker/worker.py`, `queue/jobs.py` | Add module loggers; wrap `sweep_once` in try/except with backoff; structured log per claim/finalize/reclaim |
+| HIGH | No global LLM cost cap. A signal storm enqueues unbounded paid jobs; `cost_usd` is stored in `runs` but never read for enforcement | `queue/jobs.py` | `SUM(cost_usd)` over 24h in `sweep_once`; halt enqueue over `company.defaults.max_daily_cost_usd` |
+| HIGH | Retro feeds raw action payloads (reply text, email bodies, connector signals) into the learning LLM unsanitized; injection can ride into an auto-changeable candidate | `retro.py:463` | Run `sanitize.sanitize()` on payload text, or omit payloads from the retro packet (types/statuses suffice) |
+| HIGH | `code-mode` runs `bash -lc <script>` - login shell loads profile and inherits env secrets; no ulimit/cgroup | `worker/exec.py:119` | Use `bash -c`; add `resource.setrlimit` in `preexec_fn`; pre-scan script for `curl|bash` patterns |
+| MED | Advisory lock + LISTEN connection has no reconnect; on drop, a second orchestrator can start and NOTIFY wakeups silently degrade to 2s polling | `orchestrator/loop.py:18` | Reconnect loop that re-acquires lock and re-issues LISTEN; log fallback mode |
+| MED | Connector driver swallows all exceptions with no log/backoff - an expired key retries every tick (silent provider retry storm) | `connectors/driver.py:89` | Log + record `error_count`/`last_error`; exponential backoff past a threshold |
+| MED | `sanitize.py` strips injection phrases but not `postgres://` DSNs, emails, phone numbers - a DSN in a message can be distilled into the vault | `context/sanitize.py` | Add redaction patterns from `pm/scan.py` rules before distillation |
+| MED | Retro `confidence`/`impact` thresholds for auto-change come straight from LLM JSON and are not range-clamped or evidence-verified | `retro.py:706` | Clamp to valid ranges; verify `evidence_run_ids` exist in `runs` |
+
+**Subagent enforcement (adopt from Hermes):** when Argus spawns engine
+subagents, intersect the child toolset with the parent and block `merge` /
+`deploy` / `send` equivalents (`tools/delegate_tool.py` pattern). This enforces
+propose-only structurally on delegated work, not just by prompt.
