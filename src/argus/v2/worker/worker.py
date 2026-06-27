@@ -15,6 +15,7 @@ from argus.v2.queue import jobs
 from argus.v2.queue.models import RunRecord
 from argus.v2.roles import contracts
 from argus.v2.worker import exec as job_exec
+from argus.v2.worker import liveness
 from argus.v2.workspace import repo as workspace
 
 log = logging.getLogger("argus.worker")
@@ -105,6 +106,14 @@ def run_once(cfg, worker_id: str) -> bool:
                         parsed.setdefault("ready", False)
                         parsed.setdefault("analysis", run.output or "No change produced.")
                         result["parsed"] = parsed
+
+            # Deterministic liveness: surface a run that ended without making
+            # progress (planned only / blocked / waiting on approval / missing
+            # creds) instead of letting it look silently done.
+            result["liveness"] = liveness.classify(run.output or "",
+                                                    has_diff=result.get("has_diff"))
+            if result["liveness"] in liveness.STUCK:
+                log.info("job %s liveness=%s (no forward progress)", job.id, result["liveness"])
 
             status = "done" if run.status == "ok" else "failed"
             jobs.finalize(conn, job.id, job.claim_token, status=status,
