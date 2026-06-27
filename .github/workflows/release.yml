@@ -49,7 +49,7 @@ jobs:
           --health-retries 5
     env:
       ARGUS_DB_DSN: host=127.0.0.1 port=5440 dbname=argus user=argus password=argus
-      ARGUS_RUN_ROOT: ${{ runner.temp }}/argus-run
+      ARGUS_RUN_ROOT: /tmp/argus-run
     steps:
       - uses: actions/setup-python@v5
         with:
@@ -93,7 +93,7 @@ jobs:
           --health-retries 5
     env:
       ARGUS_DB_DSN: host=127.0.0.1 port=5440 dbname=argus user=argus password=argus
-      ARGUS_RUN_ROOT: ${{ runner.temp }}/argus-run
+      ARGUS_RUN_ROOT: /tmp/argus-run
     steps:
       - uses: actions/setup-python@v5
         with:
