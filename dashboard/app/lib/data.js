@@ -28,7 +28,8 @@ export async function readDashboardState(options = {}) {
   for (const result of [alerts, proposals, ops, agents]) {
     if (result.error) errors.push(result.error);
   }
-  const workerList = agents.value || [];
+  const allWorkers = agents.value || [];
+  const workerList = filterAgents(allWorkers, options.agentFilter);
   const requestedAgentId = options.selectedAgentId || "";
   const selectedAgentId = workerList.some((agent) => agent.id === requestedAgentId)
     ? requestedAgentId
@@ -44,6 +45,8 @@ export async function readDashboardState(options = {}) {
     proposals: proposals.value || [],
     ops: ops.value || emptyOpsStats(options.dbDsn),
     agents: workerList,
+    allAgents: allWorkers,
+    allAgentCount: allWorkers.length,
     selectedAgentId,
     selectedAgent: workerList.find((agent) => agent.id === selectedAgentId) || workerList[0] || null,
     agentDetails: details.value || emptyAgentDetails(selectedAgentId),
@@ -281,6 +284,40 @@ export function normalizeAgents(rows) {
       };
     })
     .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+}
+
+export function filterAgents(agents, filter = {}) {
+  const role = normalizeRoleFilter(filter.role);
+  const project = normalizeProjectFilter(filter.project);
+  return (agents || []).filter((agent) => {
+    if (role && agent.role !== role) return false;
+    if (project && agent.team !== project) return false;
+    return true;
+  });
+}
+
+export function normalizeRoleFilter(value) {
+  const role = String(value || "").trim().toLowerCase();
+  const roles = {
+    manager: "manager",
+    managers: "manager",
+    pm: "manager",
+    pms: "manager",
+    developer: "developer",
+    developers: "developer",
+    dev: "developer",
+    devs: "developer",
+    qa: "qa",
+    senior: "senior",
+    seniors: "senior",
+    seniorer: "senior",
+    outbox: "outbox",
+  };
+  return roles[role] || "";
+}
+
+export function normalizeProjectFilter(value) {
+  return String(value || "").trim();
 }
 
 export async function readAgentDetails(options = {}) {
