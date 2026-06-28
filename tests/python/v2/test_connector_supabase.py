@@ -1,7 +1,7 @@
 import pytest
 
 from argus.v2.connectors import driver
-from argus.v2.connectors.supabase import SupabaseConnector, _name
+from argus.v2.connectors.supabase import SupabaseConnector, _build_url, _name
 from argus.v2.config import loader
 from argus.v2.config.schema import SourceRef
 
@@ -40,6 +40,72 @@ def test_parse_uses_description_fallback_and_dedups_seen_rows():
     signals2, state2 = SupabaseConnector.parse(rows, state, project="demo")
     assert signals2 == []
     assert state2 == state
+
+
+def test_cursor_advances_and_dedups_standing_rows():
+    # A standing-match table returns the SAME rows every poll. With the cursor
+    # persisted, the second poll yields zero new signals.
+    rows = [
+        {"id": "a", "title": "fail A", "created_at": "2026-06-17T01:00:00Z"},
+        {"id": "b", "title": "fail B", "created_at": "2026-06-17T02:00:00Z"},
+    ]
+    signals, state = SupabaseConnector.parse(rows, {}, project="demo", table="t")
+    assert [s.fingerprint for s in signals] == ["supabase-demo-t-a", "supabase-demo-t-b"]
+    assert state["watermark"] == "2026-06-17T02:00:00Z"  # max created_at
+
+    signals2, state2 = SupabaseConnector.parse(rows, state, project="demo", table="t")
+    assert signals2 == []  # nothing new on a re-poll of the same standing rows
+    assert state2["watermark"] == "2026-06-17T02:00:00Z"
+
+
+def test_cursor_survives_seen_reset():
+    # State loss that wipes `seen` but keeps the watermark must NOT re-flood
+    # already-old rows: the cursor excludes everything strictly below it. (The
+    # exact-watermark boundary is excluded server-side by gt.<watermark>; see
+    # test_build_url_adds_cursor_filter_and_order.)
+    rows = [
+        {"id": "a", "title": "fail A", "created_at": "2026-06-17T01:00:00Z"},
+        {"id": "b", "title": "fail B", "created_at": "2026-06-17T02:00:00Z"},
+    ]
+    state = {"seen": [], "watermark": "2026-06-17T09:00:00Z"}  # later than all rows
+    signals, _ = SupabaseConnector.parse(rows, state, project="demo", table="t")
+    assert signals == []  # cursor excludes rows below the watermark even with seen lost
+
+
+def test_cursor_emits_only_newer_rows():
+    _, state = SupabaseConnector.parse(
+        [{"id": "a", "created_at": "2026-06-17T01:00:00Z"}], {}, project="demo", table="t")
+    newer = [
+        {"id": "a", "created_at": "2026-06-17T01:00:00Z"},   # old, already seen
+        {"id": "c", "created_at": "2026-06-17T03:00:00Z"},   # new
+    ]
+    signals, state2 = SupabaseConnector.parse(newer, state, project="demo", table="t")
+    assert [s.fingerprint for s in signals] == ["supabase-demo-t-c"]
+    assert state2["watermark"] == "2026-06-17T03:00:00Z"
+
+
+def test_parse_without_cursor_column_falls_back_to_seen():
+    rows = [{"id": "a", "title": "no timestamp here"}]
+    signals, state = SupabaseConnector.parse(rows, {}, project="demo", table="t",
+                                             cursor_column=None)
+    assert [s.fingerprint for s in signals] == ["supabase-demo-t-a"]
+    assert "watermark" not in state  # no cursor tracked
+    assert state["seen"] == ["supabase-demo-t-a"]
+
+
+def test_build_url_adds_cursor_filter_and_order():
+    url = _build_url("https://x.supabase.co", "transactions", "status=eq.failed", 25,
+                     cursor_column="created_at", watermark="2026-06-17T02:00:00+00:00")
+    assert "status=eq.failed" in url
+    assert "created_at=gt.2026-06-17T02%3A00%3A00%2B00%3A00" in url  # url-encoded
+    assert "order=created_at.asc" in url
+    assert url.endswith("limit=25")
+
+
+def test_build_url_no_cursor_when_disabled():
+    url = _build_url("https://x.supabase.co", "t", "status=eq.open", 10,
+                     cursor_column=None, watermark="2026-06-17T02:00:00Z")
+    assert "gt." not in url and "order=" not in url
 
 
 def test_name_rejects_unsafe_table():

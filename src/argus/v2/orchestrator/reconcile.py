@@ -70,7 +70,8 @@ def route_events(conn, cfg) -> int:
                                             fingerprint=dedup_key)
                 else:
                     pipeline.open_request(conn, cfg, event_id=eid, team_id=team_id,
-                                          conversation_id=None, fingerprint=dedup_key)
+                                          conversation_id=None, fingerprint=dedup_key,
+                                          dedup_terminal=True)
             # else: internal-noise/empty signal -> consume without opening a
             # request (event is marked processed below).
         elif channel_ref and context_router.handle_message(
