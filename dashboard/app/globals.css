@@ -1,19 +1,18 @@
 :root {
-  --bg: oklch(0.115 0.028 258);
-  --bg-2: oklch(0.15 0.034 255);
-  --panel: oklch(0.185 0.035 255);
-  --panel-2: oklch(0.22 0.04 252);
-  --text: oklch(0.935 0.015 245);
-  --muted: oklch(0.72 0.03 245);
-  --faint: oklch(0.52 0.035 245);
-  --border: oklch(0.31 0.045 250);
-  --grid: oklch(0.3 0.06 235 / 0.22);
-  --cyan: oklch(0.78 0.14 220);
-  --green: oklch(0.78 0.16 158);
-  --amber: oklch(0.82 0.16 83);
-  --red: oklch(0.67 0.19 31);
-  --violet: oklch(0.72 0.13 295);
-  --focus: oklch(0.82 0.14 220);
+  --bg: oklch(0.105 0.018 260);
+  --panel: oklch(0.18 0.018 255 / 0.84);
+  --panel-2: oklch(0.24 0.02 250 / 0.86);
+  --panel-soft: oklch(0.97 0.006 255 / 0.055);
+  --text: oklch(0.94 0.008 250);
+  --muted: oklch(0.68 0.018 250);
+  --faint: oklch(0.52 0.018 250);
+  --border: oklch(0.96 0.006 250 / 0.13);
+  --cyan: oklch(0.79 0.09 222);
+  --green: oklch(0.77 0.13 160);
+  --amber: oklch(0.82 0.14 84);
+  --red: oklch(0.67 0.16 28);
+  --focus: oklch(0.82 0.1 222);
+  --shadow: 0 24px 80px oklch(0.02 0.02 260 / 0.42);
 }
 
 * {
@@ -28,10 +27,9 @@ body {
   margin: 0;
   min-height: 100%;
   background:
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
-    linear-gradient(180deg, var(--bg), oklch(0.095 0.025 258));
-  background-size: 44px 44px, 44px 44px, auto;
+    radial-gradient(circle at 50% -14%, oklch(0.72 0.09 222 / 0.2), transparent 42%),
+    radial-gradient(circle at 82% 12%, oklch(0.75 0.12 170 / 0.08), transparent 28%),
+    linear-gradient(180deg, oklch(0.135 0.018 258), var(--bg) 42%, oklch(0.08 0.015 260));
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
@@ -49,17 +47,20 @@ a {
 
 a:focus-visible,
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
 
 header.argus-header {
   align-items: baseline;
+  background: oklch(0.12 0.016 260 / 0.7);
   border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(22px);
   display: flex;
   gap: 12px;
-  padding: 14px 24px;
+  padding: 13px 24px;
 }
 
 header.argus-header h1 {
@@ -104,15 +105,16 @@ h3 {
 
 .system-label {
   color: var(--cyan);
-  font-size: 12px;
-  letter-spacing: 0.16em;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
   margin-bottom: 4px;
   text-transform: uppercase;
 }
 
 .command-top h2 {
-  font-size: 34px;
-  letter-spacing: -0.025em;
+  font-size: 32px;
+  letter-spacing: -0.03em;
   line-height: 1;
   margin: 0;
 }
@@ -127,67 +129,107 @@ h3 {
 
 .filter-deck {
   align-items: center;
-  background: oklch(0.14 0.03 256 / 0.88);
+  background: var(--panel-soft);
   border: 1px solid var(--border);
   border-radius: 8px;
+  backdrop-filter: blur(22px);
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
   justify-content: space-between;
-  padding: 12px;
+  padding: 10px;
 }
 
-.filter-group,
-.filter-chips,
-.project-filter {
+.filter-form {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+}
+
+.select-field {
+  align-items: center;
+  display: flex;
   gap: 8px;
 }
 
-.filter-label {
+.select-field label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.13em;
   text-transform: uppercase;
 }
 
-.filter-chip,
-.project-filter button,
-.project-filter select {
-  background: oklch(0.105 0.025 258);
+.select-shell {
+  background: oklch(0.08 0.014 260 / 0.82);
   border: 1px solid var(--border);
   border-radius: 999px;
+  min-width: 150px;
+  position: relative;
+}
+
+.select-shell::after {
+  border-bottom: 1.5px solid var(--muted);
+  border-right: 1.5px solid var(--muted);
+  content: "";
+  height: 7px;
+  pointer-events: none;
+  position: absolute;
+  right: 14px;
+  top: 12px;
+  transform: rotate(45deg);
+  width: 7px;
+}
+
+.project-select {
+  min-width: 230px;
+}
+
+.select-shell select {
+  appearance: none;
+  background: transparent;
+  border: 0;
   color: var(--text);
   font: inherit;
   font-size: 13px;
   min-height: 34px;
+  padding: 0 36px 0 14px;
+  width: 100%;
 }
 
-.filter-chip,
-.project-filter button {
+.filter-submit,
+.filter-reset {
   align-items: center;
+  border-radius: 999px;
   display: inline-flex;
+  font-size: 13px;
   font-weight: 800;
-  justify-content: center;
-  padding: 0 12px;
+  min-height: 34px;
+  padding: 0 14px;
+}
+
+.filter-submit {
+  background: oklch(0.92 0.008 250);
+  border: 0;
+  color: oklch(0.11 0.016 260);
+  cursor: pointer;
+}
+
+.filter-reset {
+  color: var(--muted);
   text-decoration: none;
 }
 
-.project-filter select {
-  max-width: 220px;
-  padding: 0 34px 0 12px;
+.select-shell:focus-within,
+.select-shell:hover {
+  border-color: oklch(0.9 0.02 245 / 0.34);
 }
 
-.filter-chip:hover,
-.filter-chip:focus-visible,
-.filter-chip.selected,
-.project-filter button:hover,
-.project-filter button:focus-visible {
-  border-color: var(--cyan);
-  color: var(--cyan);
+.filter-reset:hover,
+.filter-reset:focus-visible {
+  color: var(--text);
 }
 
 .system-pill,
@@ -198,26 +240,29 @@ h3 {
   color: var(--muted);
   display: inline-flex;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 800;
   line-height: 1;
-  padding: 7px 10px;
+  padding: 7px 11px;
 }
 
 .system-pill.clear,
 .agent-status.clear {
-  border-color: oklch(0.67 0.15 158);
+  background: oklch(0.72 0.12 160 / 0.1);
+  border-color: oklch(0.67 0.12 158 / 0.32);
   color: var(--green);
 }
 
 .system-pill.waiting,
 .agent-status.waiting {
-  border-color: oklch(0.72 0.14 83);
+  background: oklch(0.8 0.14 84 / 0.1);
+  border-color: oklch(0.72 0.12 83 / 0.34);
   color: var(--amber);
 }
 
 .system-pill.blocked,
 .agent-status.blocked {
-  border-color: oklch(0.62 0.17 31);
+  background: oklch(0.66 0.14 28 / 0.1);
+  border-color: oklch(0.62 0.14 31 / 0.34);
   color: var(--red);
 }
 
@@ -230,12 +275,13 @@ h3 {
 
 .orbital-stage {
   background:
-    linear-gradient(90deg, oklch(0.3 0.055 235 / 0.16) 1px, transparent 1px),
-    linear-gradient(oklch(0.3 0.055 235 / 0.16) 1px, transparent 1px),
-    linear-gradient(145deg, oklch(0.17 0.04 255), oklch(0.12 0.03 258));
-  background-size: 36px 36px, 36px 36px, auto;
+    radial-gradient(circle at 50% 48%, oklch(0.78 0.08 222 / 0.13), transparent 34%),
+    radial-gradient(circle at 20% 20%, oklch(0.72 0.11 185 / 0.12), transparent 30%),
+    linear-gradient(145deg, oklch(0.18 0.017 255 / 0.88), oklch(0.1 0.016 260 / 0.92));
   border: 1px solid var(--border);
   border-radius: 8px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px);
   height: min(72vh, 740px);
   min-height: 620px;
   overflow: hidden;
@@ -244,7 +290,7 @@ h3 {
 
 .orbital-stage::before,
 .orbital-stage::after {
-  border: 1px solid oklch(0.72 0.12 220 / 0.22);
+  border: 1px solid oklch(0.9 0.02 245 / 0.12);
   border-radius: 999px;
   content: "";
   inset: 11%;
@@ -253,12 +299,12 @@ h3 {
 }
 
 .orbital-stage::after {
-  border-style: dashed;
+  border-color: oklch(0.78 0.08 222 / 0.14);
   inset: 22%;
 }
 
 .scan-ring {
-  border: 1px solid oklch(0.78 0.14 220 / 0.24);
+  border: 1px solid oklch(0.78 0.08 222 / 0.2);
   border-radius: 999px;
   inset: 32%;
   pointer-events: none;
@@ -266,13 +312,13 @@ h3 {
 }
 
 .ring-two {
-  border-color: oklch(0.82 0.16 83 / 0.25);
+  border-color: oklch(0.94 0.008 250 / 0.1);
   inset: 42%;
 }
 
 .scan-sweep {
-  animation: sweep 12s linear infinite;
-  background: conic-gradient(from 0deg, transparent 0deg 292deg, oklch(0.78 0.14 220 / 0.2) 314deg, transparent 340deg 360deg);
+  animation: sweep 18s linear infinite;
+  background: conic-gradient(from 0deg, transparent 0deg 302deg, oklch(0.82 0.08 222 / 0.11) 322deg, transparent 344deg 360deg);
   inset: 6%;
   pointer-events: none;
   position: absolute;
@@ -280,9 +326,10 @@ h3 {
 
 .argus-core {
   align-items: center;
-  background: var(--panel);
-  border: 1px solid oklch(0.78 0.14 220 / 0.42);
+  background: oklch(0.12 0.016 260 / 0.78);
+  border: 1px solid oklch(0.94 0.008 250 / 0.16);
   border-radius: 8px;
+  backdrop-filter: blur(18px);
   display: grid;
   gap: 8px;
   justify-items: center;
@@ -296,8 +343,12 @@ h3 {
 }
 
 .argus-core img {
-  height: 92px;
-  width: 92px;
+  background: oklch(0.98 0.004 250 / 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  height: 86px;
+  padding: 10px;
+  width: 86px;
 }
 
 .argus-core strong {
@@ -311,9 +362,10 @@ h3 {
 
 .worker-node {
   align-items: center;
-  background: oklch(0.18 0.035 255 / 0.94);
+  background: oklch(0.15 0.016 260 / 0.82);
   border: 1px solid var(--border);
   border-radius: 8px;
+  backdrop-filter: blur(16px);
   color: var(--text);
   display: grid;
   gap: 7px;
@@ -333,36 +385,43 @@ h3 {
 .worker-node:hover,
 .worker-node:focus-visible,
 .worker-node.selected {
-  background: var(--panel-2);
-  border-color: var(--cyan);
+  background: oklch(0.24 0.018 250 / 0.9);
+  border-color: oklch(0.84 0.08 222 / 0.5);
   transform: translate(-50%, -50%) scale(1.02);
 }
 
 .worker-node.blocked {
-  border-color: oklch(0.62 0.17 31 / 0.72);
+  border-color: oklch(0.64 0.15 28 / 0.55);
 }
 
 .worker-node.working {
-  border-color: oklch(0.72 0.14 83 / 0.72);
+  border-color: oklch(0.79 0.12 84 / 0.48);
 }
 
 .worker-node.waiting {
-  border-color: oklch(0.72 0.13 295 / 0.72);
+  border-color: oklch(0.76 0.09 222 / 0.42);
 }
 
-.worker-glyph {
+.worker-icon {
   align-items: center;
-  background: oklch(0.12 0.03 258);
+  background: oklch(0.95 0.006 250 / 0.06);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--cyan);
   display: inline-flex;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10px;
-  font-weight: 800;
   height: 34px;
   justify-content: center;
   width: 34px;
+}
+
+.worker-icon svg {
+  fill: none;
+  height: 17px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 17px;
 }
 
 .worker-copy {
@@ -388,10 +447,10 @@ h3 {
 
 .worker-badge {
   align-items: center;
-  background: var(--bg);
+  background: oklch(0.09 0.014 260 / 0.86);
   border: 1px solid var(--border);
   border-radius: 999px;
-  color: var(--amber);
+  color: var(--muted);
   display: inline-flex;
   font-size: 12px;
   font-weight: 800;
@@ -399,6 +458,10 @@ h3 {
   justify-content: center;
   min-width: 28px;
   padding: 0 8px;
+}
+
+.worker-badge.pending {
+  color: var(--amber);
 }
 
 .agent-panel,
@@ -411,13 +474,15 @@ h3 {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
+  backdrop-filter: blur(22px);
 }
 
 .agent-panel {
+  box-shadow: var(--shadow);
   max-height: min(72vh, 740px);
   min-height: 620px;
   overflow: auto;
-  padding: 16px;
+  padding: 18px;
   scrollbar-color: var(--border) transparent;
 }
 
@@ -429,7 +494,7 @@ h3 {
 
 .agent-heading h3 {
   font-size: 28px;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
   line-height: 1.05;
   margin: 12px 0 4px;
 }
@@ -457,14 +522,15 @@ h3 {
 }
 
 .metric {
+  background: var(--panel-soft);
   min-height: 92px;
-  padding: 12px;
+  padding: 14px;
 }
 
 .metric strong {
   display: block;
-  font-size: 28px;
-  letter-spacing: -0.02em;
+  font-size: 29px;
+  letter-spacing: -0.035em;
   line-height: 1.15;
   margin: 4px 0;
 }
@@ -491,7 +557,7 @@ h3 {
 .signal-list,
 ul.alert-list {
   display: grid;
-  gap: 10px;
+  gap: 0;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -500,12 +566,17 @@ ul.alert-list {
 .detail-row,
 .signal-row {
   align-items: start;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border-top: 1px solid var(--border);
   display: grid;
   gap: 10px;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  padding: 10px;
+  padding: 12px 0;
+}
+
+.detail-row:first-child,
+.signal-row:first-child {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .detail-kind,
@@ -522,6 +593,7 @@ ul.alert-list {
 .signal-row strong {
   display: block;
   font-size: 14px;
+  line-height: 1.35;
 }
 
 .detail-row p,
@@ -545,7 +617,8 @@ ul.alert-list {
 }
 
 .signal-panel {
-  padding: 14px;
+  box-shadow: var(--shadow);
+  padding: 18px;
 }
 
 .panel-title {
@@ -556,7 +629,8 @@ ul.alert-list {
 }
 
 .panel-title h3 {
-  font-size: 20px;
+  font-size: 19px;
+  letter-spacing: -0.02em;
   margin: 0;
 }
 
@@ -694,10 +768,15 @@ ul.alert-list {
   .command-top,
   .top-actions,
   .filter-deck,
-  .filter-group,
-  .project-filter {
+  .filter-form,
+  .select-field {
     align-items: start;
     justify-content: start;
+  }
+
+  .select-field,
+  .select-shell {
+    width: 100%;
   }
 
   .command-top {

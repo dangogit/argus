@@ -11,12 +11,53 @@ const STATUSES = {
 };
 
 const ROLE_FILTERS = [
-  { value: "", label: "All" },
+  { value: "", label: "All roles" },
   { value: "manager", label: "PMs" },
   { value: "developer", label: "Developers" },
   { value: "qa", label: "QA" },
   { value: "senior", label: "Senior" },
 ];
+
+function RoleIcon({ role }) {
+  if (role === "developer") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="m9 8-4 4 4 4" />
+        <path d="m15 8 4 4-4 4" />
+      </svg>
+    );
+  }
+  if (role === "qa") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M20 7 10 17l-5-5" />
+      </svg>
+    );
+  }
+  if (role === "senior") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M12 3 19 6v5c0 4.2-2.8 8.1-7 10-4.2-1.9-7-5.8-7-10V6l7-3Z" />
+        <path d="M9 12l2 2 4-5" />
+      </svg>
+    );
+  }
+  if (role === "outbox") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M7 17 17 7" />
+        <path d="M9 7h8v8" />
+      </svg>
+    );
+  }
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+      <circle cx="12" cy="12" r="7" />
+    </svg>
+  );
+}
 
 function count(section, keys) {
   return keys.reduce((sum, key) => sum + Number(section?.[key] || 0), 0);
@@ -118,12 +159,14 @@ function WorkerNode({ agent, filter, index, totalNodes, selected }) {
       href={workerHref(agent, filter)}
       style={nodePosition(index, totalNodes)}
     >
-      <span className="worker-glyph">{agent.glyph}</span>
+      <span className="worker-icon">
+        <RoleIcon role={agent.role} />
+      </span>
       <span className="worker-copy">
         <strong>{agent.team}</strong>
         <span>{agent.roleLabel}</span>
       </span>
-      <span className="worker-badge" aria-label={`${pending} pending items`}>
+      <span className={`worker-badge ${pending ? "pending" : ""}`} aria-label={`${pending} pending items`}>
         {pending}
       </span>
     </Link>
@@ -131,36 +174,35 @@ function WorkerNode({ agent, filter, index, totalNodes, selected }) {
 }
 
 function FilterBar({ filter, projects }) {
+  const active = Boolean(filter.role || filter.project);
   return (
     <section className="filter-deck" aria-label="Worker filters">
-      <div className="filter-group">
-        <span className="filter-label">Role</span>
-        <div className="filter-chips">
-          {ROLE_FILTERS.map((item) => (
-            <Link
-              className={`filter-chip ${filter.role === item.value ? "selected" : ""}`}
-              href={hrefFor({ role: item.value, project: filter.project })}
-              key={item.value || "all"}
-            >
-              {item.label}
-            </Link>
-          ))}
+      <form className="filter-form" action="/" method="get">
+        <div className="select-field">
+          <label htmlFor="role-filter">Role</label>
+          <div className="select-shell">
+            <select id="role-filter" name="role" defaultValue={filter.role}>
+              {ROLE_FILTERS.map((item) => (
+                <option key={item.value || "all"} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
-      </div>
 
-      <form className="filter-group project-filter" action="/" method="get">
-        {filter.role ? <input type="hidden" name="role" value={filter.role} /> : null}
-        <label className="filter-label" htmlFor="project-filter">Project</label>
-        <select id="project-filter" name="project" defaultValue={filter.project}>
-          <option value="">All projects</option>
-          {projects.map((project) => (
-            <option key={project} value={project}>{project}</option>
-          ))}
-        </select>
-        <button type="submit">Apply</button>
-        {filter.project ? (
-          <Link className="filter-chip" href={hrefFor({ role: filter.role })}>Clear</Link>
-        ) : null}
+        <div className="select-field">
+          <label htmlFor="project-filter">Project</label>
+          <div className="select-shell project-select">
+            <select id="project-filter" name="project" defaultValue={filter.project}>
+              <option value="">All projects</option>
+              {projects.map((project) => (
+                <option key={project} value={project}>{project}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <button className="filter-submit" type="submit">Apply</button>
+        {active ? <Link className="filter-reset" href="/">Reset</Link> : null}
       </form>
     </section>
   );
