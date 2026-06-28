@@ -40,6 +40,27 @@ def edit(cfg, destination_ref: str, message_id: str, text: str):
     return update(binding, message_id, text)
 
 
+def set_typing(cfg, destination_ref: str, thread_ts: str, status: str,
+               loading_messages=None):
+    """Best-effort native typing indicator (Slack assistant dots). No-op (returns
+    None) when the destination can't be resolved or its channel has no
+    set_typing() - so every non-Slack channel silently skips it."""
+    if ":" not in (destination_ref or "") or not thread_ts:
+        return None
+    ctype, chat_id = destination_ref.split(":", 1)
+    if ctype not in REGISTRY:
+        return None
+    from argus.v2.channels.router import team_for
+    route = team_for(cfg, ctype, chat_id)
+    if not route:
+        return None
+    _team, binding = route
+    fn = getattr(REGISTRY[ctype](), "set_typing", None)
+    if fn is None:
+        return None
+    return fn(binding, thread_ts, status, loading_messages)
+
+
 def channel_supports_edit(channel_type: str) -> bool:
     """True if the channel type can edit a sent message in place (Slack,
     Telegram, Discord, fake). Used to decide whether to drive a live status

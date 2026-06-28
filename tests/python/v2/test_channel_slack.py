@@ -159,3 +159,71 @@ def test_send_raises_slack_api_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="channel_not_found"):
         SlackChannel().send(binding, "all done")
+
+
+def test_set_typing_posts_setstatus_with_loading_messages(monkeypatch):
+    calls = {}
+
+    class Response:
+        def json(self):
+            return {"ok": True}
+
+    import httpx
+
+    def fake_post(url, **kwargs):
+        calls["url"] = url
+        calls["json"] = kwargs.get("json")
+        calls["headers"] = kwargs.get("headers")
+        return Response()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    binding = SimpleNamespace(channel_id="C123", secret="xoxb-token")
+
+    ok = SlackChannel().set_typing(
+        binding, "1782370000.000100", "is working...",
+        ["a", "b"])
+
+    assert ok is True
+    assert calls["url"].endswith("/assistant.threads.setStatus")
+    assert calls["json"] == {
+        "channel_id": "C123",
+        "thread_ts": "1782370000.000100",
+        "status": "is working...",
+        "loading_messages": ["a", "b"],
+    }
+    assert calls["headers"]["Authorization"] == "Bearer xoxb-token"
+
+
+def test_set_typing_best_effort_swallows_errors(monkeypatch):
+    import httpx
+
+    def boom(*args, **kwargs):
+        raise httpx.TransportError("down")
+
+    monkeypatch.setattr(httpx, "post", boom)
+    binding = SimpleNamespace(channel_id="C123", secret="xoxb-token")
+
+    assert SlackChannel().set_typing(binding, "123.45", "is thinking...") is False
+
+
+def test_set_typing_skips_without_thread_ts():
+    binding = SimpleNamespace(channel_id="C123", secret="xoxb-token")
+    assert SlackChannel().set_typing(binding, "", "is thinking...") is False
+
+
+def test_set_typing_caps_loading_messages_at_ten(monkeypatch):
+    calls = {}
+
+    class Response:
+        def json(self):
+            return {"ok": True}
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post",
+                        lambda url, **kw: calls.update(json=kw.get("json")) or Response())
+    binding = SimpleNamespace(channel_id="C123", secret="xoxb-token")
+
+    SlackChannel().set_typing(binding, "1.2", "x", [str(i) for i in range(15)])
+
+    assert len(calls["json"]["loading_messages"]) == 10

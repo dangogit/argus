@@ -12,9 +12,16 @@ export async function POST(req) {
 
   const form = await req.formData();
   const token = String(form.get("token") || "");
-  const target = new URL(constantTimeEqual(token, expected) ? "/" : "/login?error=1", req.url);
-  const res = NextResponse.redirect(target, 303);
-  if (constantTimeEqual(token, expected)) {
+  const ok = constantTimeEqual(token, expected);
+  // Relative Location: the browser resolves it against the external (tailnet)
+  // address-bar URL, not Next's internal localhost:3001 bind behind the
+  // Tailscale Serve proxy. An absolute URL built from req.url would point at
+  // the unreachable internal host.
+  const res = new NextResponse(null, {
+    status: 303,
+    headers: { Location: ok ? "/" : "/login?error=1" },
+  });
+  if (ok) {
     res.cookies.set("argus_token", token, {
       httpOnly: true,
       sameSite: "strict",

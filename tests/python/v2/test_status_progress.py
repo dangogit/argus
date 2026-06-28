@@ -243,3 +243,17 @@ def test_set_status_noop_when_no_status_message(conn, cfg_status):
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM actions WHERE type='status'")
         assert cur.fetchone()[0] == 0
+
+
+def test_typing_for_progress_and_terminal_lines():
+    # Progress lines map to (status, loading_messages).
+    s, loading = status.typing_for(status.WORKING)
+    assert s and isinstance(loading, list) and loading
+
+    # Terminal lines clear the indicator.
+    assert status.typing_for(status.DONE) == ("", None)
+    assert status.typing_for(status.FAILED) == ("", None)
+    assert status.typing_for(status.NOFIX) == ("", None)
+
+    # An unknown line leaves the indicator unchanged.
+    assert status.typing_for("something else") is None

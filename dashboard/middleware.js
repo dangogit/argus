@@ -18,9 +18,15 @@ export function middleware(req) {
 
   if (constantTimeEqual(extractToken(req), token)) return NextResponse.next();
 
-  console.warn(`argus-dashboard: 401 ${new URL(req.url).pathname}`);
+  console.warn(`argus-dashboard: 401 ${pathname}`);
   if (wantsHtml(req)) {
-    return NextResponse.redirect(new URL("/login", req.url));
+    // Build the redirect from the forwarded host, not req.url. Behind the
+    // Tailscale Serve proxy req.url resolves to Next's internal localhost:3001
+    // bind, which is unreachable from the client; x-forwarded-host carries the
+    // real external (tailnet) origin.
+    const proto = req.headers.get("x-forwarded-proto") || "https";
+    const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
+    return NextResponse.redirect(`${proto}://${host}/login`, 307);
   }
   return new NextResponse(JSON.stringify({ ok: false, error: "unauthorized" }), {
     status: 401,
