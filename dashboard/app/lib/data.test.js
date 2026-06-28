@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   readAlerts,
+  readAgents,
+  readAgentDetails,
+  readDashboardState,
+  readOpsStats,
   readProposals,
   attentionAlerts,
+  normalizeOpsStats,
   pgPoolConfig,
   resolveDbDsn,
 } from "./data.js";
@@ -104,6 +109,109 @@ describe("attentionAlerts", () => {
   });
 });
 
+describe("readOpsStats", () => {
+  it("normalizes operational counts by section and status", async () => {
+    const stats = await readOpsStats({
+      dbDsn: "postgres://argus",
+      query: async () => [
+        { section: "jobs", status: "pending", count: "2" },
+        { section: "jobs", status: "failed", count: 1 },
+        { section: "requests", status: "open", count: 3 },
+        { section: "unknown", status: "x", count: 9 },
+      ],
+    });
+
+    expect(stats.dbConfigured).toBe(true);
+    expect(stats.sections.jobs).toEqual({ pending: 2, failed: 1 });
+    expect(stats.sections.requests).toEqual({ open: 3 });
+    expect(stats.sections.unknown).toBeUndefined();
+  });
+
+  it("returns empty stats when no DB DSN is configured", () => {
+    expect(normalizeOpsStats([], "")).toMatchObject({
+      dbConfigured: false,
+      sections: { jobs: {}, requests: {} },
+    });
+  });
+});
+
+describe("readDashboardState", () => {
+  it("captures DB errors instead of throwing", async () => {
+    const state = await readDashboardState({
+      dbDsn: "postgres://argus",
+      alertsQuery: async () => {
+        throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
+      },
+      proposalsQuery: async () => [],
+      opsQuery: async () => [{ section: "jobs", status: "pending", count: 1 }],
+      agentsQuery: async () => [{ source: "job", team_id: "argus", role: "manager", status: "pending", count: 1, last_at: "2026-06-05T06:00:00Z" }],
+      agentDetailsQuery: async () => [],
+    });
+
+    expect(state.alerts).toEqual([]);
+    expect(state.proposals).toEqual([]);
+    expect(state.ops.sections.jobs.pending).toBe(1);
+    expect(state.errors).toEqual([
+      { source: "alerts", message: "connection refused", code: "ECONNREFUSED" },
+    ]);
+    expect(state.agents[0]).toMatchObject({ team: "argus", role: "manager", pendingJobs: 1 });
+  });
+});
+
+describe("readAgents", () => {
+  it("merges jobs, runs, and actions into clickable worker summaries", async () => {
+    const agents = await readAgents({
+      query: async () => [
+        { source: "job", team_id: "argus", role: "developer", status: "pending", count: "2", last_at: "2026-06-05T06:00:00Z" },
+        { source: "run", team_id: "argus", role: "developer", status: "ok", count: 3, last_at: "2026-06-05T07:00:00Z" },
+        { source: "action", team_id: "argus", role: "developer", status: "failed", count: 1, last_at: "2026-06-05T08:00:00Z" },
+      ],
+    });
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({
+      id: "argus:developer",
+      roleLabel: "Developer",
+      pendingJobs: 2,
+      failedActions: 1,
+      status: "blocked",
+      lastAt: "2026-06-05T08:00:00Z",
+    });
+  });
+});
+
+describe("readAgentDetails", () => {
+  it("normalizes selected worker timeline rows", async () => {
+    const details = await readAgentDetails({
+      agentId: "argus:manager",
+      query: async ({ team, role }) => [
+        {
+          kind: "job",
+          status: "done",
+          at: new Date("2026-06-05T06:00:00Z"),
+          role,
+          team_id: team,
+          detail: "  answered   status  ",
+        },
+      ],
+    });
+
+    expect(details).toEqual({
+      agentId: "argus:manager",
+      items: [
+        {
+          kind: "job",
+          status: "done",
+          at: "2026-06-05T06:00:00.000Z",
+          role: "manager",
+          team: "argus",
+          detail: "answered status",
+        },
+      ],
+    });
+  });
+});
+
 describe("readProposals", () => {
   it("returns an empty array when no DB DSN is configured", async () => {
     const prevArgus = process.env.ARGUS_DB_DSN;
@@ -143,10 +251,32 @@ describe("readProposals", () => {
       project: "proj-a",
       fingerprint: "fp-1",
       pr: "https://github.com/o/r/pull/7",
+      change: true,
       senior: "low",
       qa: "limit:100",
       summary: "patched login",
       requestStatus: "done",
+    });
+  });
+
+  it("preserves no-change proposals from payload", async () => {
+    const proposals = await readProposals({
+      query: async () => [
+        {
+          team_id: "proj-a",
+          status: "done",
+          provider_ref: "",
+          created_at: "2026-06-05T06:00:00Z",
+          fingerprint: "fp-1",
+          request_status: "failed",
+          payload: { change: false, summary_short: "needs human" },
+        },
+      ],
+    });
+
+    expect(proposals[0]).toMatchObject({
+      change: false,
+      summary: "needs human",
     });
   });
 });

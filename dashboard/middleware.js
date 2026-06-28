@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { constantTimeEqual, extractToken } from "./app/lib/auth.js";
+import { constantTimeEqual, extractToken, wantsHtml } from "./app/lib/auth.js";
 
 // Every matched route requires ARGUS_DASHBOARD_TOKEN (Bearer header or
 // argus_token cookie). /api/health is always open.
 export function middleware(req) {
   const { pathname } = new URL(req.url);
   if (pathname === "/api/health") return NextResponse.next();
+  if (pathname === "/api/login" || pathname === "/login") return NextResponse.next();
 
   const token = process.env.ARGUS_DASHBOARD_TOKEN;
   if (!token) {
@@ -18,6 +19,9 @@ export function middleware(req) {
   if (constantTimeEqual(extractToken(req), token)) return NextResponse.next();
 
   console.warn(`argus-dashboard: 401 ${new URL(req.url).pathname}`);
+  if (wantsHtml(req)) {
+    return NextResponse.redirect(new URL("/login", req.url));
+  }
   return new NextResponse(JSON.stringify({ ok: false, error: "unauthorized" }), {
     status: 401,
     headers: { "content-type": "application/json", "www-authenticate": "Bearer" },

@@ -21,3 +21,8 @@ export function extractToken(req) {
   const cookie = req.cookies?.get?.("argus_token");
   return cookie?.value ?? "";
 }
+
+export function wantsHtml(req) {
+  const accept = req.headers.get("accept") || "";
+  return accept.includes("text/html");
+}

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { readAlerts, readProposals } from "../lib/data.js";
+import { readDashboardState } from "../lib/data.js";
 
 export const dynamic = "force-dynamic";
 
@@ -11,14 +11,26 @@ function sevClass(severity) {
 }
 
 export default async function Details() {
-  const alerts = await readAlerts();
-  const proposals = await readProposals({ limit: 200 });
+  const state = await readDashboardState({ limit: 200 });
+  const alerts = state.alerts;
+  const proposals = state.proposals;
 
   return (
     <div>
       <div className="nav-links">
         <Link href="/">Back to the attention feed</Link>
       </div>
+
+      {state.errors.length > 0 ? (
+        <div className="error-list">
+          {state.errors.map((err) => (
+            <div className="error-panel" key={err.source}>
+              <strong>{err.source}</strong>
+              <span>{err.code ? `${err.code}: ` : ""}{err.message}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <h2>All alerts ({alerts.length})</h2>
       {alerts.length === 0 ? (
@@ -53,7 +65,7 @@ export default async function Details() {
               </div>
               <div className="message">
                 {p.pr ? (
-                  <a href={p.pr} target="_blank" rel="noreferrer">{p.pr}</a>
+                  <a href={p.pr} target="_blank" rel="noreferrer">draft PR</a>
                 ) : (
                   p.summary || p.title || p.fingerprint || "(pending)"
                 )}

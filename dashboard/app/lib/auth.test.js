@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { constantTimeEqual, extractToken } from "./auth.js";
+import { constantTimeEqual, extractToken, wantsHtml } from "./auth.js";
 
 describe("constantTimeEqual", () => {
   it("returns true for equal strings", () => {
@@ -30,5 +30,19 @@ describe("extractToken", () => {
   });
   it("returns empty string when neither is present", () => {
     expect(extractToken(mk({}))).toBe("");
+  });
+});
+
+describe("wantsHtml", () => {
+  const mk = (accept) => ({
+    headers: { get: (k) => (k.toLowerCase() === "accept" ? accept : null) },
+  });
+
+  it("detects browser HTML requests", () => {
+    expect(wantsHtml(mk("text/html,application/xhtml+xml"))).toBe(true);
+  });
+
+  it("does not redirect API clients", () => {
+    expect(wantsHtml(mk("application/json"))).toBe(false);
   });
 });
