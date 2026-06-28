@@ -58,6 +58,15 @@ def test_claim_chat_lane_takes_only_chat_kinds(conn):
     assert jobs.claim(conn, "chat", include_kinds=list(jobs.CHAT_KINDS)) is None
 
 
+def test_claim_empty_include_kinds_claims_nothing(conn):
+    """An empty include lane must claim NOTHING, not fall through to every job."""
+    _enqueue_kind(conn, "pipeline", "p1")
+    conn.commit()
+    assert jobs.claim(conn, "chat", include_kinds=[]) is None
+    # Sanity: None (no filter) still claims it.
+    assert jobs.claim(conn, "w1", include_kinds=None) is not None
+
+
 def test_claim_pipeline_lane_excludes_chat_kinds(conn):
     """exclude_kinds (pipeline lane) skips chat jobs and takes the rest, so a slow
     build lane never starves a converse reply by grabbing it."""

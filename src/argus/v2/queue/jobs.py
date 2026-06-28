@@ -69,6 +69,10 @@ def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120,
     to a lane: include_kinds claims only those kinds (the chat lane), exclude_kinds
     skips them (the pipeline lane). With neither, claims any kind (single-process
     dev driver). Chat kinds still sort first within a lane."""
+    # None = no filter; an empty include list means "this lane has no kinds" and
+    # must claim NOTHING (not everything), so it is its own short-circuit.
+    if include_kinds is not None and not include_kinds:
+        return None
     where = ["status='pending'", "run_after <= now()"]
     kind_params: list = []
     if include_kinds:
