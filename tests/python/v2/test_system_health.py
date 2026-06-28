@@ -38,15 +38,46 @@ def test_missing_env_refs_reports_only_names(tmp_path, monkeypatch):
     assert "actual-secret-value" not in findings[0].message
 
 
-def test_launchd_findings_flag_nonzero_argus_rows():
+def test_launchd_findings_flag_down_service_not_periodic_stale_exit():
+    """A keep-alive service with no PID is down -> flagged. A periodic job
+    (watchdog) idle with a stale non-zero last exit is NOT a health signal and
+    must not be flagged (that was the hourly false-positive spam)."""
     def runner(argv, **kwargs):
         assert argv == ["launchctl", "list"]
-        return subprocess.CompletedProcess(argv, 0, "-\t1\tcom.argus.watchdog\n123\t0\tcom.argus.up\n", "")
+        return subprocess.CompletedProcess(
+            argv, 0,
+            "-\t1\tcom.argus.serve\n"      # keep-alive service, DOWN
+            "-\t1\tcom.argus.watchdog\n"   # periodic job, idle + stale exit (ignore)
+            "123\t0\tcom.argus.up\n", "")  # keep-alive service, running
 
-    findings = system_health.launchd_findings(runner=runner)
+    findings = system_health.launchd_findings(
+        runner=runner, service_labels={"com.argus.serve", "com.argus.up"})
 
-    assert [f.fingerprint for f in findings] == ["launchd:com.argus.watchdog:1"]
-    assert "com.argus.watchdog status=1" in findings[0].message
+    assert [f.fingerprint for f in findings] == ["launchd:com.argus.serve:down"]
+    assert "com.argus.serve" in findings[0].message
+    assert "watchdog" not in " ".join(f.message for f in findings)
+
+
+def test_launchd_findings_periodic_nonzero_exit_is_not_flagged():
+    """The exact owner-reported case: poll exited 1 once, idle now. No alert."""
+    def runner(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, "-\t1\tcom.argus.poll\n", "")
+    # poll is not a keep-alive service -> empty service set -> nothing flagged.
+    assert system_health.launchd_findings(runner=runner, service_labels=set()) == []
+
+
+def test_keepalive_service_labels_reads_plists(tmp_path):
+    import plistlib
+    def _plist(name, body):
+        (tmp_path / f"{name}.plist").write_bytes(plistlib.dumps(body))
+    _plist("com.argus.serve", {"Label": "com.argus.serve", "KeepAlive": True})
+    _plist("com.argus.postgres", {"Label": "x", "KeepAlive": {"SuccessfulExit": False}})
+    _plist("com.argus.poll", {"Label": "x", "StartInterval": 300})  # periodic
+    _plist("com.other.thing", {"KeepAlive": True})  # not com.argus.*
+
+    labels = system_health.keepalive_service_labels(tmp_path)
+
+    assert labels == {"com.argus.serve", "com.argus.postgres"}
 
 
 def test_notify_findings_creates_general_action_with_cooldown(conn, tmp_path, monkeypatch):

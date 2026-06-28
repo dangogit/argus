@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -98,10 +99,44 @@ def disk_findings(path: Path | None = None) -> list[Finding]:
     )]
 
 
+def keepalive_service_labels(agents_dir: Path | None = None) -> set[str]:
+    """The com.argus.* launchd labels whose plist is KeepAlive - the long-running
+    services that must stay up (serve, up, postgres, evolution). Periodic jobs
+    (poll, retro, watchdog, backup, logrotate; StartInterval) are intentionally
+    idle between runs, so we read this to tell the two apart."""
+    agents_dir = agents_dir or (Path.home() / "Library" / "LaunchAgents")
+    labels: set[str] = set()
+    try:
+        entries = sorted(agents_dir.glob("com.argus.*.plist"))
+    except OSError:
+        return labels
+    for path in entries:
+        try:
+            with path.open("rb") as fh:
+                data = plistlib.load(fh)
+        except Exception:
+            continue
+        # KeepAlive may be `true` or a non-empty dict (e.g. {SuccessfulExit:false});
+        # both mean "launchd keeps it running", so truthiness is the right test.
+        if data.get("KeepAlive"):
+            labels.add(path.stem)
+    return labels
+
+
 def launchd_findings(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    service_labels: set[str] | None = None,
 ) -> list[Finding]:
+    """Flag a launchd problem only when a keep-alive SERVICE is down (no PID).
+
+    A periodic job (StartInterval) is supposed to be idle (`pid == "-"`) between
+    runs, and `launchctl list` keeps its LAST exit status around - so the old
+    "pid == '-' and status != '0'" check re-paged a single transient non-zero
+    exit every hour forever, even while the job exited 0 on every real run
+    (owner hit this: com.argus.poll status=1 hourly + a long-gone
+    support-luma-website). We now page only on a service that should be running
+    and isn't; a periodic job's stale exit is no longer a health signal."""
     try:
         proc = runner(["launchctl", "list"], capture_output=True, text=True, timeout=5)
     except Exception as exc:
@@ -116,19 +151,21 @@ def launchd_findings(
             fingerprint="launchd:list-failed",
             message="launchd list failed",
         )]
+    if service_labels is None:
+        service_labels = keepalive_service_labels()
     findings: list[Finding] = []
     for line in proc.stdout.splitlines():
         parts = line.split()
         if len(parts) < 3:
             continue
         pid, status, label = parts[0], parts[1], parts[2]
-        if not label.startswith("com.argus."):
-            continue
-        if pid == "-" and status != "0":
+        if label not in service_labels:
+            continue  # not a must-stay-up service (periodic job or unknown)
+        if pid == "-":
             findings.append(Finding(
                 severity="error",
-                fingerprint=f"launchd:{label}:{status}",
-                message=f"launchd job unhealthy: {label} status={status}",
+                fingerprint=f"launchd:{label}:down",
+                message=f"launchd service down: {label} (not running, last status={status})",
                 payload={"label": label, "status": status},
             ))
     return findings
