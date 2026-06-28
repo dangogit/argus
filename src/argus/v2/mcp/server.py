@@ -6,6 +6,11 @@ ping), so this is hand-rolled - no SDK dependency. Tools are READ-ONLY by
 design: status, alerts, lessons, proposals. It never mutates or executes;
 gated action tools (propose/approve) are P2 and must route through the existing
 approval gate (see docs/mcp-support.md).
+
+TRUST BOUNDARY: this server has no auth and no per-caller team scoping. It is
+intended to run locally over stdio for the single trusted operator (the same
+host/operator trust boundary as the rest of Argus). Do NOT expose it over a
+network transport without adding auth and team scoping first.
 """
 from __future__ import annotations
 
@@ -100,6 +105,10 @@ def handle_request(req: dict, *, connect=pool.connect) -> dict | None:
     """Dispatch one JSON-RPC request. Returns the response dict, or None for a
     notification (no id / no reply expected). Pure except for the tool handlers'
     DB reads via `connect`, which is injectable for tests."""
+    if not isinstance(req, dict):
+        # Valid JSON but not a request object (bare number/array/string/null):
+        # reject instead of crashing the serve loop on req.get().
+        return _error(None, -32600, "invalid request: not an object")
     mid = req.get("id")
     method = req.get("method")
     if method == "initialize":
@@ -144,7 +153,10 @@ def serve(stdin=None, stdout=None) -> int:
             req = json.loads(line)
         except json.JSONDecodeError:
             continue  # ignore garbage frames
-        resp = handle_request(req)
+        try:
+            resp = handle_request(req)
+        except Exception:  # never let one bad request kill a long-lived server
+            resp = _error(None, -32603, "internal error")
         if resp is not None:
             stdout.write(json.dumps(resp) + "\n")
             stdout.flush()

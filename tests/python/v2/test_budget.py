@@ -22,8 +22,17 @@ def _cfg_with_cap(tmp_path, cap):
     return loader.load(y)
 
 
-def _run(conn, cost, *, hours_ago=0):
-    job_id = jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer",
+def _cfg_team_cap(tmp_path, cap):
+    y = tmp_path / "tc.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n  - name: dev\n    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        f"    pipeline: {{ stages: [developer] }}\n    max_daily_cost_usd: {cap}\n")
+    return loader.load(y)
+
+
+def _run(conn, cost, *, hours_ago=0, team="dev"):
+    job_id = jobs.enqueue(conn, team_id=team, kind="pipeline", role="developer",
                           stage=0, idempotency_key=f"k{next(_counter)}",
                           exec_snapshot={}, payload={})
     with conn.cursor() as cur:
@@ -62,8 +71,70 @@ def test_route_events_pauses_when_over_budget(conn, tmp_path, monkeypatch):
     eid = events.ingest_message(conn, cfg, team="dev", source="cli",
                                 dedup_key="m1", text="hello")
     conn.commit()
-    monkeypatch.setattr(budget, "over_budget", lambda c, cf: True)
+    monkeypatch.setattr(budget, "over_budget", lambda c, cf, team_id=None: True)
     assert reconcile.route_events(conn, cfg) == 0
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM events WHERE id=%s", (eid,))
         assert cur.fetchone()[0] != "processed"  # held, not consumed
+
+
+# --- per-team budgets ---
+
+def test_daily_cost_scoped_to_team(conn):
+    _run(conn, "1.00", team="dev")
+    _run(conn, "5.00", team="other")
+    assert budget.daily_cost_usd(conn, "dev") == 1.00
+    assert budget.daily_cost_usd(conn) == 6.00  # company-wide
+
+
+def test_team_over_its_cap_when_company_uncapped(conn, tmp_path):
+    cfg = _cfg_team_cap(tmp_path, 1.0)  # team dev cap 1.0, no company cap
+    _run(conn, "1.50", team="dev")
+    assert budget.over_budget(conn, cfg, "dev") is True
+    assert budget.over_budget(conn, cfg) is False  # company-wide: no cap
+
+
+def test_route_events_defers_over_budget_team(conn, tmp_path):
+    cfg = _cfg_team_cap(tmp_path, 0.01)  # tiny team cap
+    _run(conn, "1.00", team="dev")       # dev is over its cap
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="m2", text="hi")
+    conn.commit()
+    reconcile.route_events(conn, cfg)
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM events WHERE id=%s", (eid,))
+        assert cur.fetchone()[0] == "received"  # deferred for retry, not stranded
+
+
+def test_daily_cost_ignores_bad_data(conn):
+    _run(conn, "1.00")
+    for bad in ("unpriced", "1.2e3", "NaN", "Infinity", " 2 ", "10;DROP"):
+        _run(conn, bad)  # non-decimal: regex must reject, never reach ::numeric
+    assert budget.daily_cost_usd(conn) == 1.00
+
+
+def _cfg_two_teams(tmp_path, dev_cap):
+    y = tmp_path / "two.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n"
+        "  - name: dev\n    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        f"    pipeline: {{ stages: [developer] }}\n    max_daily_cost_usd: {dev_cap}\n"
+        "  - name: ops\n    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n")
+    return loader.load(y)
+
+
+def test_route_defers_over_team_processes_under_team(conn, tmp_path):
+    cfg = _cfg_two_teams(tmp_path, 0.01)
+    _run(conn, "1.00", team="dev")  # dev over its tiny cap; ops uncapped
+    e_dev = events.ingest_message(conn, cfg, team="dev", source="cli", dedup_key="d1", text="hi")
+    e_ops = events.ingest_message(conn, cfg, team="ops", source="cli", dedup_key="o1", text="hi")
+    conn.commit()
+    reconcile.route_events(conn, cfg)
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, defer_until FROM events WHERE id=%s", (e_dev,))
+        status, defer_until = cur.fetchone()
+        assert status == "received" and defer_until is not None  # deferred with backoff
+        cur.execute("SELECT status FROM events WHERE id=%s", (e_ops,))
+        assert cur.fetchone()[0] == "processed"  # under-budget team still flows

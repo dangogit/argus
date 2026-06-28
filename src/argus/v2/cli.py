@@ -1319,7 +1319,9 @@ def cmd_launchd(args) -> int:
         log_dir=args.log_dir,
         label_prefix=args.label_prefix,
     )
-    for path in launchd.write_units(units, Path(args.out)):
+    from argus.v2 import host
+    os_name = args.os or host.host_os()
+    for path in launchd.write_units(units, Path(args.out), os_name=os_name):
         print(path)
     return 0
 
@@ -1540,6 +1542,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--env-files", default="")
     r.add_argument("--log-dir", default=str(Path.home() / "Library" / "Logs" / "argus"))
     r.add_argument("--label-prefix", default="com.argus")
+    r.add_argument("--os", choices=["macos", "linux"], default=None,
+                   help="target init system (default: detected host)")
     r.set_defaults(fn=cmd_launchd)
 
     s = sub.add_parser("summarize"); s.add_argument("--team", required=True)

@@ -66,4 +66,6 @@ def materialize(servers, dest_dir: str | os.PathLike) -> str | None:
     dest.mkdir(parents=True, exist_ok=True)
     path = dest / "mcp.json"
     path.write_text(json.dumps(render_claude_config(servers), indent=2), encoding="utf-8")
+    # The rendered config inlines resolved secret values; keep it owner-only.
+    os.chmod(path, 0o600)
     return str(path)

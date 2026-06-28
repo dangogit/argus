@@ -47,6 +47,14 @@ def route_events(conn, cfg) -> int:
                             (eid,))
             handled += 1
             continue
+        # Per-team budget: defer this team's event (back to 'received' with a
+        # short backoff so the claim loop skips it instead of churning every
+        # tick) when the team is over its own cap; other teams proceed.
+        if budget.over_budget(conn, cfg, team_id):
+            with conn.cursor() as cur:
+                cur.execute("UPDATE events SET status='received', "
+                            "defer_until=now() + interval '60 seconds' WHERE id=%s", (eid,))
+            continue
         channel_ref = _channel_ref(conn, conv_id)
         if kind == "signal":
             if _is_drift(payload) and _notify_drift(conn, cfg, team_id, payload, dedup_key):

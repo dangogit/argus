@@ -177,7 +177,7 @@ def test_doctor_and_ready_fail_unsupported_channel(tmp_path, monkeypatch, pg_dsn
         "  - name: t\n"
         "    roles: [ { name: r, kind: builder, prompt: p } ]\n"
         "    pipeline: { stages: [r] }\n"
-        "    channels: [ { type: discord, role: control, channel_id: C123 } ]\n",
+        "    channels: [ { type: mastodon, role: control, channel_id: C123 } ]\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("ARGUS_CONFIG", raising=False)
@@ -188,7 +188,7 @@ def test_doctor_and_ready_fail_unsupported_channel(tmp_path, monkeypatch, pg_dsn
     assert cli.main(["ready", "--live"]) == 1
 
     out = capsys.readouterr().out
-    assert "[fail] config team t: unsupported channel type 'discord'" in out
+    assert "[fail] config team t: unsupported channel type 'mastodon'" in out
 
 
 def test_db_migrate_is_idempotent(conn, pg_dsn, monkeypatch, capsys):

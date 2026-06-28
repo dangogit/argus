@@ -31,7 +31,9 @@ class SourceRef(BaseModel):
 
 
 class ChannelBinding(BaseModel):
-    type: Literal["whatsapp", "telegram", "discord", "slack", "cli", "fake"]
+    # Validated against the live channel REGISTRY in the loader (single source of
+    # truth), not a closed Literal that drifts as channels are added.
+    type: str
     role: Literal["control", "outward"] = "control"
     channel_id: str
     secret_ref: Optional[str] = None
@@ -177,6 +179,9 @@ class Team(BaseModel):
     sources: List[SourceRef] = Field(default_factory=list)
     channels: List[ChannelBinding] = Field(default_factory=list)
     project: Optional[Project] = None
+    # Per-team rolling 24h spend cap (USD). Overrides nothing else; when this
+    # team is over it, only this team's new work pauses. None = no team cap.
+    max_daily_cost_usd: Optional[float] = None
 
     def role(self, name: str) -> Role:
         for r in self.roles:
