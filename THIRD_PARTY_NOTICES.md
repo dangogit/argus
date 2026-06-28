@@ -12,11 +12,13 @@ file before every public release.
 README platform logo SVGs are sourced from Simple Icons and LobeHub Icons.
 Simple Icons is licensed under CC0-1.0. LobeHub Icons is licensed under MIT.
 Slack, WhatsApp, Telegram, and Gmail logo SVGs are copied from SVG Repo.
+PostgreSQL logo SVG is copied from Devicon.
 Product names and marks remain property of their respective owners.
 
 - Simple Icons: <https://simpleicons.org/>
 - LobeHub Icons: <https://github.com/lobehub/lobe-icons>
 - SVG Repo: <https://www.svgrepo.com/>
+- Devicon: <https://github.com/devicons/devicon>
 
 ## Declared Runtime Dependencies
 
