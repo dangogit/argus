@@ -13,6 +13,7 @@ from psycopg.types.json import Json
 
 from argus.v2 import alerts
 from argus.v2.config import loader
+from argus.v2.orchestrator import status
 from argus.v2.pm import memory as pm_memory
 from argus.v2.pm import scan as pm_scan
 from argus.v2.queue import jobs
@@ -109,6 +110,8 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
         team_id, conversation_id, event_id = cur.fetchone()
     team = cfg.team(team_id)
     role_name = team.pipeline.stages[stage_index]
+    # Advance the live status line for this turn (no-op if none exists).
+    status.set_status(conn, str(event_id) if event_id else None, status.stage_line(role_name))
     eng = loader.resolve_engine(cfg, team_id, role_name)
     role = team.role(role_name)
     text = _request_text(conn, event_id)
@@ -276,6 +279,7 @@ def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
     qa/senior, no PR, no fabricated edit."""
     prefix = ("Blocked, couldn't complete the task: " if blocked
               else "Investigated, no fix needed: ")
+    status.set_status_for_request(conn, request_id, status.FAILED if blocked else status.NOFIX)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT r.team_id, r.conversation_id, e.kind "
@@ -346,6 +350,7 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str) -> N
 
 
 def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:
+    status.set_status_for_request(conn, request_id, status.FAILED)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT r.team_id, r.conversation_id, e.kind "
@@ -427,6 +432,7 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
             )
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                     (job.request_id,))
+    status.set_status(conn, job.event_id, status.DONE)
 
 
 def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason: str) -> bool:
@@ -948,6 +954,7 @@ def _handle_converse(conn: psycopg.Connection, cfg, job: Job) -> None:
                 "ON CONFLICT (idempotency_key) DO NOTHING",
                 (job.id, job.team_id, channel_ref, idem,
                  psycopg.types.json.Json({"text": reply})))
+        status.set_status(conn, job.event_id, status.DONE)
 
     elif action == "dispatch":
         work = collapse_repeat(task)
@@ -965,6 +972,7 @@ def _handle_converse(conn: psycopg.Connection, cfg, job: Job) -> None:
                     "ON CONFLICT (idempotency_key) DO NOTHING",
                     (job.id, job.team_id, channel_ref, idem,
                      psycopg.types.json.Json({"text": need_detail})))
+            status.set_status(conn, job.event_id, status.DONE)
             return
         # Update the source event payload text to the manager's task (cleaned).
         # Use to_jsonb() so the value is treated as jsonb (jsonb_set requires jsonb).
@@ -1003,6 +1011,7 @@ def _handle_converse(conn: psycopg.Connection, cfg, job: Job) -> None:
                 "ON CONFLICT (idempotency_key) DO NOTHING",
                 (job.id, job.team_id, channel_ref, idem,
                  psycopg.types.json.Json({"text": ack})))
+        status.set_status(conn, job.event_id, status.DONE)
 
 
 def _attach_converse_action_destinations(conn: psycopg.Connection, job: Job,
@@ -1036,6 +1045,7 @@ def _converse_fallback(conn: psycopg.Connection, cfg, job: Job, idem: str,
         text = "On it, I'll investigate and open a PR."
     else:
         text = decision.reply_text or "Sorry, I had trouble with that. Please try again."
+        status.set_status(conn, job.event_id, status.DONE)
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO actions (job_id, team_id, type, risk, destination_ref, "

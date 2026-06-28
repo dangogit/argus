@@ -51,3 +51,11 @@ class DiscordChannel:
                        json={"content": text}, timeout=20)
         r.raise_for_status()
         return str(r.json().get("id", ""))
+
+    def update(self, binding, message_id: str, text: str) -> str:  # pragma: no cover (network seam)
+        import httpx
+        r = httpx.patch(f"{API}/channels/{binding.channel_id}/messages/{message_id}",
+                        headers={"Authorization": f"Bot {binding.secret}"},
+                        json={"content": text}, timeout=20)
+        r.raise_for_status()
+        return str(r.json().get("id", message_id))

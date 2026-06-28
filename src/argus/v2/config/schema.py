@@ -51,6 +51,10 @@ class NotificationSettings(BaseModel):
     timezone: str = "UTC"
     quiet_hours: str | bool = "22:30-08:30"
     quiet_hours_delivery: QuietHoursDelivery = "hold"
+    # Drive a single self-updating status line through the work lifecycle
+    # (receipt -> working -> reviewing -> done) on edit-capable chat channels.
+    # Off -> a one-shot receipt only (no in-place edits).
+    show_progress: bool = True
     urgent_severities: List[str] = Field(
         default_factory=lambda: [
             "error",

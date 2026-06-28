@@ -1,41 +1,115 @@
-# Roadmap build loop - progress tracker
+# Plan: Slack-native staged "thinking" status (live progress)
 
-Goal: build every Now (reliability) + Next (capabilities) roadmap item end to
-end (plan -> execute -> test) until Argus is genuinely top tier. Driven by the
-`/loop` self-paced loop. Each iteration: pick the next unchecked item, plan it,
-implement with a test, verify, check it off.
+## Goal
+Instead of posting a sequence of separate chat messages, **edit one message in
+place** through the lifecycle - the Claude-in-Slack feel:
 
-Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
+```
+👀 Got it - looking into this...     (posted on receipt)
+        ↓ edit same message
+🛠️ On it - working on a fix...        (pipeline opened)
+        ↓ edit
+🔍 Reviewing the change...            (qa / senior stage)
+        ↓ edit
+✅ PR ready: <url>                    (terminal)   |   the answer (converse)
+```
 
-## Now - reliability foundation
-- [x] 1. Runtime observability: module loggers across orchestrator/worker/queue; wrap sweep in try/except + crash backoff; structured log per claim/finalize/reclaim
-- [x] 2. Deterministic run-liveness detection: pure classifier (planning-only / blocked / approval-required) over job evidence, no second model call
-- [x] 3. Connector hardening: failure backoff, missing-secret / expired-key states, dry-run output
-- [x] 4. Approval reliability: idempotency-keyed approval bound to action_id, 128-bit token, retry on collision (also closes weak-nonce security gap)
-- [x] 5. Cost ceiling: global daily spend cap that pauses new work
-- [x] 6. Orchestrator resilience: re-acquire advisory lock + re-LISTEN after DB connection drop
+This is the **richer half** of the chat-receipt work already on main (#12). #12
+posts the receipt; this makes it a single, self-updating status line.
 
-## Next - capabilities
-- [x] 7. MCP client P0 (per docs/mcp-support.md): config, engine tool exposure, doctor check, echo-safe (untrusted+capped output deferred to P1/source-trust)
-- [x] 8. MCP server read-only: argus mcp serve exposing status/alerts/proposals/lessons
-- [x] 9. Provider breadth: OpenRouter + Ollama engine paths
-- [x] 10. More channels: Discord + generic email gateway behind a capability-optional interface
-- [x] 11. Per-agent (per-team) budgets done. (Typed ask/confirm/suggest interactions = larger subsystem, kept in ROADMAP "Later" by design - not padded with a token version.)
-- [x] 12. Linux runtime parity: opinionated always-on bundle as systemd units
+## Why it's cheap (mechanics already in place)
+- `slack/telegram/discord .send()` already **return the posted message id**, which
+  the executor stores as `actions.provider_ref`. So the status message is
+  addressable for edits with zero new plumbing to capture the id.
+- Stage transitions are discrete, existing code points (route_events,
+  enqueue_stage, on_job_done/_approve_done/_fail, _handle_converse).
+- Editable channels: **slack, telegram, discord**. whatsapp/email can't edit -
+  they keep today's behavior (receipt + final message, no intermediate edits).
 
-ALL 12 ITEMS COMPLETE.
+## Design
 
-## Done log
-- Item 1 (observability): loop.py resilient `_sweep` + `_backoff_seconds` (sweep crash logs + backs off, no silent orchestrator death); loggers in orchestrator/queue/worker/reconcile; structured logs on claim/finalize/reclaim + worker failure. Test: tests/python/v2/test_orchestrator_loop.py (5 passed). Regression: queue/fencing/reconcile/worker (26 passed).
-- Item 2 (run-liveness): worker/liveness.py pure `classify()` -> produced/planning_only/blocked/approval_required/external_blocker/empty from regex evidence, no LLM. Wired into worker result + logs STUCK states. Test: tests/python/v2/test_liveness.py (15 passed). Regression: worker (6 passed).
-- Item 3 (connector hardening): migration 0018 adds error_count/last_error/last_error_at/poll_after to connector_state; driver.py logs failures, records error state, exponential backoff (30s..1h) skips dead sources, clears on recovery; dry_run surfaces error_count. Test: tests/python/v2/test_connector_backoff.py (5). Checkpoint: full v2 suite 612 passed, 4 skipped.
-- Item 4 (approval reliability): executor._insert_approval uses 128-bit token_hex(16) + retry-on-collision with RETURNING (guarantees an approval row exists, no more silent DO NOTHING leaving a parked action stuck). Closes the CRITICAL weak-nonce gap too. Test: tests/python/v2/test_approvals.py +2 (128-bit, collision-retry). Regression: executor/approvals/actions/pipeline 87 passed.
-- Item 5 (cost ceiling): config Defaults.max_daily_cost_usd (None=off); orchestrator/budget.py sums 24h priced runs; route_events pauses opening new work when over cap (in-flight finishes), throttled warning log. Test: tests/python/v2/test_budget.py (5). Regression: reconcile (8) + config (43).
-- Item 6 (orchestrator resilience): loop.py refactored to _acquire/_reacquire/_wait; on control-conn drop it reconnects (re-lock + re-LISTEN) or propagates RuntimeError handoff so a second orchestrator never double-runs; reconnect backoff capped 30s, gives up after 10 tries for supervisor restart. Test: tests/python/v2/test_orchestrator_loop.py +6. CHECKPOINT: full v2 suite 624 passed, 4 skipped. *** Reliability foundation (items 1-6) COMPLETE. ***
-- Item 7 (MCP client P0): config schema McpServer/McpConfig (Config.mcp); mcp/config.py validate_server + render_claude_config + materialize; worker/exec.py materializes per-run to a temp dir (not worktree -> no diff pollution) + ARGUS_CLAUDE_MCP_CONFIG; claude_code adapter passes --mcp-config; opscheck _mcp_checks (echo-safe, no live handshake = P1); example config snippet. Test: tests/python/v2/test_mcp_config.py (12). Checkpoint: full v2 suite 636 passed, 4 skipped. (Claude Code is the MCP client; Argus renders+validates. Live protocol ping + untrusted-output caps deferred to P1.)
-- Item 8 (MCP server): mcp/server.py hand-rolled stdio JSON-RPC (newline-delimited), no SDK dep; read-only tools argus_status/alerts/lessons/proposals; handle_request dispatch (initialize/tools.list/tools.call/ping/notifications); CLI `argus mcp serve`. Test: tests/python/v2/test_mcp_server.py (9). Checkpoint: full v2 suite 645 passed, 4 skipped. (Gated action tools = P2, depend on approval gate.)
-- Item 9 (provider breadth): engine/adapters/openai_compat.py (stdlib urllib, no new dep) backs `openrouter` + `ollama` via OpenAI /chat/completions; registered in ADAPTERS; EngineName literal extended; env-configured (keys/model/base_url/timeout); docs/engines.md table. Test: tests/python/test_adapter_openai_compat.py (6) + updated engine-list test. Checkpoint: full suite (both dirs) 757 passed, 4 skipped.
-- Item 10 (channels): channels/discord.py (REST poll parse_with_offset, skip bots, snowflake cursor, send) + channels/email.py (SMTP outbound; inbound = email_imap connector); both self-register; ChannelBinding.type relaxed Literal->str (loader REGISTRY is single source of truth, removes drift). Test: tests/python/v2/test_channels_discord_email.py (6) + updated 2 drift tests to use mastodon. Checkpoint: full v2 suite 651 passed, 4 skipped. (email gateway = outbound channel + existing inbound connector, non-redundant.)
-- Item 11 (per-team budgets): Team.max_daily_cost_usd; budget.daily_cost_usd(team_id) joins runs->jobs; budget.team_ceiling + over_budget(team_id) checks team cap first then company; route_events defers an over-budget team's event back to 'received' (retry, not stranded) while other teams proceed. Test: tests/python/v2/test_budget.py +3. Checkpoint: full v2 suite 654 passed, 4 skipped. (Typed ask/confirm/suggest = ROADMAP Later, not padded.)
+### 1. Channel edit seam
+- Add optional `update(self, binding, message_id, text) -> str` to
+  `slack.py` (`chat.update`), `telegram.py` (`editMessageText`),
+  `discord.py` (`PATCH /channels/{id}/messages/{mid}`).
+- Add `edit(cfg, destination_ref, message_id, text)` to `channels/send.py`,
+  mirroring `deliver()`. Returns None when the resolved adapter has no `update`
+  (non-editable channel) so callers can fall back.
+- Protocol (`base.py`): `update` stays optional (duck-typed via `getattr`), so
+  whatsapp/email/fake need no change.
 
-- Item 12 (Linux parity): launchd.render_systemd renders the curated Unit bundle as systemd .service (+ .timer for interval units, env carried via Environment=); write_units gains os_name (macos plists / linux systemd); CLI `argus launchd render --os linux`. The opinionated serve/up/poll/retro/watchdog/backup/logrotate bundle now runs out-of-the-box on Linux, not just macOS. Test: tests/python/v2/test_launchd.py +4. Checkpoint: full v2 suite 658 passed, 4 skipped.
+### 2. One status message per user turn, keyed by event
+- New action type **`status`**, idempotency key `status:<event_id>`
+  (one inbound message = one event = one status lifecycle; resolvable from every
+  downstream stage via `requests.event_id` / `job.event_id`).
+- First drain: `send()` posts the line, stores message id in `provider_ref`.
+- Each later stage calls `_set_status(conn, event_id, text)`:
+  overwrite the action's payload text + re-arm it (`status='proposed'`).
+- Executor: a `status` action **with** a `provider_ref` executes as an **edit**
+  (`send.edit(... provider_ref ...)`), not a resend; without one, as the first
+  send. "Latest text wins" - if stages advance between drains, only the newest
+  line shows (no flicker, monotonic by sweep order).
+
+### 3. Stage -> line map (pure helper `status_line`)
+| Stage point | Line |
+|---|---|
+| receipt (route_events) | `👀 Got it - looking into this...` |
+| pipeline opened (dispatch) | `🛠️ On it - working on a fix...` |
+| qa / senior stage | `🔍 Reviewing the change...` |
+| PR ready (`_approve_done`) | `✅ PR ready: <url>` |
+| no-fix / blocked / failed | `⚠️ <short reason>` |
+| converse answer | the answer text (status line becomes the reply) |
+
+### 4. Hook points (all already have conn + event/conversation in scope)
+- `reconcile.route_events`: replace `_emit_ack` -> post initial `status` (editable
+  channels) / keep plain reply (non-editable).
+- `pipeline.enqueue_stage`: set "working" / "reviewing" by stage role.
+- `pipeline._approve_done | _no_fix_close | _fail`: terminal line.
+- `pipeline._handle_converse` (answer): final edit = answer.
+
+### 5. Config + fallback
+- `notifications.show_progress: true` default; false -> behave exactly like #12
+  (single receipt, no edits).
+- Non-editable channel (whatsapp/email): `_set_status` posts the **terminal** line
+  as a normal message, skips intermediate edits (no edit API, avoid spam).
+
+## Risks / decisions
+- **Re-arm of the `status` action** for repeated edits is the one subtle part:
+  the executor's "provider_ref set => idempotent done" short-circuit must NOT
+  apply to `status` (for status it means "edit instead"). Carve a clear branch.
+- **Edit failure** (message deleted, token lost): fall back to a fresh send,
+  update provider_ref. Transient httpx errors already retry via the executor
+  savepoint path.
+- **Ordering**: monotonic because the orchestrator sweeps sequentially; latest
+  text wins is correct.
+
+## Tasks
+- [x] `channels/{slack,telegram,discord,fake}.py`: add `update()` (network seams pragma'd)
+- [x] `channels/send.py`: add `edit()` + `channel_supports_edit()`
+- [x] `actions/executor.py`: `status` action type -> first-send / subsequent-edit branch
+- [x] `orchestrator/status.py` (new): `post_initial` / `set_status` / `stage_line`
+- [x] `orchestrator/reconcile.py`: `_emit_ack` posts a status line on editable channels
+- [x] `orchestrator/pipeline.py`: `set_status` calls at stage + terminal hooks
+- [x] `config/schema.py`: `notifications.show_progress` (default true)
+- [x] Tests (13): edit seam, lifecycle (receipt->working->reviewing->done in place),
+      non-editable + toggle-off fallback, idempotent re-sweep, best-effort edit failure
+- [x] CHANGELOG entry; `ARGUS_GATE=1` gate green (795 passed, 83.13%)
+
+## Scope guard (not in this change)
+- True token-by-token reasoning stream (needs engine-adapter streaming) - separate, larger.
+- Threaded replies / reactions as progress - not now.
+
+## Review
+- Shipped the staged status line as an **additive, best-effort** layer: it never
+  touches the substantive replies/notifies, so the existing flows (answer,
+  PR-ready, blocked) are byte-identical - the status is a separate self-editing
+  line that resolves to ✅/⚠️. Lowest-risk way to get the Claude-in-Slack feel.
+- The one subtle invariant (executor: `status` + existing `provider_ref` => EDIT,
+  not idempotent-done) is carved as a dedicated branch before the generic
+  short-circuit; `set_status` only re-arms on a real text change, so idempotent
+  sweeps and same-line stages (qa->senior) don't re-edit.
+- Edge cases covered by tests: receipt sent once then edited in place; toggle
+  off + non-editable channel both fall back to the one-shot receipt; failed edit
+  is best-effort (drain never breaks); set_status is a no-op with no status msg.
+- Follow-up (not here): true token-by-token reasoning stream (needs engine
+  streaming); per-stage detail/links inside the status line.
