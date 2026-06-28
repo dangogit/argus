@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from typing import List, Tuple
 
 from argus.engine import EngineOutageError, run_agent
+from argus.v2.mcp import config as mcp_config
 from argus.v2.queue.models import ActionIntent, Job, RunRecord
 
 _CODE_MODE_CAP = 8000
@@ -53,6 +55,17 @@ def run_job(cfg, job: Job, context: str = "",
     prev_project = os.environ.get("ARGUS_PROJECT")
     prev_model = os.environ.get("ARGUS_MODEL")
     prev_network = os.environ.get("ARGUS_CODEX_NETWORK")
+    prev_mcp = os.environ.get("ARGUS_CLAUDE_MCP_CONFIG")
+    # Render operator-configured MCP servers to a temp file (NOT the worktree -
+    # that would pollute the builder's diff) and point the engine at it. echo
+    # and other engines ignore the env var; only the MCP-aware engine uses it.
+    mcp_dir = None
+    mcp_servers = getattr(getattr(cfg, "mcp", None), "servers", []) or []
+    if mcp_servers:
+        mcp_dir = tempfile.mkdtemp(prefix="argus-mcp-")
+        os.environ["ARGUS_CLAUDE_MCP_CONFIG"] = mcp_config.materialize(mcp_servers, mcp_dir)
+    else:
+        os.environ.pop("ARGUS_CLAUDE_MCP_CONFIG", None)
     os.environ["ARGUS_AGENT_CWD"] = work
     if snap.get("project"):
         os.environ["ARGUS_PROJECT"] = snap["project"]
@@ -93,6 +106,9 @@ def run_job(cfg, job: Job, context: str = "",
         _restore_env("ARGUS_PROJECT", prev_project)
         _restore_env("ARGUS_MODEL", prev_model)
         _restore_env("ARGUS_CODEX_NETWORK", prev_network)
+        _restore_env("ARGUS_CLAUDE_MCP_CONFIG", prev_mcp)
+        if mcp_dir:
+            shutil.rmtree(mcp_dir, ignore_errors=True)
 
 
 def extract_script(text: str):

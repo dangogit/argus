@@ -190,10 +190,28 @@ class RetroConfig(BaseModel):
     company_change_team: Optional[str] = None
 
 
+class McpServer(BaseModel):
+    """An external MCP server Argus agents may call. stdio: command + args.
+    http: url. env lists env var NAMES to pass through (values stay in the
+    environment, never in YAML)."""
+    name: str
+    transport: Literal["stdio", "http"] = "stdio"
+    command: Optional[str] = None
+    args: List[str] = Field(default_factory=list)
+    url: Optional[str] = None
+    env: List[str] = Field(default_factory=list)
+    tools: List[str] = Field(default_factory=list)  # optional allowlist
+
+
+class McpConfig(BaseModel):
+    servers: List[McpServer] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     company: Company
     teams: List[Team]
     retro: RetroConfig = Field(default_factory=RetroConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
     def team(self, name: str) -> Team:
         for t in self.teams:

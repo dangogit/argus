@@ -16,7 +16,7 @@ Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
 - [x] 6. Orchestrator resilience: re-acquire advisory lock + re-LISTEN after DB connection drop
 
 ## Next - capabilities
-- [ ] 7. MCP client P0 (per docs/mcp-support.md): config, engine tool exposure, untrusted+capped output, doctor check, echo-safe
+- [x] 7. MCP client P0 (per docs/mcp-support.md): config, engine tool exposure, doctor check, echo-safe (untrusted+capped output deferred to P1/source-trust)
 - [ ] 8. MCP server read-only: argus mcp serve exposing status/alerts/proposals/lessons
 - [ ] 9. Provider breadth: OpenRouter + Ollama engine paths
 - [ ] 10. More channels: Discord + generic email gateway behind a capability-optional interface
@@ -30,3 +30,4 @@ Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
 - Item 4 (approval reliability): executor._insert_approval uses 128-bit token_hex(16) + retry-on-collision with RETURNING (guarantees an approval row exists, no more silent DO NOTHING leaving a parked action stuck). Closes the CRITICAL weak-nonce gap too. Test: tests/python/v2/test_approvals.py +2 (128-bit, collision-retry). Regression: executor/approvals/actions/pipeline 87 passed.
 - Item 5 (cost ceiling): config Defaults.max_daily_cost_usd (None=off); orchestrator/budget.py sums 24h priced runs; route_events pauses opening new work when over cap (in-flight finishes), throttled warning log. Test: tests/python/v2/test_budget.py (5). Regression: reconcile (8) + config (43).
 - Item 6 (orchestrator resilience): loop.py refactored to _acquire/_reacquire/_wait; on control-conn drop it reconnects (re-lock + re-LISTEN) or propagates RuntimeError handoff so a second orchestrator never double-runs; reconnect backoff capped 30s, gives up after 10 tries for supervisor restart. Test: tests/python/v2/test_orchestrator_loop.py +6. CHECKPOINT: full v2 suite 624 passed, 4 skipped. *** Reliability foundation (items 1-6) COMPLETE. ***
+- Item 7 (MCP client P0): config schema McpServer/McpConfig (Config.mcp); mcp/config.py validate_server + render_claude_config + materialize; worker/exec.py materializes per-run to a temp dir (not worktree -> no diff pollution) + ARGUS_CLAUDE_MCP_CONFIG; claude_code adapter passes --mcp-config; opscheck _mcp_checks (echo-safe, no live handshake = P1); example config snippet. Test: tests/python/v2/test_mcp_config.py (12). Checkpoint: full v2 suite 636 passed, 4 skipped. (Claude Code is the MCP client; Argus renders+validates. Live protocol ping + untrusted-output caps deferred to P1.)

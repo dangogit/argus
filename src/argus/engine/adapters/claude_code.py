@@ -30,6 +30,11 @@ def run(prompt: str) -> EngineResult:
     argv = [binpath, "--print"]
     if hermetic:
         argv.append("--strict-mcp-config")
+    # Operator-configured MCP servers (rendered by argus.v2.mcp.config.materialize
+    # and passed via this env var) let the agent use external MCP tools.
+    mcp_config = os.environ.get("ARGUS_CLAUDE_MCP_CONFIG")
+    if mcp_config:
+        argv += ["--mcp-config", mcp_config]
     argv += ["--permission-mode", perm, "--tools", tools]
 
     out = run_with_retries(argv, cwd=cwd, stdin_text=prompt)

@@ -26,6 +26,16 @@ company:
 retro:
   authority: propose                    # propose | auto-changes
   # company_change_team: dev            # target team for company-level auto-change PR work
+
+# Optional: external MCP servers Argus agents may call (Claude Code engine).
+# `env` lists env var NAMES to pass through; values stay in your environment.
+# `argus doctor --deep` validates each server (command on PATH, url, env set).
+# mcp:
+#   servers:
+#     - { name: filesystem, transport: stdio, command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"] }
+#     - { name: github, transport: stdio, command: gh-mcp, env: [GITHUB_TOKEN] }
+#     - { name: docs, transport: http, url: "https://mcp.example.com/sse" }
+
 teams:
   - name: dev
     project:
