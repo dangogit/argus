@@ -3,7 +3,9 @@ transaction per source: a crash rolls back both ingest and cursor, so the next
 poll re-fetches safely (fingerprint dedup makes re-ingest a no-op)."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import psycopg
 from psycopg.types.json import Json
@@ -11,6 +13,21 @@ from psycopg.types.json import Json
 import argus.v2.connectors  # noqa: F401  (registers connectors)
 from argus.v2.connectors.base import REGISTRY
 from argus.v2.ingress import events
+
+log = logging.getLogger("argus.connectors")
+
+# Exponential backoff for a failing source: 30s, 60s, 120s, ... capped at 1h.
+# Stops a dead connector (expired key, provider outage) from re-polling every
+# tick while still recovering on its own once the provider comes back.
+_BACKOFF_BASE = 30.0
+_BACKOFF_MAX = 3600.0
+
+
+def _backoff_seconds(error_count: int) -> float:
+    """Seconds to wait before the next poll after N consecutive failures."""
+    if error_count <= 0:
+        return 0.0
+    return min(_BACKOFF_BASE * (2 ** (error_count - 1)), _BACKOFF_MAX)
 
 
 @dataclass(frozen=True)
@@ -22,6 +39,7 @@ class PollPreview:
     count: int = 0
     cursor_keys: tuple[str, ...] = ()
     error_type: str = ""
+    error_count: int = 0
 
 
 def _error_label(exc: Exception) -> str:
@@ -62,6 +80,47 @@ def _load_cursor(conn, source_name: str) -> dict:
     return row[0] if row else {}
 
 
+def _load_state(conn, source_name: str) -> dict:
+    """Cursor plus failure/backoff metadata for one source."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT cursor, error_count, poll_after FROM connector_state WHERE source_name=%s",
+            (source_name,))
+        row = cur.fetchone()
+    if not row:
+        return {"cursor": {}, "error_count": 0, "poll_after": None}
+    return {"cursor": row[0] or {}, "error_count": row[1] or 0, "poll_after": row[2]}
+
+
+def _record_failure(conn, source_name: str, exc: Exception, error_count: int) -> None:
+    """Persist a connector failure and schedule the next poll after a backoff.
+    Runs after the failed poll's transaction was rolled back, on a fresh write."""
+    delay = _backoff_seconds(error_count)
+    label = _error_label(exc)
+    log.warning("connector %s failed (%d in a row): %s; backing off %.0fs",
+                source_name, error_count, label, delay)
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO connector_state
+                   (source_name, error_count, last_error, last_error_at, poll_after, updated_at)
+               VALUES (%s,%s,%s, now(), now() + make_interval(secs => %s), now())
+               ON CONFLICT (source_name) DO UPDATE SET
+                   error_count=EXCLUDED.error_count, last_error=EXCLUDED.last_error,
+                   last_error_at=EXCLUDED.last_error_at, poll_after=EXCLUDED.poll_after,
+                   updated_at=now()""",
+            (source_name, error_count, label, delay))
+
+
+def _clear_failure(conn, source_name: str) -> None:
+    """Reset failure/backoff state after a successful poll."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE connector_state
+               SET error_count=0, last_error=NULL, poll_after=NULL, updated_at=now()
+               WHERE source_name=%s""",
+            (source_name,))
+
+
 def _save_cursor(conn, source_name: str, cursor: dict) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -74,7 +133,9 @@ def _save_cursor(conn, source_name: str, cursor: dict) -> None:
 
 def poll_once(conn: psycopg.Connection, cfg, *,
               source_names: set[str] | None = None,
-              source_types: set[str] | None = None) -> int:
+              source_types: set[str] | None = None,
+              now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
     total = 0
     for source, team in _iter_sources(cfg):
         if source_names and source.name not in source_names:
@@ -83,18 +144,25 @@ def poll_once(conn: psycopg.Connection, cfg, *,
             continue
         if source.type not in REGISTRY:
             continue
-        cursor = _load_cursor(conn, source.name)
+        state = _load_state(conn, source.name)
+        if state["poll_after"] and state["poll_after"] > now:
+            continue  # in backoff window after recent failures; skip this tick
+        cursor = state["cursor"]
         connector = REGISTRY[source.type]()
         try:
             signals, new_cursor = connector.poll(source, cursor)
-        except Exception:
-            conn.rollback()
-            continue  # a failing source must not block the others
+        except Exception as exc:
+            conn.rollback()  # a failing source must not block the others
+            _record_failure(conn, source.name, exc, state["error_count"] + 1)
+            conn.commit()
+            continue
         for sig in signals:
             events.ingest_signal(conn, cfg, team=team, source=source.name,
                                  fingerprint=sig.fingerprint, payload=sig.payload)
             total += 1
         _save_cursor(conn, source.name, new_cursor)
+        if state["error_count"]:
+            _clear_failure(conn, source.name)  # recovered: reset backoff
         conn.commit()
     return total
 
@@ -110,7 +178,8 @@ def dry_run(conn: psycopg.Connection, cfg, *,
             continue
         if source.type not in REGISTRY:
             continue
-        cursor = _load_cursor(conn, source.name)
+        state = _load_state(conn, source.name)
+        cursor = state["cursor"]
         connector = REGISTRY[source.type]()
         try:
             signals, new_cursor = connector.poll(source, cursor)
@@ -122,6 +191,7 @@ def dry_run(conn: psycopg.Connection, cfg, *,
                 team=team,
                 ok=False,
                 error_type=_error_label(exc),
+                error_count=state["error_count"] + 1,
             ))
             continue
         conn.rollback()

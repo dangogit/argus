@@ -40,13 +40,77 @@ def render(unit: Unit) -> bytes:
     return plistlib.dumps(data, sort_keys=False)
 
 
-def write_units(units: Iterable[Unit], out_dir: Path) -> list[Path]:
+def _unit_name(unit: "Unit") -> str:
+    return unit.label.split(".")[-1]
+
+
+def render_systemd(unit: Unit) -> tuple[str, str | None]:
+    """Render a Unit as a systemd .service string (+ a .timer string for
+    interval units). Mirrors the launchd bundle so Linux gets the same
+    opinionated serve/up/poll/retro/watchdog/backup/logrotate set out of the
+    box, not just a generic host-job renderer."""
+    import shlex
+    name = _unit_name(unit)
+    # systemd treats '%' as a specifier; escape it as '%%' in env values and the
+    # ExecStart line, or a DB password containing '%' is silently mangled.
+    def esc(s: str) -> str:
+        return s.replace("%", "%%")
+    env_lines = [f'Environment="{k}={esc(v)}"' for k, v in sorted(unit.env.items())]
+    service_type = "simple" if unit.keep_alive else "oneshot"
+    service = [
+        "[Unit]",
+        f"Description=Argus {unit.label}",
+        "",
+        "[Service]",
+        f"Type={service_type}",
+        *env_lines,
+        "ExecStart=" + esc(" ".join(shlex.quote(a) for a in unit.argv)),
+    ]
+    if unit.keep_alive:
+        # Only long-running services get [Install]; a timer-driven oneshot is
+        # started by its .timer, so enabling its .service would double-fire it.
+        service += ["Restart=on-failure", "RestartSec=5",
+                    "", "[Install]", "WantedBy=default.target"]
+    service.append("")
+    timer = None
+    if unit.start_interval is not None:
+        timer = "\n".join([
+            "[Unit]",
+            f"Description=Argus timer {unit.label}",
+            "",
+            "[Timer]",
+            f"Unit=argus-{name}.service",
+            "OnBootSec=60s",
+            f"OnUnitActiveSec={unit.start_interval}s",
+            "Persistent=true",
+            "",
+            "[Install]",
+            "WantedBy=timers.target",
+            "",
+        ])
+    return "\n".join(service), timer
+
+
+def write_units(units: Iterable[Unit], out_dir: Path, *, os_name: str = "macos") -> list[Path]:
+    """Write the bundle as launchd plists (macos) or systemd units (linux)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for unit in units:
-        path = out_dir / f"{unit.label}.plist"
-        path.write_bytes(render(unit))
-        written.append(path)
+        if os_name == "linux":
+            name = _unit_name(unit)
+            service_text, timer_text = render_systemd(unit)
+            sp = out_dir / f"argus-{name}.service"
+            sp.write_text(service_text, encoding="utf-8")
+            os.chmod(sp, 0o600)  # Environment= lines can carry the DB DSN/secrets
+            written.append(sp)
+            if timer_text is not None:
+                tp = out_dir / f"argus-{name}.timer"
+                tp.write_text(timer_text, encoding="utf-8")
+                written.append(tp)
+        else:
+            path = out_dir / f"{unit.label}.plist"
+            path.write_bytes(render(unit))
+            written.append(path)
     return written
 
 

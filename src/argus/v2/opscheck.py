@@ -62,7 +62,22 @@ def doctor_deep(config_path: Path | None, *, live: bool = False,
         cfg, require_each_team_source_types or set()))
     checks.extend(_required_team_source_type_checks(cfg, require_team_source_types or set()))
     checks.extend(_connector_checks(cfg, live=live))
+    checks.extend(_mcp_checks(cfg))
     return checks, _rc(checks)
+
+
+def _mcp_checks(cfg) -> list[Check]:
+    """Validate each configured MCP server (command on PATH, url shape, env
+    present). Echo-safe: no live protocol handshake (that is P1)."""
+    from argus.v2.mcp import config as mcp_config
+    out: list[Check] = []
+    for s in getattr(getattr(cfg, "mcp", None), "servers", []) or []:
+        errs = mcp_config.validate_server(s)
+        if errs:
+            out.append(Check("mcp", s.name, "blocked", "; ".join(errs)))
+        else:
+            out.append(Check("mcp", s.name, "ok", f"transport={s.transport}"))
+    return out
 
 
 def go_live(config_path: Path | None, *, mode: str = "chat-only",

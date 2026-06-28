@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-EngineName = Literal["echo", "scripted", "codex", "claude-code", "hermes"]
+EngineName = Literal["echo", "scripted", "codex", "claude-code", "hermes", "openrouter", "ollama"]
 RoleKind = Literal["front", "builder", "judge", "worker"]
 ActionRisk = Literal["reversible_internal", "personal_outward", "irreversible_outward"]
 AutonomyMode = Literal["auto", "approval"]
@@ -31,7 +31,9 @@ class SourceRef(BaseModel):
 
 
 class ChannelBinding(BaseModel):
-    type: Literal["whatsapp", "telegram", "discord", "slack", "cli", "fake"]
+    # Validated against the live channel REGISTRY in the loader (single source of
+    # truth), not a closed Literal that drifts as channels are added.
+    type: str
     role: Literal["control", "outward"] = "control"
     channel_id: str
     secret_ref: Optional[str] = None
@@ -126,6 +128,10 @@ class Defaults(BaseModel):
     support: dict = Field(default_factory=dict)
     webhook_secret: Optional[str] = None
     embedder: Optional[dict] = None
+    # Global ceiling on rolling 24h LLM spend (USD). When reached the
+    # orchestrator stops opening new work until spend drops; in-flight jobs
+    # still finish. None disables the cap (default).
+    max_daily_cost_usd: Optional[float] = None
 
 
 class Company(BaseModel):
@@ -173,6 +179,9 @@ class Team(BaseModel):
     sources: List[SourceRef] = Field(default_factory=list)
     channels: List[ChannelBinding] = Field(default_factory=list)
     project: Optional[Project] = None
+    # Per-team rolling 24h spend cap (USD). Overrides nothing else; when this
+    # team is over it, only this team's new work pauses. None = no team cap.
+    max_daily_cost_usd: Optional[float] = None
 
     def role(self, name: str) -> Role:
         for r in self.roles:
@@ -186,10 +195,28 @@ class RetroConfig(BaseModel):
     company_change_team: Optional[str] = None
 
 
+class McpServer(BaseModel):
+    """An external MCP server Argus agents may call. stdio: command + args.
+    http: url. env lists env var NAMES to pass through (values stay in the
+    environment, never in YAML)."""
+    name: str
+    transport: Literal["stdio", "http"] = "stdio"
+    command: Optional[str] = None
+    args: List[str] = Field(default_factory=list)
+    url: Optional[str] = None
+    env: List[str] = Field(default_factory=list)
+    tools: List[str] = Field(default_factory=list)  # optional allowlist
+
+
+class McpConfig(BaseModel):
+    servers: List[McpServer] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     company: Company
     teams: List[Team]
     retro: RetroConfig = Field(default_factory=RetroConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
     def team(self, name: str) -> Team:
         for t in self.teams:

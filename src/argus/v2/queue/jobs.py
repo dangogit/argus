@@ -3,6 +3,7 @@ fencing token). Heartbeat/finalize/reclaim land in Task 5."""
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from datetime import datetime, timezone
 from typing import Optional
@@ -11,6 +12,8 @@ import psycopg
 from psycopg.types.json import Json
 
 from argus.v2.queue.models import Job
+
+log = logging.getLogger("argus.queue")
 
 _JOB_COLS = ("id, request_id, event_id, conversation_id, team_id, role, stage, "
              "kind, status, attempts, max_attempts, claim_token, exec_snapshot, payload")
@@ -82,7 +85,11 @@ def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120)
             (f"{worker_id}@{socket.gethostname()}", lease_seconds),
         )
         row = cur.fetchone()
-        return _row_to_job(row) if row else None
+        if not row:
+            return None
+        job = _row_to_job(row)
+        log.info("claimed job %s (kind=%s role=%s) by %s", job.id, job.kind, job.role, worker_id)
+        return job
 
 
 from argus.v2.queue.models import ActionIntent, RunRecord  # noqa: E402
@@ -119,8 +126,10 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
         )
         row = cur.fetchone()
         if not row:
+            log.warning("finalize fenced out for job %s (stale token or reclaimed)", job_id)
             return False  # fenced out: stale token or already reclaimed
         attempt = row[0]
+        log.info("finalized job %s status=%s attempt=%s", job_id, status, attempt)
         cur.execute(
             """
             INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
@@ -163,4 +172,7 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
             WHERE status IN ('claimed','running') AND lease_expires_at < now()
             """,
         )
-        return cur.rowcount
+        n = cur.rowcount
+        if n:
+            log.warning("reclaimed %d expired job(s) (worker crash or lease timeout)", n)
+        return n

@@ -183,11 +183,11 @@ def test_unsupported_channel_type_fails_validation(tmp_path):
         "  - name: t\n"
         "    roles: [ { name: r, kind: builder, prompt: p } ]\n"
         "    pipeline: { stages: [r] }\n"
-        "    channels: [ { type: discord, role: control, channel_id: C123 } ]\n",
+        "    channels: [ { type: mastodon, role: control, channel_id: C123 } ]\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(loader.ConfigError, match="unsupported channel type 'discord'"):
+    with pytest.raises(loader.ConfigError, match="unsupported channel type 'mastodon'"):
         loader.load(yaml)
 
 

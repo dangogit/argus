@@ -22,6 +22,8 @@ This page is ready for GitHub Pages with the repository Pages source set to
 | Goal | Read |
 |---|---|
 | Understand the product vision | [Vision](https://github.com/dangogit/argus/blob/main/VISION.md) |
+| Compare Argus to other agent projects | [Competitive Landscape](competitive.md) |
+| See what is planned next | [Roadmap](https://github.com/dangogit/argus/blob/main/ROADMAP.md) |
 | Install Argus from GitHub | [Install](https://github.com/dangogit/argus#install) |
 | Prove local runtime with no model keys | [Quickstart](quickstart.md) |
 | Let Codex or Claude Code install Argus | [Agent Guide](https://github.com/dangogit/argus/blob/main/AGENTS.md) and [Argus Live Onboarding Skill](https://github.com/dangogit/argus/blob/main/skills/argus-live-onboarding/SKILL.md) |

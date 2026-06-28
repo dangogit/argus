@@ -1,9 +1,10 @@
 # Argus dashboard
 
-A read-only Next.js 15 console for Argus. Two pages:
+A read-only Next.js 15 console for Argus. Main surfaces:
 
-- `/` attention feed: warn, error, and critical alerts, most recent first.
-- `/details` everything: all alerts plus proposed fixes.
+- `/` operational summary, proposed fixes, and attention feed.
+- `/details` all alerts plus proposed fixes.
+- `/login` browser token form for setting the protected cookie.
 
 It reads v2 state from Postgres at request time. It never mutates anything.
 There is no WhatsApp webhook and no write API here.
@@ -11,7 +12,9 @@ There is no WhatsApp webhook and no write API here.
 ## Data source
 
 The dashboard reads `alerts`, `actions`, and `requests` through `ARGUS_DB_DSN`
-or `DATABASE_URL`.
+or `DATABASE_URL`. It also summarizes `events`, `jobs`, and `runs` when the
+full v2 schema is present. DB read failures render as dashboard errors instead
+of crashing the page.
 
 ## Develop
 

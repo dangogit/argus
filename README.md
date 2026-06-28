@@ -31,6 +31,22 @@ fixes, and open safe pull requests.
   <a href="docs/engines.md"><img src="docs/assets/claude-code-icon.svg" alt="Claude Code engine" width="34" height="34"></a>
 </p>
 
+<p>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/vercel.svg" alt="Vercel" title="Vercel" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/posthog.svg" alt="PostHog" title="PostHog" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/supabase.svg" alt="Supabase" title="Supabase" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/sentry.svg" alt="Sentry" title="Sentry" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/fly.svg" alt="Fly.io" title="Fly.io" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/firebase.svg" alt="Firebase" title="Firebase" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/github.svg" alt="GitHub" title="GitHub" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/postgres.svg" alt="Postgres" title="Postgres" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/http.svg" alt="OpenAPI" title="OpenAPI" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/uptime.svg" alt="Uptime" title="Uptime" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/webhook.svg" alt="Webhook" title="Webhook" width="30" height="30"></a>
+  <a href="docs/support.md"><img src="docs/assets/platform-icons/email.svg" alt="Support email" title="Support email" width="30" height="30"></a>
+  <a href="docs/operations.md"><img src="docs/assets/platform-icons/branch-drift.svg" alt="Branch drift" title="Branch drift" width="30" height="30"></a>
+</p>
+
 [Quickstart](docs/quickstart.md) |
 [Docs](docs/index.md) |
 [Vision](VISION.md) |
@@ -77,29 +93,29 @@ Setup questions belong in
 ## How Argus Compares
 
 Most open-source agents are **personal assistants that act on your behalf by
-default**. Argus is the opposite by design: a **propose-only company of agents
-for software operations** that watches your real systems and routes work to
-humans who decide. It is the only one of the three below built around a durable
-Postgres runtime and a software-project trust boundary.
+default** (OpenClaw, Hermes, NanoClaw). The one true peer is **Paperclip** -
+also a "company of agents for work." Argus's difference from all of them: it is
+**propose-only and it watches your production**. It reacts to incidents,
+deploys, and errors and proposes fixes - it is not a board you assign agents to.
 
-| | **Argus** | OpenClaw | Hermes Agent |
-|---|:---:|:---:|:---:|
-| **Built for** | Software ops (a company of agents) | Personal assistant | Personal agent |
-| **Default trust model** | ✅ **Propose-only, approval-gated** | Auto-executes on host | Auto-executes + gates |
-| **Reads your stack as signals** | ✅ **13 ops connectors** | – | – |
-| **GitHub / Sentry / Vercel / PostHog / Supabase / Fly / uptime aware** | ✅ **First-class** | – | – |
-| **Draft-PR loop with QA + eval judge** | ✅ **Built-in** | – | – |
-| **Durable runtime (Postgres queues, approvals, retries)** | ✅ **Yes** | Chat gateway | Gateway + TUI |
-| **Role pipeline (builder → QA → senior)** | ✅ **Yes** | – | – |
-| **Daily retro / learning loop** | ✅ **Curated lessons** | – | Self-modeling |
-| **Engine-agnostic workers** | ✅ **echo / Codex / Claude Code / Hermes** | own loop | own loop |
-| **Self-hosted, you own DB + secrets** | ✅ **Always** | ✅ | ✅ |
-| Consumer messaging channels | 3 (Slack/WA/TG) | 22+ | 8 |
-| Model-provider breadth | engine CLIs | "all major" | 200+ |
-| MCP support | on the roadmap | – | ✅ |
+| | **Argus** | Paperclip | OpenClaw | Hermes |
+|---|:---:|:---:|:---:|:---:|
+| **Built for** | Software ops, propose-only | Agent org + kanban | Personal assistant | Personal agent |
+| **Default trust model** | ✅ **Propose-only, approval-gated** | Execute-first, gates optional | Auto-executes | Auto-executes |
+| **Watches production as signals** | ✅ **13 ops connectors** | – | – | – |
+| **Sentry / Vercel / PostHog / Fly / uptime aware** | ✅ **First-class** | – | – | – |
+| **Daily retro / learning loop** | ✅ **Built-in** | – | – | Self-modeling |
+| **Pushes to Slack / WhatsApp / Telegram** | ✅ **Yes** | Web UI only | ✅ | ✅ |
+| **Eval-judged draft-PR loop** | ✅ **Built-in** | Pipeline + approval | – | – |
+| Durable runtime (Postgres, retries) | ✅ | ✅ | Chat gateway | Gateway + TUI |
+| Multi-agent roles | builder → QA → senior | Named org chart | – | Subagents |
+| Engine-agnostic workers | echo/Codex/Claude/Hermes | Many adapters | own loop | own loop |
+| Self-hosted, you own DB + secrets | ✅ | ✅ | ✅ | ✅ |
+| Per-agent budget caps | on the roadmap | ✅ | – | observability |
+| MCP support | on the roadmap | ✅ | – | ✅ |
 
-Argus even **runs Hermes Agent as one of its execution engines** - the two are
-complementary, not just rivals.
+Argus even **runs Hermes Agent as one of its execution engines** - several of
+these are complementary, not just rivals.
 
 **What Argus does not do, on purpose:** it is not a general personal assistant,
 it does not auto-merge or auto-deploy, it is not a hosted SaaS that holds your

@@ -17,6 +17,10 @@
   for pipx, uv, and source installs.
 - [Showcase](docs/showcase.md): common `chat-only`, `monitor-only`, and
   `pm-propose-pr` deployment paths with proof points.
+- [Competitive Landscape](docs/competitive.md): how Argus compares to Paperclip,
+  Hermes, OpenClaw, and NanoClaw, what it does differently by design, and the
+  improvement backlog behind the roadmap.
+- [Roadmap](ROADMAP.md): Now, Next, and Later priorities, plus non-goals.
 - [Public Launch Checklist](docs/public-launch.md): repo, GitHub, package, and
   smoke-test checks before making Argus public.
 - [GitHub Releases](https://github.com/dangogit/argus/releases): current source

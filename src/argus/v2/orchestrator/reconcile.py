@@ -2,7 +2,9 @@
 NOTIFY only adds latency. Idempotent; safe to run on a timer."""
 from __future__ import annotations
 
+import logging
 import shutil
+import time
 
 import psycopg
 from psycopg.types.json import Json
@@ -11,12 +13,30 @@ from argus.v2.actions import approvals, executor
 from argus.v2.front import front
 from argus.v2.ingress import events as ingress_events
 from argus.v2.ingress.media import run_root
-from argus.v2.orchestrator import context_router, pipeline
+from argus.v2.orchestrator import budget, context_router, pipeline
 from argus.v2.queue import jobs
 from argus.v2.queue.models import ActionIntent, Job
 
+log = logging.getLogger("argus.orchestrator")
+
+# Throttle the "budget reached" log so a 2s poll loop does not spam it.
+_BUDGET_LOG_EVERY = 300.0  # seconds
+_last_budget_log = 0.0
+
+
+def _log_budget_paused(cfg) -> None:
+    global _last_budget_log
+    nowm = time.monotonic()
+    if nowm - _last_budget_log >= _BUDGET_LOG_EVERY:
+        _last_budget_log = nowm
+        log.warning("daily cost ceiling ($%.2f) reached; pausing new work until spend drops",
+                    budget.ceiling(cfg))
+
 
 def route_events(conn, cfg) -> int:
+    if budget.over_budget(conn, cfg):
+        _log_budget_paused(cfg)
+        return 0  # pause opening new work; in-flight jobs still finish
     rows = ingress_events.claim_unprocessed(conn)
     handled = 0
     for (eid, team_id, kind, conv_id, dedup_key, payload) in rows:
@@ -26,6 +46,14 @@ def route_events(conn, cfg) -> int:
                 cur.execute("UPDATE events SET status='processed', processed_at=now() WHERE id=%s",
                             (eid,))
             handled += 1
+            continue
+        # Per-team budget: defer this team's event (back to 'received' with a
+        # short backoff so the claim loop skips it instead of churning every
+        # tick) when the team is over its own cap; other teams proceed.
+        if budget.over_budget(conn, cfg, team_id):
+            with conn.cursor() as cur:
+                cur.execute("UPDATE events SET status='received', "
+                            "defer_until=now() + interval '60 seconds' WHERE id=%s", (eid,))
             continue
         channel_ref = _channel_ref(conn, conv_id)
         if kind == "signal":

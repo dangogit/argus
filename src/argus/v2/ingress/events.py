@@ -88,7 +88,9 @@ def claim_unprocessed(conn: psycopg.Connection, limit: int = 20) -> list:
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE events SET status='processing'
-               WHERE id IN (SELECT id FROM events WHERE status='received'
+               WHERE id IN (SELECT id FROM events
+                            WHERE status='received'
+                              AND (defer_until IS NULL OR defer_until <= now())
                             ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT %s)
                RETURNING id, team_id, kind, conversation_id, dedup_key, payload""",
             (limit,))

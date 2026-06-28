@@ -2,6 +2,7 @@
 fencing token. The caller drives the loop (CLI `up`)."""
 from __future__ import annotations
 
+import logging
 import subprocess
 from datetime import datetime, timezone
 from threading import Event, Thread
@@ -14,7 +15,10 @@ from argus.v2.queue import jobs
 from argus.v2.queue.models import RunRecord
 from argus.v2.roles import contracts
 from argus.v2.worker import exec as job_exec
+from argus.v2.worker import liveness
 from argus.v2.workspace import repo as workspace
+
+log = logging.getLogger("argus.worker")
 
 _TEST_OUTPUT_LIMIT = 12000
 
@@ -103,6 +107,14 @@ def run_once(cfg, worker_id: str) -> bool:
                         parsed.setdefault("analysis", run.output or "No change produced.")
                         result["parsed"] = parsed
 
+            # Deterministic liveness: surface a run that ended without making
+            # progress (planned only / blocked / waiting on approval / missing
+            # creds) instead of letting it look silently done.
+            result["liveness"] = liveness.classify(run.output or "",
+                                                    has_diff=result.get("has_diff"))
+            if result["liveness"] in liveness.STUCK:
+                log.info("job %s liveness=%s (no forward progress)", job.id, result["liveness"])
+
             status = "done" if run.status == "ok" else "failed"
             jobs.finalize(conn, job.id, job.claim_token, status=status,
                           result=result, run=run, actions=actions)
@@ -110,6 +122,7 @@ def run_once(cfg, worker_id: str) -> bool:
             return True
         except Exception as exc:
             message = f"Worker failed before completion: {type(exc).__name__}: {exc}"
+            log.warning("job %s failed: %s", job.id, message, exc_info=True)
             result = {
                 "error": str(exc),
                 "error_type": type(exc).__name__,
