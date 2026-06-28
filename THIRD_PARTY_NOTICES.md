@@ -9,8 +9,14 @@ file before every public release.
 
 ## Logo Assets
 
-README platform logo SVGs are sourced from Simple Icons, licensed under
-CC0-1.0. Product names and marks remain property of their respective owners.
+README platform logo SVGs are sourced from Simple Icons and LobeHub Icons.
+Simple Icons is licensed under CC0-1.0. LobeHub Icons is licensed under MIT.
+Slack, WhatsApp, Telegram, and Gmail logo SVGs are copied from SVG Repo.
+Product names and marks remain property of their respective owners.
+
+- Simple Icons: <https://simpleicons.org/>
+- LobeHub Icons: <https://github.com/lobehub/lobe-icons>
+- SVG Repo: <https://www.svgrepo.com/>
 
 ## Declared Runtime Dependencies
 

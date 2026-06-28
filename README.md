@@ -22,13 +22,19 @@ fixes, and open safe pull requests.
 </p>
 
 <p>
-  <a href="docs/README.md"><img src="docs/assets/argus-icon.svg" alt="Argus docs" width="34" height="34"></a>
-  <a href="docs/slack-live.md"><img src="docs/assets/slack-icon.svg" alt="Slack setup" width="34" height="34"></a>
-  <a href="docs/inbound.md"><img src="docs/assets/whatsapp-icon.svg" alt="WhatsApp inbound" width="34" height="34"></a>
-  <a href="docs/inbound.md"><img src="docs/assets/telegram-icon.svg" alt="Telegram inbound" width="34" height="34"></a>
-  <a href="docs/support.md"><img src="docs/assets/gmail-icon.svg" alt="Gmail support" width="34" height="34"></a>
-  <a href="docs/engines.md"><img src="docs/assets/codex-icon.png" alt="Codex engine" width="34" height="34"></a>
-  <a href="docs/engines.md"><img src="docs/assets/claude-code-icon.svg" alt="Claude Code engine" width="34" height="34"></a>
+  <a href="docs/README.md"><img src="docs/assets/argus-icon.svg" alt="Argus docs" title="Argus" width="64" height="64"></a>
+</p>
+
+<p>
+  <a href="docs/engines.md"><img src="docs/assets/codex-icon.svg" alt="Codex engine" title="Codex" width="40" height="40"></a>
+  <a href="docs/engines.md"><img src="docs/assets/claude-code-icon.svg" alt="Claude Code engine" title="Claude Code" width="40" height="40"></a>
+</p>
+
+<p>
+  <a href="docs/slack-live.md"><img src="docs/assets/slack-icon.svg" alt="Slack setup" title="Slack" width="34" height="34"></a>
+  <a href="docs/inbound.md"><img src="docs/assets/whatsapp-icon.svg" alt="WhatsApp inbound" title="WhatsApp" width="34" height="34"></a>
+  <a href="docs/inbound.md"><img src="docs/assets/telegram-icon.svg" alt="Telegram inbound" title="Telegram" width="34" height="34"></a>
+  <a href="docs/support.md"><img src="docs/assets/gmail-icon.svg" alt="Gmail support" title="Gmail" width="34" height="34"></a>
 </p>
 
 <p>
@@ -41,10 +47,6 @@ fixes, and open safe pull requests.
   <a href="docs/triage.md"><img src="docs/assets/platform-icons/github.svg" alt="GitHub" title="GitHub" width="30" height="30"></a>
   <a href="docs/triage.md"><img src="docs/assets/platform-icons/postgres.svg" alt="Postgres" title="Postgres" width="30" height="30"></a>
   <a href="docs/triage.md"><img src="docs/assets/platform-icons/http.svg" alt="OpenAPI" title="OpenAPI" width="30" height="30"></a>
-  <a href="docs/triage.md"><img src="docs/assets/platform-icons/uptime.svg" alt="Uptime" title="Uptime" width="30" height="30"></a>
-  <a href="docs/triage.md"><img src="docs/assets/platform-icons/webhook.svg" alt="Webhook" title="Webhook" width="30" height="30"></a>
-  <a href="docs/support.md"><img src="docs/assets/platform-icons/email.svg" alt="Support email" title="Support email" width="30" height="30"></a>
-  <a href="docs/operations.md"><img src="docs/assets/platform-icons/branch-drift.svg" alt="Branch drift" title="Branch drift" width="30" height="30"></a>
 </p>
 
 [Quickstart](docs/quickstart.md) |
