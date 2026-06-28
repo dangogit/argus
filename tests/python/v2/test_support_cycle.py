@@ -341,6 +341,36 @@ def test_guidance_reply_learns_and_sends_with_explicit_send(tmp_path, monkeypatc
     assert state.latest_action("luma", "T3") == "replied"
 
 
+def test_context_bare_approval_sends_proposed_reply(tmp_path, monkeypatch, conn):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    cfg = _support_cfg(tmp_path)
+    guidance = state.register_guidance_request(
+        "luma", "T7", "u@example.com", "Export", "Can we answer this?",
+        "Click Settings then Export.", "From: u@example.com\nHow do I export?")
+    req = state.guidance_request("luma", guidance.id)
+    sent = []
+
+    class Transport(FakeTransport):
+        def __init__(self, **kwargs):
+            super().__init__()
+
+        def reply(self, thread_id, body):
+            sent.append((thread_id, body))
+
+    monkeypatch.setattr(cycle, "AppsScriptTransport", Transport)
+
+    result = cycle.handle_context_message(
+        conn, cfg, team_id="luma",
+        context={"context_ref": guidance.id, "payload": req},
+        text="send",
+    )
+    conn.commit()
+
+    assert result.handled is True
+    assert sent == [("T7", "Click Settings then Export.")]
+    assert state.latest_action("luma", "T7") == "replied"
+
+
 def test_context_retry_request_shows_email_without_learning(tmp_path, monkeypatch, conn):
     monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
     cfg = _support_cfg(tmp_path)
