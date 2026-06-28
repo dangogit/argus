@@ -6,6 +6,44 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- MCP client: configure external MCP servers in `argus.yaml` (`mcp.servers`);
+  Argus validates them (`argus doctor --deep`) and feeds them to the Claude Code
+  engine per run.
+- MCP server: `argus mcp serve` exposes read-only `argus_status`, `argus_alerts`,
+  `argus_lessons`, and `argus_proposals` tools over stdio JSON-RPC (local,
+  single-operator trust boundary).
+- Engines: `openrouter` and `ollama` (OpenAI-compatible HTTP), so engine choice
+  is not tied to a vendor CLI.
+- Channels: `discord` (poll inbound + send) and `email` (SMTP outbound; inbound
+  via the existing `email_imap` connector).
+- Budgets: `company.defaults.max_daily_cost_usd` and per-team
+  `max_daily_cost_usd` pause new work when 24h spend reaches the cap; in-flight
+  jobs still finish.
+- Linux parity: `argus launchd render --os linux` emits systemd `.service`/
+  `.timer` units for the full serve/up/poll/retro/watchdog/backup/logrotate
+  bundle.
+
+### Changed
+
+- Orchestrator survives a crashing sweep (logs + backs off instead of exiting)
+  and reconnects after a control-connection drop, handing off cleanly when
+  another orchestrator holds the advisory lock.
+- Run-liveness: a worker run that only planned, blocked, awaited approval, or hit
+  a missing credential is classified and surfaced instead of looking done.
+- Connectors back off on failure and record `error_count`/`last_error` instead
+  of silently retrying a dead provider every tick.
+
+### Fixed / Security
+
+- Approval token widened to 128 bits with a collision-safe insert (no more
+  brute-forceable token, no approval left permanently stuck).
+- MCP-rendered config and Linux systemd unit files are written `0600`; systemd
+  `Environment=`/`ExecStart` escape `%` so a DB password with `%` is not
+  mangled; email send enforces STARTTLS before auth and rejects header
+  injection.
+
 ## [0.2.0] - 2026-06-26
 
 ### Changed
