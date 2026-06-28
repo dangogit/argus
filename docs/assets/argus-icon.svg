@@ -1,23 +1,53 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="argus-icon-title argus-icon-desc" width="256" height="256" viewBox="0 0 256 256">
   <title id="argus-icon-title">Argus icon</title>
-  <desc id="argus-icon-desc">Watchful eye inside rounded square.</desc>
+  <desc id="argus-icon-desc">Warm all-seeing aperture mark inspired by Argus Panoptes.</desc>
   <defs>
-    <linearGradient id="argus-bg" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#111827"/>
-      <stop offset="1" stop-color="#020617"/>
+    <radialGradient id="argus-bg" cx="50%" cy="24%" r="82%">
+      <stop offset="0" stop-color="#3c2a21"/>
+      <stop offset=".58" stop-color="#1f1713"/>
+      <stop offset="1" stop-color="#0f0b09"/>
+    </radialGradient>
+    <linearGradient id="argus-lid" x1="48" y1="82" x2="208" y2="174" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f4f3ee"/>
+      <stop offset=".5" stop-color="#d49a6a"/>
+      <stop offset="1" stop-color="#c15f3c"/>
     </linearGradient>
-    <linearGradient id="argus-eye" x1="55" y1="94" x2="201" y2="162" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#38bdf8"/>
-      <stop offset=".52" stop-color="#eef6ff"/>
-      <stop offset="1" stop-color="#f59e0b"/>
-    </linearGradient>
+    <radialGradient id="argus-iris" cx="42%" cy="34%" r="70%">
+      <stop offset="0" stop-color="#f8e4bf"/>
+      <stop offset=".38" stop-color="#d49a6a"/>
+      <stop offset="1" stop-color="#7a3e2d"/>
+    </radialGradient>
+    <filter id="argus-glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity=".45"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#d49a6a" flood-opacity=".26"/>
+    </filter>
   </defs>
-  <rect width="256" height="256" rx="54" fill="url(#argus-bg)"/>
-  <rect x="18" y="18" width="220" height="220" rx="44" fill="none" stroke="#334155" stroke-width="2"/>
-  <path d="M55 128c42-52 104-52 146 0-42 52-104 52-146 0Z" fill="#e5edf6"/>
-  <path d="M55 128c42-52 104-52 146 0-42 52-104 52-146 0Z" fill="none" stroke="url(#argus-eye)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="128" cy="128" r="34" fill="#dbeafe"/>
-  <circle cx="128" cy="128" r="16" fill="#020617"/>
-  <circle cx="137" cy="118" r="5.5" fill="#f8fafc"/>
-  <path d="M128 53v25M128 178v25M53 128h25M178 128h25" stroke="#f8fafc" stroke-width="7" stroke-linecap="round"/>
+
+  <rect width="256" height="256" rx="56" fill="url(#argus-bg)"/>
+  <path d="M38 128c28-54 63-81 90-81s62 27 90 81c-28 54-63 81-90 81s-62-27-90-81Z" fill="#17120f" stroke="#5f4436" stroke-width="2"/>
+  <path d="M55 128c23-31 49-46 73-46s50 15 73 46c-23 31-49 46-73 46s-50-15-73-46Z" fill="#f4f3ee"/>
+  <path d="M55 128c23-31 49-46 73-46s50 15 73 46c-23 31-49 46-73 46s-50-15-73-46Z" fill="none" stroke="url(#argus-lid)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g opacity=".78" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M128 47v29M128 180v29M47 128h29M180 128h29" stroke="#b1ada1" stroke-width="5"/>
+    <path d="M72 72l20 20M184 72l-20 20M72 184l20-20M184 184l-20-20" stroke="#8b6753" stroke-width="4"/>
+  </g>
+
+  <g filter="url(#argus-glow)">
+    <circle cx="128" cy="128" r="35" fill="#2a1c16" stroke="#c15f3c" stroke-width="5"/>
+    <circle cx="128" cy="128" r="24" fill="url(#argus-iris)"/>
+    <circle cx="128" cy="128" r="11" fill="#0f0b09"/>
+    <circle cx="137" cy="117" r="5" fill="#fff7e8"/>
+  </g>
+
+  <g fill="#d49a6a" stroke="#0f0b09" stroke-width="4">
+    <circle cx="128" cy="40" r="9"/>
+    <circle cx="190" cy="66" r="8"/>
+    <circle cx="216" cy="128" r="9"/>
+    <circle cx="190" cy="190" r="8"/>
+    <circle cx="128" cy="216" r="9"/>
+    <circle cx="66" cy="190" r="8"/>
+    <circle cx="40" cy="128" r="9"/>
+    <circle cx="66" cy="66" r="8"/>
+  </g>
 </svg>
