@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-EngineName = Literal["echo", "scripted", "codex", "claude-code", "hermes"]
+EngineName = Literal["echo", "scripted", "codex", "claude-code", "hermes", "openrouter", "ollama"]
 RoleKind = Literal["front", "builder", "judge", "worker"]
 ActionRisk = Literal["reversible_internal", "personal_outward", "irreversible_outward"]
 AutonomyMode = Literal["auto", "approval"]

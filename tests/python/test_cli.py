@@ -6,7 +6,8 @@ from argus.cli import main
 def test_engine_list(capsys):
     rc = main(["engine", "list"])
     assert rc == 0
-    assert capsys.readouterr().out.splitlines() == ["claude-code", "codex", "echo", "hermes"]
+    assert capsys.readouterr().out.splitlines() == [
+        "claude-code", "codex", "echo", "hermes", "ollama", "openrouter"]
 
 
 def test_engine_run_echo(capsys):
