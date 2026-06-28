@@ -104,6 +104,52 @@ def test_signal_fingerprint_dedups_open_request(conn, cfg):
     assert r1 is not None and r2 is None  # deduped while r1 is open
 
 
+def test_signal_fingerprint_dedups_across_completion(conn, cfg):
+    # A standing connector row keeps re-emitting the same fingerprint. Once a
+    # request for it has completed, a re-emission must NOT open a second pipeline
+    # (dedup_terminal). Otherwise each poll spawns another dev job for the same
+    # row (the propwise runaway).
+    e1 = events.ingest_signal(conn, cfg, team="dev", source="sb",
+                              fingerprint="ROW-1", payload={"err": "boom"})
+    conn.commit()
+    r1 = pipeline.open_request(conn, cfg, event_id=e1, team_id="dev",
+                               conversation_id=None, fingerprint="ROW-1",
+                               dedup_terminal=True)
+    assert r1 is not None
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET status='done' WHERE id=%s", (r1,))
+    conn.commit()
+
+    e2 = events.ingest_signal(conn, cfg, team="dev", source="sb-2",
+                              fingerprint="ROW-1", payload={"err": "boom again"})
+    conn.commit()
+    r2 = pipeline.open_request(conn, cfg, event_id=e2, team_id="dev",
+                               conversation_id=None, fingerprint="ROW-1",
+                               dedup_terminal=True)
+    conn.commit()
+    assert r2 is None  # already turned into a request once; no second pipeline
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs WHERE team_id='dev' AND stage=0")
+        assert cur.fetchone()[0] == 1  # exactly one stage-0 job for the row
+
+
+def test_triage_jobs_dedup_on_fingerprint(conn, cfg):
+    # The triage job key is fingerprint-derived, so two emissions of the same
+    # signal collapse to a single job via ON CONFLICT.
+    e1 = events.ingest_signal(conn, cfg, team="dev", source="sb",
+                              fingerprint="ROW-9", payload={"err": "x"})
+    conn.commit()
+    j1 = pipeline.enqueue_triage(conn, cfg, event_id=e1, team_id="dev",
+                                 fingerprint="ROW-9")
+    j2 = pipeline.enqueue_triage(conn, cfg, event_id=e1, team_id="dev",
+                                 fingerprint="ROW-9")
+    conn.commit()
+    assert j1 == j2  # same idempotency_key -> same job
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs WHERE kind='triage' AND team_id='dev'")
+        assert cur.fetchone()[0] == 1
+
+
 def test_triage_ignore_notifies_control_channel(conn, tmp_path):
     y = tmp_path / "triage.yaml"
     y.write_text(

@@ -71,8 +71,22 @@ def _stage_key(request_id: str, stage_index: int, branch_iter: int) -> str:
 
 
 def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
-                 conversation_id: Optional[str], fingerprint: Optional[str] = None) -> Optional[str]:
+                 conversation_id: Optional[str], fingerprint: Optional[str] = None,
+                 dedup_terminal: bool = False) -> Optional[str]:
     with conn.cursor() as cur:
+        if fingerprint and dedup_terminal:
+            # Signal-origin work: a connector row maps to one fingerprint for its
+            # whole lifetime, so a re-emitted row must NOT open a second pipeline
+            # even after the first request has gone done/failed. The partial
+            # unique index only guards active requests, so check terminal ones
+            # explicitly. A genuinely new occurrence arrives as a new row -> new
+            # fingerprint -> new request, so this never suppresses real work.
+            cur.execute(
+                "SELECT 1 FROM requests WHERE team_id=%s AND fingerprint=%s LIMIT 1",
+                (team_id, fingerprint),
+            )
+            if cur.fetchone():
+                return None
         cur.execute(
             """
             INSERT INTO requests (event_id, team_id, conversation_id, fingerprint)
@@ -805,7 +819,8 @@ def enqueue_research(conn: psycopg.Connection, cfg, *, event_id: str,
     except KeyError:
         # No researcher configured: act on the manager's dispatch directly.
         return open_request(conn, cfg, event_id=event_id, team_id=team_id,
-                            conversation_id=None, fingerprint=fingerprint or event_id) or ""
+                            conversation_id=None, fingerprint=fingerprint or event_id,
+                            dedup_terminal=True) or ""
     eng = loader.resolve_engine(cfg, team_id, "researcher")
     text = _signal_task_text(conn, event_id, mode="research")
     snapshot: dict = {"engine": eng.engine, "model": eng.model, "prompt": role.prompt,
@@ -850,7 +865,7 @@ def _handle_triage(conn: psycopg.Connection, cfg, job: Job) -> None:
     if action == "dispatch":
         _seed_event_text(conn, job.event_id, task)
         open_request(conn, cfg, event_id=job.event_id, team_id=job.team_id,
-                     conversation_id=None, fingerprint=fp)
+                     conversation_id=None, fingerprint=fp, dedup_terminal=True)
     elif action == "investigate":
         enqueue_research(conn, cfg, event_id=job.event_id, team_id=job.team_id,
                          fingerprint=fp)
@@ -872,7 +887,7 @@ def _handle_research(conn: psycopg.Connection, cfg, job: Job) -> None:
                 f"Research brief:\n{brief}" if brief else None)
         _seed_event_text(conn, job.event_id, seed)
         open_request(conn, cfg, event_id=job.event_id, team_id=job.team_id,
-                     conversation_id=None, fingerprint=fp)
+                     conversation_id=None, fingerprint=fp, dedup_terminal=True)
     text = brief if recommend == "no_fix" else ""
     _triage_marker(conn, cfg, job, f"research:{job.id}", note=recommend, text=text)
 
