@@ -456,6 +456,11 @@ def cmd_up(args) -> int:
     return 0
 
 
+def cmd_mcp_serve(args) -> int:
+    from argus.v2.mcp import server
+    return server.serve()
+
+
 def cmd_status(args) -> int:
     conn = pool.connect()
     try:
@@ -1392,6 +1397,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("verify"); s.set_defaults(fn=cmd_verify)
     s = sub.add_parser("validate"); s.set_defaults(fn=cmd_validate)
     s = sub.add_parser("validate-roles"); s.set_defaults(fn=cmd_validate_roles)
+    s = sub.add_parser("mcp")
+    mcps = s.add_subparsers(dest="mcp_cmd", required=True)
+    mcps.add_parser("serve").set_defaults(fn=cmd_mcp_serve)
     s = sub.add_parser("db")
     dbs = s.add_subparsers(dest="db_cmd", required=True)
     r = dbs.add_parser("migrate"); r.set_defaults(fn=cmd_db)
