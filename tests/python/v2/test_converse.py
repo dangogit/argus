@@ -70,6 +70,49 @@ def test_route_events_enqueues_converse_job_when_manager_has_engine(
     assert row[2] == f"converse:{eid}"
 
 
+def test_route_events_posts_immediate_ack_on_converse(conn, cfg_converse, monkeypatch):
+    """The instant a human message is routed to a converse job, an ack reply is
+    posted to the conversation channel so the chat shows Argus is on it (instead
+    of going silent while the manager engine runs)."""
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": _converse_result("ignore")})
+    eid = _ingest(conn, cfg_converse); conn.commit()
+    reconcile.route_events(conn, cfg_converse); conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT destination_ref, payload->>'text' FROM actions "
+                    "WHERE idempotency_key=%s AND type='reply'", (f"ack:{eid}",))
+        row = cur.fetchone()
+    assert row is not None, "no immediate ack action was posted"
+    assert row[0] == "whatsapp:grp1"
+    assert "looking into this" in row[1].lower()
+
+
+def test_route_events_ack_idempotent(conn, cfg_converse, monkeypatch):
+    """Re-routing the same event does not post a duplicate ack."""
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": _converse_result("ignore")})
+    eid = _ingest(conn, cfg_converse); conn.commit()
+    reconcile.route_events(conn, cfg_converse); conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE events SET status='received', processed_at=NULL WHERE id=%s", (eid,))
+    conn.commit()
+    reconcile.route_events(conn, cfg_converse); conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE idempotency_key=%s", (f"ack:{eid}",))
+        assert cur.fetchone()[0] == 1
+
+
+def test_route_events_no_ack_without_routable_channel(conn, cfg_converse, monkeypatch):
+    """A converse on a cli-only conversation (no routable channel) posts no ack."""
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": _converse_result("ignore")})
+    eid = _ingest(conn, cfg_converse, key="cli1", conv_key="cli:local"); conn.commit()
+    reconcile.route_events(conn, cfg_converse); conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE idempotency_key=%s", (f"ack:{eid}",))
+        assert cur.fetchone()[0] == 0
+
+
 def test_converse_snapshot_uses_team_memory_profile(conn, cfg_converse, monkeypatch):
     monkeypatch.setattr(pipeline, "_role_snapshot_extra",
                         lambda r: {"scripted_output": _converse_result("ignore")})
@@ -490,9 +533,10 @@ def test_converse_allowlist_permits_close_pr_and_runs_it(conn, cfg_converse, mon
     with conn.cursor() as cur:
         cur.execute("SELECT payload->>'repo' FROM actions WHERE type='close_pr'")
         assert cur.fetchone()[0] == "dangogit/sample-app"
-    # Reply also present.
+    # Converse reply also present (the immediate ack is a separate reply keyed ack:).
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM actions WHERE type='reply'")
+        cur.execute("SELECT count(*) FROM actions WHERE type='reply' "
+                    "AND idempotency_key LIKE 'converse:%%'")
         assert cur.fetchone()[0] == 1
 
 
@@ -567,7 +611,8 @@ def test_converse_drops_merge_pr_and_deploy(conn, cfg_converse, monkeypatch):
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM actions WHERE type IN ('merge_pr','deploy')")
         assert cur.fetchone()[0] == 0, "merge_pr/deploy must not be manager-triggerable"
-        cur.execute("SELECT count(*) FROM actions WHERE type='reply'")
+        cur.execute("SELECT count(*) FROM actions WHERE type='reply' "
+                    "AND idempotency_key LIKE 'converse:%%'")
         assert cur.fetchone()[0] == 1
 
 
@@ -715,7 +760,8 @@ def test_converse_drops_non_allowlisted_type(conn, cfg_converse, monkeypatch):
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM actions WHERE type='rm'")
         assert cur.fetchone()[0] == 0, "non-allowlisted type was persisted"
-        cur.execute("SELECT count(*) FROM actions WHERE type='reply'")
+        cur.execute("SELECT count(*) FROM actions WHERE type='reply' "
+                    "AND idempotency_key LIKE 'converse:%%'")
         assert cur.fetchone()[0] == 1
 
 
