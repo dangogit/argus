@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { attentionAlerts, readDashboardState } from "./lib/data.js";
+import { attentionAlerts, normalizeProjectFilter, normalizeRoleFilter, readDashboardState } from "./lib/data.js";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +9,14 @@ const STATUSES = {
   waiting: "Waiting",
   blocked: "Blocked",
 };
+
+const ROLE_FILTERS = [
+  { value: "", label: "All" },
+  { value: "manager", label: "PMs" },
+  { value: "developer", label: "Developers" },
+  { value: "qa", label: "QA" },
+  { value: "senior", label: "Senior" },
+];
 
 function count(section, keys) {
   return keys.reduce((sum, key) => sum + Number(section?.[key] || 0), 0);
@@ -88,13 +96,26 @@ function nodePosition(index, totalNodes) {
   };
 }
 
-function WorkerNode({ agent, index, totalNodes, selected }) {
+function hrefFor(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) qs.set(key, value);
+  }
+  const query = qs.toString();
+  return query ? `/?${query}` : "/";
+}
+
+function workerHref(agent, filter) {
+  return hrefFor({ role: filter.role, project: filter.project, agent: agent.id });
+}
+
+function WorkerNode({ agent, filter, index, totalNodes, selected }) {
   const pending = agent.pendingJobs + agent.waitingActions + agent.failedJobs + agent.failedActions + agent.runOutages;
   return (
     <Link
       aria-label={`${agent.label}, ${STATUSES[agent.status] || agent.status}, ${pending} pending`}
       className={`worker-node ${agent.status} ${selected ? "selected" : ""}`}
-      href={`/?agent=${agent.id}`}
+      href={workerHref(agent, filter)}
       style={nodePosition(index, totalNodes)}
     >
       <span className="worker-glyph">{agent.glyph}</span>
@@ -106,6 +127,42 @@ function WorkerNode({ agent, index, totalNodes, selected }) {
         {pending}
       </span>
     </Link>
+  );
+}
+
+function FilterBar({ filter, projects }) {
+  return (
+    <section className="filter-deck" aria-label="Worker filters">
+      <div className="filter-group">
+        <span className="filter-label">Role</span>
+        <div className="filter-chips">
+          {ROLE_FILTERS.map((item) => (
+            <Link
+              className={`filter-chip ${filter.role === item.value ? "selected" : ""}`}
+              href={hrefFor({ role: item.value, project: filter.project })}
+              key={item.value || "all"}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      <form className="filter-group project-filter" action="/" method="get">
+        {filter.role ? <input type="hidden" name="role" value={filter.role} /> : null}
+        <label className="filter-label" htmlFor="project-filter">Project</label>
+        <select id="project-filter" name="project" defaultValue={filter.project}>
+          <option value="">All projects</option>
+          {projects.map((project) => (
+            <option key={project} value={project}>{project}</option>
+          ))}
+        </select>
+        <button type="submit">Apply</button>
+        {filter.project ? (
+          <Link className="filter-chip" href={hrefFor({ role: filter.role })}>Clear</Link>
+        ) : null}
+      </form>
+    </section>
   );
 }
 
@@ -167,11 +224,16 @@ function AlertRow({ alert }) {
 export default async function ControlRoom({ searchParams }) {
   const params = await searchParams;
   const requestedAgent = typeof params?.agent === "string" ? params.agent : "";
-  const state = await readDashboardState({ selectedAgentId: requestedAgent });
+  const filter = {
+    role: normalizeRoleFilter(typeof params?.role === "string" ? params.role : ""),
+    project: normalizeProjectFilter(typeof params?.project === "string" ? params.project : ""),
+  };
+  const state = await readDashboardState({ selectedAgentId: requestedAgent, agentFilter: filter });
   const alerts = attentionAlerts(state.alerts);
   const status = opsStatus(state.ops, state.errors);
   const selected = state.selectedAgent;
   const selectedDetail = state.agentDetails.items;
+  const projects = Array.from(new Set(state.allAgents.map((agent) => agent.team))).sort((a, b) => a.localeCompare(b));
   const activeWork = count(state.ops.sections.jobs, ["pending", "claimed", "running"]);
   const activeRequests = count(state.ops.sections.requests, ["open", "awaiting_approval"]);
   const pendingActions = count(state.ops.sections.actions, ["proposed", "awaiting_approval", "approved", "held"]);
@@ -189,6 +251,8 @@ export default async function ControlRoom({ searchParams }) {
         </div>
       </section>
 
+      <FilterBar filter={filter} projects={projects} />
+
       <section className="live-grid">
         <div className="orbital-stage" aria-label="Argus workers">
           <div className="scan-ring ring-one" />
@@ -197,11 +261,12 @@ export default async function ControlRoom({ searchParams }) {
           <div className="argus-core">
             <img src="/argus-icon.svg" alt="Argus" width="96" height="96" />
             <strong>Argus core</strong>
-            <span>{state.agents.length} workers linked</span>
+            <span>{state.agents.length} / {state.allAgentCount} workers shown</span>
           </div>
           {state.agents.map((agent, index) => (
             <WorkerNode
               agent={agent}
+              filter={filter}
               index={index}
               key={agent.id}
               selected={agent.id === selected?.id}

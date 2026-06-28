@@ -7,6 +7,8 @@ import {
   readOpsStats,
   readProposals,
   attentionAlerts,
+  filterAgents,
+  normalizeRoleFilter,
   normalizeOpsStats,
   pgPoolConfig,
   resolveDbDsn,
@@ -156,6 +158,30 @@ describe("readDashboardState", () => {
     ]);
     expect(state.agents[0]).toMatchObject({ team: "argus", role: "manager", pendingJobs: 1 });
   });
+
+  it("selects first worker inside active filter", async () => {
+    let detailArgs;
+    const state = await readDashboardState({
+      dbDsn: "postgres://argus",
+      agentFilter: { role: "developer", project: "argus" },
+      alertsQuery: async () => [],
+      proposalsQuery: async () => [],
+      opsQuery: async () => [],
+      agentsQuery: async () => [
+        { source: "job", team_id: "argus", role: "manager", status: "done", count: 1, last_at: "2026-06-05T05:00:00Z" },
+        { source: "job", team_id: "argus", role: "developer", status: "pending", count: 1, last_at: "2026-06-05T06:00:00Z" },
+      ],
+      agentDetailsQuery: async (args) => {
+        detailArgs = args;
+        return [];
+      },
+    });
+
+    expect(state.agents).toHaveLength(1);
+    expect(state.selectedAgentId).toBe("argus:developer");
+    expect(detailArgs).toMatchObject({ team: "argus", role: "developer" });
+    expect(state.allAgentCount).toBe(2);
+  });
 });
 
 describe("readAgents", () => {
@@ -177,6 +203,23 @@ describe("readAgents", () => {
       status: "blocked",
       lastAt: "2026-06-05T08:00:00Z",
     });
+  });
+});
+
+describe("filterAgents", () => {
+  it("filters by role alias and project", () => {
+    const agents = [
+      { team: "argus", role: "manager" },
+      { team: "argus", role: "developer" },
+      { team: "luma", role: "developer" },
+      { team: "argus", role: "senior" },
+    ];
+
+    expect(normalizeRoleFilter("pms")).toBe("manager");
+    expect(normalizeRoleFilter("seniorer")).toBe("senior");
+    expect(filterAgents(agents, { role: "developers", project: "argus" })).toEqual([
+      { team: "argus", role: "developer" },
+    ]);
   });
 });
 

@@ -22,8 +22,17 @@ def _cfg_with_cap(tmp_path, cap):
     return loader.load(y)
 
 
-def _run(conn, cost, *, hours_ago=0):
-    job_id = jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer",
+def _cfg_team_cap(tmp_path, cap):
+    y = tmp_path / "tc.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n  - name: dev\n    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        f"    pipeline: {{ stages: [developer] }}\n    max_daily_cost_usd: {cap}\n")
+    return loader.load(y)
+
+
+def _run(conn, cost, *, hours_ago=0, team="dev"):
+    job_id = jobs.enqueue(conn, team_id=team, kind="pipeline", role="developer",
                           stage=0, idempotency_key=f"k{next(_counter)}",
                           exec_snapshot={}, payload={})
     with conn.cursor() as cur:
@@ -62,8 +71,36 @@ def test_route_events_pauses_when_over_budget(conn, tmp_path, monkeypatch):
     eid = events.ingest_message(conn, cfg, team="dev", source="cli",
                                 dedup_key="m1", text="hello")
     conn.commit()
-    monkeypatch.setattr(budget, "over_budget", lambda c, cf: True)
+    monkeypatch.setattr(budget, "over_budget", lambda c, cf, team_id=None: True)
     assert reconcile.route_events(conn, cfg) == 0
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM events WHERE id=%s", (eid,))
         assert cur.fetchone()[0] != "processed"  # held, not consumed
+
+
+# --- per-team budgets ---
+
+def test_daily_cost_scoped_to_team(conn):
+    _run(conn, "1.00", team="dev")
+    _run(conn, "5.00", team="other")
+    assert budget.daily_cost_usd(conn, "dev") == 1.00
+    assert budget.daily_cost_usd(conn) == 6.00  # company-wide
+
+
+def test_team_over_its_cap_when_company_uncapped(conn, tmp_path):
+    cfg = _cfg_team_cap(tmp_path, 1.0)  # team dev cap 1.0, no company cap
+    _run(conn, "1.50", team="dev")
+    assert budget.over_budget(conn, cfg, "dev") is True
+    assert budget.over_budget(conn, cfg) is False  # company-wide: no cap
+
+
+def test_route_events_defers_over_budget_team(conn, tmp_path):
+    cfg = _cfg_team_cap(tmp_path, 0.01)  # tiny team cap
+    _run(conn, "1.00", team="dev")       # dev is over its cap
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="m2", text="hi")
+    conn.commit()
+    reconcile.route_events(conn, cfg)
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM events WHERE id=%s", (eid,))
+        assert cur.fetchone()[0] == "received"  # deferred for retry, not stranded
