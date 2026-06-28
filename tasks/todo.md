@@ -11,7 +11,7 @@ Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
 - [x] 1. Runtime observability: module loggers across orchestrator/worker/queue; wrap sweep in try/except + crash backoff; structured log per claim/finalize/reclaim
 - [x] 2. Deterministic run-liveness detection: pure classifier (planning-only / blocked / approval-required) over job evidence, no second model call
 - [x] 3. Connector hardening: failure backoff, missing-secret / expired-key states, dry-run output
-- [ ] 4. Approval reliability: idempotency-keyed approval bound to action_id, 128-bit token, retry on collision (also closes weak-nonce security gap)
+- [x] 4. Approval reliability: idempotency-keyed approval bound to action_id, 128-bit token, retry on collision (also closes weak-nonce security gap)
 - [ ] 5. Cost ceiling: global daily spend cap that pauses new work
 - [ ] 6. Orchestrator resilience: re-acquire advisory lock + re-LISTEN after DB connection drop
 
@@ -27,3 +27,4 @@ Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
 - Item 1 (observability): loop.py resilient `_sweep` + `_backoff_seconds` (sweep crash logs + backs off, no silent orchestrator death); loggers in orchestrator/queue/worker/reconcile; structured logs on claim/finalize/reclaim + worker failure. Test: tests/python/v2/test_orchestrator_loop.py (5 passed). Regression: queue/fencing/reconcile/worker (26 passed).
 - Item 2 (run-liveness): worker/liveness.py pure `classify()` -> produced/planning_only/blocked/approval_required/external_blocker/empty from regex evidence, no LLM. Wired into worker result + logs STUCK states. Test: tests/python/v2/test_liveness.py (15 passed). Regression: worker (6 passed).
 - Item 3 (connector hardening): migration 0018 adds error_count/last_error/last_error_at/poll_after to connector_state; driver.py logs failures, records error state, exponential backoff (30s..1h) skips dead sources, clears on recovery; dry_run surfaces error_count. Test: tests/python/v2/test_connector_backoff.py (5). Checkpoint: full v2 suite 612 passed, 4 skipped.
+- Item 4 (approval reliability): executor._insert_approval uses 128-bit token_hex(16) + retry-on-collision with RETURNING (guarantees an approval row exists, no more silent DO NOTHING leaving a parked action stuck). Closes the CRITICAL weak-nonce gap too. Test: tests/python/v2/test_approvals.py +2 (128-bit, collision-retry). Regression: executor/approvals/actions/pipeline 87 passed.

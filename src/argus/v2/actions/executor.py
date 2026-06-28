@@ -340,8 +340,30 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 payload=payload or {}, provider_ref=provider_ref)
 
 
+# Approval nonce: 128 bits of entropy. This token authorizes an
+# irreversible_outward action (PR merge, deploy, outward message), so it must
+# not be brute-forceable over the 24h window the way the old 32-bit token was.
+_NONCE_BYTES = 16
+_NONCE_TRIES = 5
+
+
+def _insert_approval(cur, action_id: str, request_id, expires) -> str:
+    """Insert a pending approval with a fresh unique nonce. Retries on the
+    (astronomically unlikely) 128-bit collision instead of silently doing
+    nothing, which used to leave the parked action with no nonce - stuck
+    forever. Raises loudly if it somehow cannot allocate one."""
+    for _ in range(_NONCE_TRIES):
+        nonce = secrets.token_hex(_NONCE_BYTES)
+        cur.execute(
+            "INSERT INTO approvals (action_id, request_id, nonce, expires_at) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (nonce) DO NOTHING RETURNING id",
+            (action_id, request_id, nonce, expires))
+        if cur.fetchone() is not None:
+            return nonce
+    raise RuntimeError(f"could not allocate a unique approval nonce for action {action_id}")
+
+
 def _require_approval(conn: psycopg.Connection, action_id: str, request_id) -> None:
-    nonce = secrets.token_hex(4)
     expires = datetime.now(timezone.utc) + timedelta(hours=24)
     with conn.cursor() as cur:
         # Park the action so the next sweep won't re-pick it (no duplicate
@@ -352,10 +374,7 @@ def _require_approval(conn: psycopg.Connection, action_id: str, request_id) -> N
             "WHERE id=%s AND status='proposed'", (action_id,))
         if cur.rowcount != 1:
             return  # already parked by a concurrent sweep
-        cur.execute(
-            "INSERT INTO approvals (action_id, request_id, nonce, expires_at) "
-            "VALUES (%s,%s,%s,%s) ON CONFLICT (nonce) DO NOTHING",
-            (action_id, request_id, nonce, expires))
+        _insert_approval(cur, action_id, request_id, expires)
         if request_id is not None:
             cur.execute(
                 "UPDATE requests SET status='awaiting_approval', updated_at=now() "
