@@ -126,6 +126,10 @@ class Defaults(BaseModel):
     support: dict = Field(default_factory=dict)
     webhook_secret: Optional[str] = None
     embedder: Optional[dict] = None
+    # Global ceiling on rolling 24h LLM spend (USD). When reached the
+    # orchestrator stops opening new work until spend drops; in-flight jobs
+    # still finish. None disables the cap (default).
+    max_daily_cost_usd: Optional[float] = None
 
 
 class Company(BaseModel):
