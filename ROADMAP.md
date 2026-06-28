@@ -5,46 +5,42 @@ order is what makes operators adopt and keep the system: **more capability** (th
 agents help with more) and **reliability** (the agents do not silently break).
 Pure-security hardening is tracked and will land, but is sequenced after - except
 where a fix is also a reliability fix, in which case it rides in the reliability
-lane below.
+lane.
 
-## Now - reliability foundation (adoption blockers)
+## Shipped
 
-These are the "it just works, and when it doesn't I can see why" basics. Without
-them, capabilities built on top inherit the same silent failures.
+Landed June 2026 (#7). The reliability foundation plus the first capability wave;
+see [CHANGELOG.md](CHANGELOG.md) and [docs/competitive.md](docs/competitive.md).
 
-- Runtime observability: structured logging across orchestrator, worker, and
-  queue, plus crash backoff so a stalled pipeline is visible, not silent. Today
-  a crashed sweep exits with no trace - operators cannot debug it.
-- Deterministic run-liveness detection: classify planning-only, blocked, and
-  approval-required runs from evidence, without a second model call, so stuck
-  jobs surface instead of hanging.
-- Connector hardening: backoff on failure, clear missing-secret / expired-key
-  states, and dry-run output - so a dead provider degrades loudly, not as a
-  silent retry storm.
-- Approval reliability: an approval can currently collide and get stuck forever
-  (a click that never opens the PR). Make approvals idempotency-keyed and bound
-  to their action id, with retry on collision. (Also closes the weak-nonce
-  security gap as a side effect.)
-- Cost ceiling: a global daily spend cap that pauses new work, so a signal storm
-  cannot run away with the bill and erode trust.
-- Orchestrator resilience: re-acquire the advisory lock and re-`LISTEN` after a
-  database connection drop, instead of silently degrading to slow polling.
+- **Reliability:** runtime observability + crash backoff (a crashed sweep no
+  longer exits silently); deterministic run-liveness (planning-only / blocked /
+  approval-required / missing-creds surfaced); connector failure backoff + error
+  visibility; 128-bit collision-safe approvals (no brute-force, no stuck
+  approval); global + per-team daily cost ceilings; orchestrator reconnect after
+  a control-connection drop with clean leadership handoff.
+- **Capabilities:** MCP client (configure servers, validated by `argus doctor`,
+  fed to the Claude Code engine); MCP server (`argus mcp serve`, read-only
+  status/alerts/lessons/proposals); OpenRouter + Ollama engines; Discord + email
+  gateway channels; Linux systemd parity for the always-on bundle
+  (`argus launchd render --os linux`).
+- **Security hardening:** secret-bearing MCP/systemd files written `0600`;
+  systemd `%` escaping; SMTP STARTTLS-before-auth + header-injection guard; MCP
+  malformed-frame guard.
+
+## Now
+
 - Keep public install green: source install, wheel smoke, Docker smoke, and
   public launch checker; improve live onboarding and Codex/Claude Code docs.
+- Triage the default-branch dependency vulnerabilities (Dependabot).
 
-## Next - capabilities (the agents help with more)
+## Next
 
-- MCP client support so Argus agents use the whole MCP tool ecosystem without a
-  new connector each time. See [docs/mcp-support.md](docs/mcp-support.md).
-- MCP server (`argus mcp serve`) exposing status, alerts, proposed PRs, and
-  lessons, so Claude Code / Codex / IDEs can drive Argus.
-- Provider breadth: OpenRouter and Ollama paths so users are not locked to one
-  agent CLI.
-- More ops channels behind one capability-optional connector interface, starting
-  with Discord and a generic email gateway.
-- Richer multi-agent work and human interactions: typed ask / confirm / suggest
-  (not only approve / reject), and per-agent budgets with warn + hard-stop.
-- Linux runtime parity for the opinionated always-on bundle.
+- Richer human interactions: typed ask / confirm / suggest, not only approve /
+  reject (the per-team budget half of this item shipped).
+- MCP P1: a live protocol handshake in `argus doctor` (beyond config validation)
+  and caps on untrusted MCP tool output.
+- MCP P2: gated action tools (propose / approve) over MCP, routed through the
+  existing approval gate.
 
 ## Later - hardening and polish
 

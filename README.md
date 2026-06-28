@@ -105,14 +105,14 @@ deploys, and errors and proposes fixes - it is not a board you assign agents to.
 | **Watches production as signals** | ✅ **13 ops connectors** | – | – | – |
 | **Sentry / Vercel / PostHog / Fly / uptime aware** | ✅ **First-class** | – | – | – |
 | **Daily retro / learning loop** | ✅ **Built-in** | – | – | Self-modeling |
-| **Pushes to Slack / WhatsApp / Telegram** | ✅ **Yes** | Web UI only | ✅ | ✅ |
+| **Pushes to Slack / WhatsApp / Telegram / Discord / email** | ✅ **Yes** | Web UI only | ✅ | ✅ |
 | **Eval-judged draft-PR loop** | ✅ **Built-in** | Pipeline + approval | – | – |
 | Durable runtime (Postgres, retries) | ✅ | ✅ | Chat gateway | Gateway + TUI |
 | Multi-agent roles | builder → QA → senior | Named org chart | – | Subagents |
-| Engine-agnostic workers | echo/Codex/Claude/Hermes | Many adapters | own loop | own loop |
+| Engine-agnostic workers | echo/Codex/Claude/Hermes/OpenRouter/Ollama | Many adapters | own loop | own loop |
 | Self-hosted, you own DB + secrets | ✅ | ✅ | ✅ | ✅ |
-| Per-agent budget caps | on the roadmap | ✅ | – | observability |
-| MCP support | on the roadmap | ✅ | – | ✅ |
+| Per-team budget caps | ✅ | ✅ | – | observability |
+| MCP support | ✅ **client + server** | ✅ | – | ✅ |
 
 Argus even **runs Hermes Agent as one of its execution engines** - several of
 these are complementary, not just rivals.
