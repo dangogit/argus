@@ -3,6 +3,7 @@ no DB, no live engine (echo-safe)."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from argus.v2.config import loader
 from argus.v2.config.schema import McpServer
@@ -63,7 +64,7 @@ def test_materialize_writes_file(tmp_path):
     s = McpServer(name="fs", transport="stdio", command="sh")
     path = mcp.materialize([s], tmp_path)
     assert path is not None
-    data = json.loads(open(path).read())
+    data = json.loads(Path(path).read_text())
     assert "fs" in data["mcpServers"]
 
 

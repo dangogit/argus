@@ -1319,8 +1319,9 @@ def cmd_launchd(args) -> int:
         log_dir=args.log_dir,
         label_prefix=args.label_prefix,
     )
-    from argus.v2 import host
-    os_name = args.os or host.host_os()
+    # `launchd render` defaults to macOS plists (its historical behavior);
+    # Linux systemd units are opt-in via --os linux.
+    os_name = args.os or "macos"
     for path in launchd.write_units(units, Path(args.out), os_name=os_name):
         print(path)
     return 0
