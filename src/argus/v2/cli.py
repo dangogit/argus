@@ -437,7 +437,11 @@ def cmd_signal(args) -> int:
 
 def cmd_up(args) -> int:
     cfg = _cfg()
-    # Single-process dev driver: orchestrator sweep + worker drain in a loop.
+    # Orchestrator loop. By default a single-process dev driver: sweep + drain all
+    # jobs. In production pass --sweep-only so the orchestrator ONLY sweeps (route
+    # events, advance pipelines, drain actions, reclaim) and never executes a job -
+    # then a slow/hung job in a worker lane can't freeze routing or chat. The
+    # `argus worker --lane {chat,pipeline}` processes run the jobs concurrently.
     iterations = args.iterations
     i = 0
     while iterations is None or i < iterations:
@@ -447,9 +451,39 @@ def cmd_up(args) -> int:
             conn.commit()
         finally:
             conn.close()
+        if not getattr(args, "sweep_only", False):
+            drained = True
+            while drained:
+                drained = worker.run_once(cfg, "w1")
+        i += 1
+        if iterations is None:
+            time.sleep(args.poll)
+    return 0
+
+
+# Lane -> the kinds a worker claims. The chat lane takes owner-facing jobs; the
+# pipeline lane takes everything else (so a new job kind is never stranded).
+_WORKER_LANES = {
+    "chat": {"worker_id": "chat", "include_kinds": list(queue.CHAT_KINDS)},
+    "pipeline": {"worker_id": "pipe", "exclude_kinds": list(queue.CHAT_KINDS)},
+    "all": {"worker_id": "w1"},
+}
+
+
+def cmd_worker(args) -> int:
+    """Standalone job worker for one lane (production runs chat + pipeline lanes
+    as separate processes alongside `up --sweep-only`). Drains its lane, then
+    sleeps; never sweeps."""
+    cfg = _cfg()
+    lane = _WORKER_LANES[args.lane]
+    worker_id = lane["worker_id"]
+    claim_kw = {k: v for k, v in lane.items() if k != "worker_id"}
+    iterations = args.iterations
+    i = 0
+    while iterations is None or i < iterations:
         drained = True
         while drained:
-            drained = worker.run_once(cfg, "w1")
+            drained = worker.run_once(cfg, worker_id, **claim_kw)
         i += 1
         if iterations is None:
             time.sleep(args.poll)
@@ -1427,7 +1461,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("payload", nargs="?", default="{}"); s.set_defaults(fn=cmd_signal)
 
     s = sub.add_parser("up"); s.add_argument("--poll", type=float, default=2.0)
-    s.add_argument("--iterations", type=int, default=None); s.set_defaults(fn=cmd_up)
+    s.add_argument("--iterations", type=int, default=None)
+    s.add_argument("--sweep-only", action="store_true",
+                   help="only sweep (route/advance/drain); run jobs via `worker` lanes")
+    s.set_defaults(fn=cmd_up)
+
+    s = sub.add_parser("worker")
+    s.add_argument("--lane", choices=["chat", "pipeline", "all"], default="all")
+    s.add_argument("--poll", type=float, default=2.0)
+    s.add_argument("--iterations", type=int, default=None)
+    s.set_defaults(fn=cmd_worker)
 
     s = sub.add_parser("status"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("runs"); s.add_argument("request_id"); s.set_defaults(fn=cmd_runs)

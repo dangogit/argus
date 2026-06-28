@@ -57,7 +57,30 @@ def enqueue(conn: psycopg.Connection, *, team_id: str, kind: str, role: str,
         return str(cur.fetchone()[0])
 
 
-def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120) -> Optional[Job]:
+# Owner-facing chat jobs. A dedicated worker lane claims only these so a chat
+# reply never waits behind (or is frozen by) a slow/hung pipeline build running
+# in another lane. The pipeline lane claims everything else.
+CHAT_KINDS = ("converse", "triage")
+
+
+def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120,
+          include_kinds=None, exclude_kinds=None) -> Optional[Job]:
+    """Claim one pending job (fenced, SKIP LOCKED). A worker can restrict itself
+    to a lane: include_kinds claims only those kinds (the chat lane), exclude_kinds
+    skips them (the pipeline lane). With neither, claims any kind (single-process
+    dev driver). Chat kinds still sort first within a lane."""
+    # None = no filter; an empty include list means "this lane has no kinds" and
+    # must claim NOTHING (not everything), so it is its own short-circuit.
+    if include_kinds is not None and not include_kinds:
+        return None
+    where = ["status='pending'", "run_after <= now()"]
+    kind_params: list = []
+    if include_kinds:
+        where.append("kind = ANY(%s)")
+        kind_params.append(list(include_kinds))
+    if exclude_kinds:
+        where.append("NOT (kind = ANY(%s))")
+        kind_params.append(list(exclude_kinds))
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -71,7 +94,7 @@ def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120)
                 updated_at=now()
             WHERE id = (
                 SELECT id FROM jobs
-                WHERE status='pending' AND run_after <= now()
+                WHERE {" AND ".join(where)}
                 -- Owner-facing work jumps the queue: a chat reply (converse) and
                 -- a signal triage must not wait behind background pipeline/research
                 -- jobs during a monitoring flood. FIFO within each priority.
@@ -82,7 +105,7 @@ def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120)
             )
             RETURNING {_JOB_COLS}
             """,
-            (f"{worker_id}@{socket.gethostname()}", lease_seconds),
+            (f"{worker_id}@{socket.gethostname()}", lease_seconds, *kind_params),
         )
         row = cur.fetchone()
         if not row:

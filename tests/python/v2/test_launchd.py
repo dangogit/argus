@@ -34,10 +34,13 @@ def test_default_units_cover_runtime_without_shell_wrapper():
         env_files=["/secrets.env", "/runtime.env"],
         log_dir="/logs",
     )
+    by_label = {u.label: u for u in units}
     labels = [u.label for u in units]
     assert labels == [
         "com.argus.serve",
         "com.argus.up",
+        "com.argus.work-chat",
+        "com.argus.work-pipeline",
         "com.argus.poll",
         "com.argus.retro",
         "com.argus.watchdog",
@@ -50,14 +53,20 @@ def test_default_units_cover_runtime_without_shell_wrapper():
     assert all("ARGUS_DB_DSN" not in u.env for u in units)
     assert all(u.env["CODEX_HOME"] for u in units)
     assert all(u.env["HOME"] for u in units)
-    assert units[0].keep_alive is True
-    assert units[1].keep_alive is True
-    assert units[2].start_interval == 300
-    assert units[3].argv[-2:] == ["retro", "run"]
-    assert units[3].start_interval == 86400
-    assert units[4].argv[-2:] == ["host", "watchdog"]
-    assert units[5].argv[-2:] == ["host", "backup"]
-    assert units[6].argv[-2:] == ["host", "logrotate"]
+    # Orchestrator sweeps only; jobs run in the two keep-alive worker lanes.
+    assert "--sweep-only" in by_label["com.argus.up"].argv
+    assert by_label["com.argus.up"].keep_alive is True
+    assert by_label["com.argus.work-chat"].argv[-5:] == ["worker", "--lane", "chat", "--poll", "2"]
+    assert by_label["com.argus.work-chat"].keep_alive is True
+    assert by_label["com.argus.work-pipeline"].argv[-5:] == ["worker", "--lane", "pipeline", "--poll", "2"]
+    assert by_label["com.argus.work-pipeline"].keep_alive is True
+    assert by_label["com.argus.serve"].keep_alive is True
+    assert by_label["com.argus.poll"].start_interval == 300
+    assert by_label["com.argus.retro"].argv[-2:] == ["retro", "run"]
+    assert by_label["com.argus.retro"].start_interval == 86400
+    assert by_label["com.argus.watchdog"].argv[-2:] == ["host", "watchdog"]
+    assert by_label["com.argus.backup"].argv[-2:] == ["host", "backup"]
+    assert by_label["com.argus.logrotate"].argv[-2:] == ["host", "logrotate"]
 
 
 def test_render_systemd_service_unit():
@@ -96,11 +105,12 @@ def test_write_units_linux_emits_systemd(tmp_path):
         env_files=[], log_dir="/logs")
     written = launchd.write_units(units, tmp_path, os_name="linux")
     names = sorted(p.name for p in written)
-    # 7 services + 5 timers (poll/retro/watchdog/backup/logrotate are interval).
+    # 9 services + 5 timers (poll/retro/watchdog/backup/logrotate are interval;
+    # serve/up/work-chat/work-pipeline are long-running, no timer).
     assert "argus-serve.service" in names
     assert "argus-poll.service" in names and "argus-poll.timer" in names
     assert "argus-up.timer" not in names  # up is a long-running service
-    assert sum(1 for n in names if n.endswith(".service")) == 7
+    assert sum(1 for n in names if n.endswith(".service")) == 9
     assert sum(1 for n in names if n.endswith(".timer")) == 5
     assert not any(n.endswith(".plist") for n in names)
 
@@ -112,7 +122,7 @@ def test_write_units_macos_still_plists(tmp_path):
         env_files=[], log_dir="/logs")
     written = launchd.write_units(units, tmp_path, os_name="macos")
     assert all(p.suffix == ".plist" for p in written)
-    assert len(written) == 7
+    assert len(written) == 9
 
 
 def test_default_units_expands_codex_home(monkeypatch):

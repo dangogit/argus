@@ -30,6 +30,34 @@ def test_worker_returns_false_when_idle(conn, cfg):
     assert worker.run_once(cfg, "w1") is False
 
 
+def test_worker_chat_lane_claims_only_chat_kinds(conn, cfg):
+    """The chat lane (include_kinds) runs the converse job and leaves the pipeline
+    job pending for the other lane - so a build can never block a chat reply."""
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer", stage=0,
+                 idempotency_key="pj", exec_snapshot={"engine": "echo"}, payload={"text": "x"})
+    jobs.enqueue(conn, team_id="dev", kind="converse", role="manager", stage=0,
+                 idempotency_key="cj", exec_snapshot={"engine": "echo"}, payload={"text": "hi"})
+    conn.commit()
+    ran = worker.run_once(cfg, "chat", include_kinds=list(jobs.CHAT_KINDS))
+    assert ran is True  # claimed + ran the converse job
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM jobs WHERE idempotency_key='pj'")
+        assert cur.fetchone()[0] == "pending"   # pipeline untouched by the chat lane
+        cur.execute("SELECT status FROM jobs WHERE idempotency_key='cj'")
+        assert cur.fetchone()[0] != "pending"   # converse was picked up
+
+
+def test_worker_pipeline_lane_skips_chat(conn, cfg):
+    """The pipeline lane (exclude_kinds) ignores a converse job."""
+    jobs.enqueue(conn, team_id="dev", kind="converse", role="manager", stage=0,
+                 idempotency_key="cj", exec_snapshot={"engine": "echo"}, payload={"text": "hi"})
+    conn.commit()
+    assert worker.run_once(cfg, "pipe", exclude_kinds=list(jobs.CHAT_KINDS)) is False
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM jobs WHERE idempotency_key='cj'")
+        assert cur.fetchone()[0] == "pending"
+
+
 def test_worker_finalizes_exception_as_failed(conn, cfg_project, monkeypatch):
     eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
                                 dedup_key="worker-exception", text="check it")
