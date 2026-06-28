@@ -66,6 +66,57 @@ def test_launchd_findings_periodic_nonzero_exit_is_not_flagged():
     assert system_health.launchd_findings(runner=runner, service_labels=set()) == []
 
 
+def test_memory_findings_flags_high_rss_argus_service_when_memory_low(monkeypatch):
+    monkeypatch.setenv("ARGUS_HEALTH_MIN_MEMORY_FREE_PERCENT", "20")
+    monkeypatch.setenv("ARGUS_HEALTH_MAX_SERVICE_RSS_MB", "512")
+
+    def runner(argv, **kwargs):
+        if argv == ["memory_pressure"]:
+            return subprocess.CompletedProcess(
+                argv, 0, "System-wide memory free percentage: 8%\n", "")
+        if argv[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(
+                argv, 0,
+                "   111   -15  com.argus.up\n"
+                "   222   -15  com.argus.work-pipeline\n"
+                "     0     0  com.argus.poll\n", "")
+        raise AssertionError(argv)
+
+    rss = {111: 300 * 1024 * 1024, 222: 900 * 1024 * 1024}
+    findings = system_health.memory_findings(
+        runner=runner,
+        rss_reader=lambda pid: rss.get(pid),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].fingerprint == "memory:com.argus.work-pipeline:rss-high"
+    assert "cap 512 MB" in findings[0].message
+    assert findings[0].payload["rss_mb"] == 900
+
+
+def test_memory_findings_low_memory_without_argus_culprit_is_warn(monkeypatch):
+    monkeypatch.setenv("ARGUS_HEALTH_MIN_MEMORY_FREE_PERCENT", "20")
+    monkeypatch.setenv("ARGUS_HEALTH_MAX_SERVICE_RSS_MB", "512")
+
+    def runner(argv, **kwargs):
+        if argv == ["memory_pressure"]:
+            return subprocess.CompletedProcess(
+                argv, 0, "System-wide memory free percentage: 8%\n", "")
+        if argv[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(argv, 0, "   111   -15  com.argus.up\n", "")
+        raise AssertionError(argv)
+
+    findings = system_health.memory_findings(
+        runner=runner,
+        rss_reader=lambda pid: 300 * 1024 * 1024,
+    )
+
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert findings[0].fingerprint == "memory:low:no-argus-culprit"
+    assert "no com.argus.* service above 512 MB RSS" in findings[0].message
+
+
 def test_keepalive_service_labels_reads_plists(tmp_path):
     import plistlib
     def _plist(name, body):

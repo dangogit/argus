@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
+import struct
 import os
 import plistlib
 import re
@@ -23,6 +25,8 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
+_MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,7 @@ def collect_findings(
     findings.extend(disk_findings(disk_path))
     if sys.platform == "darwin":
         findings.extend(launchd_findings(runner=runner))
+        findings.extend(memory_findings(runner=runner))
     return findings
 
 
@@ -169,6 +174,117 @@ def launchd_findings(
                 payload={"label": label, "status": status},
             ))
     return findings
+
+
+def memory_findings(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    rss_reader: Callable[[int], int | None] | None = None,
+) -> list[Finding]:
+    """Report low host memory only when a running com.argus.* service is large.
+
+    This intentionally avoids `ps` or `top`: launchd gives us the Argus labels
+    and PIDs, and libproc gives us RSS for those PIDs only.
+    """
+    pressure = _memory_pressure(runner)
+    if pressure is None:
+        return []
+    min_free = int(_float_env("ARGUS_HEALTH_MIN_MEMORY_FREE_PERCENT", 10.0))
+    max_rss_mb = int(_float_env("ARGUS_HEALTH_MAX_SERVICE_RSS_MB", 1024.0))
+    if pressure >= min_free:
+        return []
+    services = argus_service_rss(runner=runner, rss_reader=rss_reader)
+    large = [
+        (label, pid, rss_mb)
+        for label, pid, rss_mb in services
+        if rss_mb >= max_rss_mb
+    ]
+    if not large:
+        return [Finding(
+            severity="warn",
+            fingerprint="memory:low:no-argus-culprit",
+            message=(
+                f"low host memory: {pressure}% free, no com.argus.* service "
+                f"above {max_rss_mb} MB RSS"
+            ),
+            payload={"free_percent": pressure, "max_service_rss_mb": max_rss_mb},
+        )]
+    label, pid, rss_mb = max(large, key=lambda item: item[2])
+    return [Finding(
+        severity="error",
+        fingerprint=f"memory:{label}:rss-high",
+        message=(
+            f"low host memory: {pressure}% free; {label} pid={pid} "
+            f"is {rss_mb} MB RSS (cap {max_rss_mb} MB)"
+        ),
+        payload={
+            "label": label,
+            "pid": pid,
+            "rss_mb": rss_mb,
+            "free_percent": pressure,
+            "max_service_rss_mb": max_rss_mb,
+        },
+    )]
+
+
+def argus_service_rss(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    rss_reader: Callable[[int], int | None] | None = None,
+) -> list[tuple[str, int, int]]:
+    rss_reader = rss_reader or _darwin_resident_size
+    try:
+        proc = runner(
+            ["launchctl", "print", f"gui/{os.getuid()}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    rows: list[tuple[str, int, int]] = []
+    for line in proc.stdout.splitlines():
+        match = _LAUNCHD_ARGUS_ROW.match(line)
+        if not match:
+            continue
+        pid = int(match.group(1))
+        if pid <= 0:
+            continue
+        label = match.group(2)
+        rss = rss_reader(pid)
+        if rss is None:
+            continue
+        rows.append((label, pid, int(rss / (1024 * 1024))))
+    return sorted(rows, key=lambda row: row[2], reverse=True)
+
+
+def _memory_pressure(runner: Callable[..., subprocess.CompletedProcess]) -> int | None:
+    try:
+        proc = runner(["memory_pressure"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    match = _MEMORY_FREE_PERCENT.search(proc.stdout)
+    return int(match.group(1)) if match else None
+
+
+def _darwin_resident_size(pid: int) -> int | None:
+    try:
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        proc_pid_rusage = libc.proc_pid_rusage
+        proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+        proc_pid_rusage.restype = ctypes.c_int
+        buf = ctypes.create_string_buffer(4096)
+        rc = proc_pid_rusage(pid, 2, ctypes.byref(buf))
+    except Exception:
+        return None
+    if rc != 0:
+        return None
+    # rusage_info_v2: 16 byte UUID, then six uint64 fields before resident_size.
+    return int(struct.unpack_from("<Q", buf.raw, 64)[0])
 
 
 def notify_findings(
