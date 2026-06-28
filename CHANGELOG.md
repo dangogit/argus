@@ -8,6 +8,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Live progress in chat: when Argus picks up a message it posts an immediate
+  receipt, and on edit-capable channels (Slack/Telegram/Discord) that receipt
+  becomes a single self-updating status line that advances
+  `👀 looking into this -> 🛠️ working -> 🔍 reviewing -> ✅ done` in place,
+  instead of going silent or spamming a message per stage. Non-editable channels
+  keep the one-shot receipt. Toggle with `notifications.show_progress` (default
+  on).
 - MCP client: configure external MCP servers in `argus.yaml` (`mcp.servers`);
   Argus validates them (`argus doctor --deep`) and feeds them to the Claude Code
   engine per run.

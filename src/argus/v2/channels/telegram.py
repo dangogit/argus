@@ -36,3 +36,12 @@ class TelegramChannel:
                        json={"chat_id": binding.channel_id, "text": text}, timeout=20)
         r.raise_for_status()
         return str(r.json().get("result", {}).get("message_id", ""))
+
+    def update(self, binding, message_id: str, text: str) -> str:  # pragma: no cover
+        import httpx
+        r = httpx.post(
+            f"https://api.telegram.org/bot{binding.secret}/editMessageText",
+            json={"chat_id": binding.channel_id, "message_id": int(message_id), "text": text},
+            timeout=20)
+        r.raise_for_status()
+        return str(message_id)

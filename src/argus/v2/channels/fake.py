@@ -5,6 +5,7 @@ from __future__ import annotations
 from argus.v2.channels.base import InboundMessage, register
 
 SENT: list = []
+EDITED: list = []
 
 
 @register
@@ -20,3 +21,7 @@ class FakeChannel:
     def send(self, binding, text: str) -> str:
         SENT.append((binding.channel_id, text))
         return f"fake-{len(SENT)}"
+
+    def update(self, binding, message_id: str, text: str) -> str:
+        EDITED.append((binding.channel_id, message_id, text))
+        return message_id

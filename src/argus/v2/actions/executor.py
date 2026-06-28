@@ -32,6 +32,7 @@ _REAL = {
 # never mark an irreversible operation as reversible to auto-run it.
 _REVERSIBLE = frozenset({
     "open_pr", "close_pr", "comment_pr", "reopen_pr", "remember", "reply", "notify",
+    "status",
     "calendar_list", "calendar_get", "email_list", "email_search", "email_read", "email_draft",
     "bug_writeback",
 })
@@ -252,7 +253,7 @@ def _is_transient(exc: BaseException) -> bool:
 def _effective_risk(cfg, action_type: str, declared_risk: str,
                     destination_ref: Optional[str]) -> str:
     """Apply server-side risk rules before the autonomy gate."""
-    if action_type in ("reply", "notify"):
+    if action_type in ("reply", "notify", "status"):
         role = _destination_channel_role(cfg, destination_ref)
         if role == "outward":
             return "irreversible_outward"
@@ -296,6 +297,12 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
             "FROM actions WHERE id=%s",
             (action_id,))
         atype, payload, existing, destination_ref, team_id, request_id = cur.fetchone()
+        if atype == "status":
+            # A status action is one self-updating progress line. Unlike every
+            # other action, an existing provider_ref does NOT mean "done" - it
+            # means "edit that message" (the line advanced to a new stage).
+            _execute_status(cur, action_id, cfg, payload or {}, existing, destination_ref)
+            return
         if existing:
             # Idempotent: already has a provider_ref from a previous execution.
             cur.execute("UPDATE actions SET status='done', updated_at=now() WHERE id=%s", (action_id,))
@@ -338,6 +345,37 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 cur, action_id=action_id, team_id=team_id,
                 destination_ref=destination_ref, action_type=atype,
                 payload=payload or {}, provider_ref=provider_ref)
+
+
+def _execute_status(cur, action_id: str, cfg, payload: dict, existing,
+                    destination_ref) -> None:
+    """Send-or-edit the single live status line. First run (no provider_ref)
+    posts the message like a normal reply - reliable: a transient send error
+    propagates so the executor savepoint retries it, and the receipt is never
+    silently lost. Later runs edit that message in place; edits are best-effort
+    (status is cosmetic) so a failed edit never poisons the drain - it settles
+    done, and a later stage's text change re-arms another attempt. A status
+    action only exists for an edit-capable conversation channel (reconcile gates
+    that), so the deliver() fallback here is a recovery path (message deleted),
+    not per-stage spam."""
+    from argus.v2.channels import send as _send
+    text = str(payload.get("text", ""))
+    resolvable = bool(cfg and destination_ref)
+    if not existing:
+        ref = _send.deliver(cfg, destination_ref, text) if resolvable else None
+        provider_ref = ref if ref is not None else f"local:{action_id}"
+        cur.execute("UPDATE actions SET status='done', provider_ref=%s, updated_at=now() "
+                    "WHERE id=%s", (provider_ref, action_id))
+        return
+    try:
+        ref = _send.edit(cfg, destination_ref, existing, text) if resolvable else None
+        if ref is None and resolvable:
+            ref = _send.deliver(cfg, destination_ref, text)  # editable but edit failed: re-post
+    except Exception as exc:  # best-effort: a status edit must never break the drain
+        log.warning("status edit %s failed (best-effort): %s", action_id, exc)
+        ref = None
+    cur.execute("UPDATE actions SET status='done', provider_ref=%s, updated_at=now() "
+                "WHERE id=%s", (ref or existing, action_id))
 
 
 # Approval nonce: 128 bits of entropy. This token authorizes an

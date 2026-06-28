@@ -60,3 +60,20 @@ class SlackChannel:
         if not data.get("ok"):
             raise RuntimeError(f"slack chat.postMessage failed: {data.get('error', 'unknown_error')}")
         return str(data.get("ts", ""))
+
+    def update(self, binding, message_id: str, text: str) -> str:  # pragma: no cover
+        import httpx
+
+        if not binding.secret:
+            raise RuntimeError("slack channel missing bot token")
+        r = httpx.post(
+            "https://slack.com/api/chat.update",
+            headers={"Authorization": f"Bearer {binding.secret}"},
+            json={"channel": binding.channel_id, "ts": message_id, "text": text},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"slack chat.update failed: {data.get('error', 'unknown_error')}")
+        return str(data.get("ts", message_id))

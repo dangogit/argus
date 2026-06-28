@@ -13,7 +13,7 @@ from argus.v2.actions import approvals, executor
 from argus.v2.front import front
 from argus.v2.ingress import events as ingress_events
 from argus.v2.ingress.media import run_root
-from argus.v2.orchestrator import budget, context_router, pipeline
+from argus.v2.orchestrator import budget, context_router, pipeline, status
 from argus.v2.queue import jobs
 from argus.v2.queue.models import ActionIntent, Job
 
@@ -83,13 +83,13 @@ def route_events(conn, cfg) -> int:
             # Manager role has a configured engine: async converse job.
             pipeline.enqueue_converse(conn, cfg, event_id=eid, team_id=team_id,
                                       conversation_id=str(conv_id) if conv_id else None)
-            _emit_ack(conn, team_id, eid, conv_id)
+            _emit_ack(conn, cfg, team_id, eid, conv_id)
         else:
             decision = front.decide(cfg, {"payload": payload})
             if decision.kind == "dispatch":
                 pipeline.open_request(conn, cfg, event_id=eid, team_id=team_id,
                                       conversation_id=str(conv_id) if conv_id else None)
-                _emit_ack(conn, team_id, eid, conv_id)
+                _emit_ack(conn, cfg, team_id, eid, conv_id)
             else:
                 _emit_reply(conn, team_id, eid, conv_id, decision.reply_text)
         with conn.cursor() as cur:
@@ -187,20 +187,29 @@ def _channel_ref(conn, conv_id) -> str | None:
     return row[0] if row and row[0] else None
 
 
-# A short receipt posted the instant Argus claims a human message that triggers
-# async work (manager converse, or a dispatch into the dev pipeline). Without it
-# the chat goes silent for the seconds-to-minutes the engine/pipeline runs and
-# the owner can't tell Argus even saw the message (owner hit this in the luma
-# Slack group: said "hi", got nothing, didn't know if Argus was on it).
-# Idempotent per event; only sent when the conversation has a routable channel,
-# so cli/no-channel events stay quiet. The executor's risk gate still applies, so
-# this never auto-posts to an outward (customer-facing) channel.
-_ACK_TEXT = "👀 Got it - looking into this..."
+# A receipt posted the instant Argus claims a human message that triggers async
+# work (manager converse, or a dispatch into the dev pipeline). Without it the
+# chat goes silent for the seconds-to-minutes the engine/pipeline runs and the
+# owner can't tell Argus even saw the message (owner hit this in the luma Slack
+# group: said "hi", got nothing, didn't know if Argus was on it).
+#
+# On an edit-capable channel (Slack/Telegram/Discord) with progress enabled this
+# becomes a single self-updating status line (see orchestrator/status.py) that
+# advances receipt -> working -> reviewing -> done. Otherwise it is a one-shot
+# reply. Idempotent per event; only posted when the conversation has a routable
+# channel, so cli/no-channel events stay quiet. The executor's risk gate still
+# applies, so this never auto-posts to an outward (customer-facing) channel.
+_ACK_TEXT = status.RECEIPT
 
 
-def _emit_ack(conn, team_id, event_id, conv_id) -> None:
+def _emit_ack(conn, cfg, team_id, event_id, conv_id) -> None:
     channel_ref = _channel_ref(conn, conv_id)
     if not _routable_channel(channel_ref):
+        return
+    ctype = channel_ref.split(":", 1)[0]
+    from argus.v2.channels import send as _send
+    if _progress_enabled(cfg, team_id) and _send.channel_supports_edit(ctype):
+        status.post_initial(conn, team_id=team_id, event_id=event_id, channel_ref=channel_ref)
         return
     with conn.cursor() as cur:
         cur.execute(
@@ -209,6 +218,15 @@ def _emit_ack(conn, team_id, event_id, conv_id) -> None:
             "VALUES (%s,'reply','reversible_internal',%s,%s,%s) "
             "ON CONFLICT (idempotency_key) DO NOTHING",
             (team_id, channel_ref, f"ack:{event_id}", Json({"text": _ACK_TEXT})))
+
+
+def _progress_enabled(cfg, team_id) -> bool:
+    try:
+        team = cfg.team(team_id)
+    except KeyError:
+        return False
+    settings = team.notifications or cfg.company.defaults.notifications
+    return bool(getattr(settings, "show_progress", True))
 
 
 def _routable_channel(channel_ref) -> bool:
