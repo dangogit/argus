@@ -31,7 +31,9 @@ class SourceRef(BaseModel):
 
 
 class ChannelBinding(BaseModel):
-    type: Literal["whatsapp", "telegram", "discord", "slack", "cli", "fake"]
+    # Validated against the live channel REGISTRY in the loader (single source of
+    # truth), not a closed Literal that drifts as channels are added.
+    type: str
     role: Literal["control", "outward"] = "control"
     channel_id: str
     secret_ref: Optional[str] = None
