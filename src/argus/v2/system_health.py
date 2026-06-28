@@ -26,6 +26,7 @@ from argus.v2.orchestrator import context_router
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
+_ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
 
 
@@ -258,6 +259,42 @@ def argus_service_rss(
             continue
         rows.append((label, pid, int(rss / (1024 * 1024))))
     return sorted(rows, key=lambda row: row[2], reverse=True)
+
+
+def remediate_findings(
+    findings: list[Finding],
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> list[str]:
+    """Restart only the Argus service named by a high-RSS memory finding."""
+    restarted: list[str] = []
+    for finding in findings:
+        if not finding.fingerprint.endswith(":rss-high"):
+            continue
+        label = str(finding.payload.get("label") or "")
+        if not _ARGUS_LAUNCHD_LABEL.match(label):
+            continue
+        if _restart_launchd_label(label, runner=runner):
+            restarted.append(label)
+    return restarted
+
+
+def _restart_launchd_label(
+    label: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> bool:
+    if sys.platform != "darwin":
+        return False
+    if not _ARGUS_LAUNCHD_LABEL.match(label):
+        return False
+    proc = runner(
+        ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return proc.returncode == 0
 
 
 def _memory_pressure(runner: Callable[..., subprocess.CompletedProcess]) -> int | None:

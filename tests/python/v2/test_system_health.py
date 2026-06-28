@@ -117,6 +117,50 @@ def test_memory_findings_low_memory_without_argus_culprit_is_warn(monkeypatch):
     assert "no com.argus.* service above 512 MB RSS" in findings[0].message
 
 
+def test_remediate_findings_restarts_only_high_rss_argus_service(monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.argus.work-pipeline:rss-high",
+        message="low host memory",
+        payload={"label": "com.argus.work-pipeline"},
+    )
+
+    restarted = system_health.remediate_findings([finding], runner=runner)
+
+    assert restarted == ["com.argus.work-pipeline"]
+    assert calls == [[
+        "launchctl", "kickstart", "-k",
+        f"gui/{system_health.os.getuid()}/com.argus.work-pipeline",
+    ]]
+
+
+def test_remediate_findings_ignores_non_argus_label(monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    calls = []
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.apple.Finder:rss-high",
+        message="low host memory",
+        payload={"label": "com.apple.Finder"},
+    )
+
+    restarted = system_health.remediate_findings(
+        [finding],
+        runner=lambda argv, **kwargs: calls.append(argv)
+        or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    assert restarted == []
+    assert calls == []
+
+
 def test_keepalive_service_labels_reads_plists(tmp_path):
     import plistlib
     def _plist(name, body):
