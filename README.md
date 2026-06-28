@@ -31,6 +31,22 @@ fixes, and open safe pull requests.
   <a href="docs/engines.md"><img src="docs/assets/claude-code-icon.svg" alt="Claude Code engine" width="34" height="34"></a>
 </p>
 
+<p>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/vercel.svg" alt="Vercel" title="Vercel" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/posthog.svg" alt="PostHog" title="PostHog" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/supabase.svg" alt="Supabase" title="Supabase" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/sentry.svg" alt="Sentry" title="Sentry" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/fly.svg" alt="Fly.io" title="Fly.io" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/firebase.svg" alt="Firebase" title="Firebase" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/github.svg" alt="GitHub" title="GitHub" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/postgres.svg" alt="Postgres" title="Postgres" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/http.svg" alt="OpenAPI" title="OpenAPI" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/uptime.svg" alt="Uptime" title="Uptime" width="30" height="30"></a>
+  <a href="docs/triage.md"><img src="docs/assets/platform-icons/webhook.svg" alt="Webhook" title="Webhook" width="30" height="30"></a>
+  <a href="docs/support.md"><img src="docs/assets/platform-icons/email.svg" alt="Support email" title="Support email" width="30" height="30"></a>
+  <a href="docs/operations.md"><img src="docs/assets/platform-icons/branch-drift.svg" alt="Branch drift" title="Branch drift" width="30" height="30"></a>
+</p>
+
 [Quickstart](docs/quickstart.md) |
 [Docs](docs/index.md) |
 [Vision](VISION.md) |

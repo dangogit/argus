@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img">
+  <title>Email</title>
+  <rect width="26" height="20" x="3" y="6" fill="#2563eb" rx="3"/>
+  <path fill="#93c5fd" d="M5.4 8.8 16 17.3 26.6 8.8A2.9 2.9 0 0 0 26 8H6c-.2 0-.4 0-.6.8Z"/>
+  <path fill="#dbeafe" d="m5 23 7.6-7.1 2.5 2a1.5 1.5 0 0 0 1.8 0l2.5-2L27 23.1c-.4.5-1 .9-1.8.9H6.8c-.8 0-1.4-.4-1.8-1Z"/>
+</svg>

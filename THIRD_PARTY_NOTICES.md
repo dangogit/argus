@@ -7,6 +7,11 @@ packages resolved during release smoke. Package versions may change when users
 install Argus before a lockfile or pinned release bundle is used. Re-check this
 file before every public release.
 
+## Logo Assets
+
+README platform logo SVGs are sourced from Simple Icons, licensed under
+CC0-1.0. Product names and marks remain property of their respective owners.
+
 ## Declared Runtime Dependencies
 
 | Package | License metadata | Project |
