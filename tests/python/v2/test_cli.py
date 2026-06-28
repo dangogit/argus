@@ -45,8 +45,10 @@ def test_launchd_render_cli_writes_python_units(tmp_path, monkeypatch, pg_dsn):
     assert rc == 0
     up = plistlib.loads((out / "com.argus.up.plist").read_bytes())
     assert up["ProgramArguments"] == [
-        "/venv/bin/python", "-m", "argus.v2.cli", "up", "--poll", "10",
+        "/venv/bin/python", "-m", "argus.v2.cli", "up", "--sweep-only", "--poll", "10",
     ]
+    chat = plistlib.loads((out / "com.argus.work-chat.plist").read_bytes())
+    assert chat["ProgramArguments"][3:] == ["worker", "--lane", "chat", "--poll", "2"]
     assert up["EnvironmentVariables"]["ARGUS_CONFIG_V2"] == str(FIX)
     assert up["EnvironmentVariables"]["ARGUS_CONFIG"] == str(FIX)
     assert up["EnvironmentVariables"]["ARGUS_ENV_FILES"] == "/secrets.env"

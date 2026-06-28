@@ -23,10 +23,11 @@ log = logging.getLogger("argus.worker")
 _TEST_OUTPUT_LIMIT = 12000
 
 
-def run_once(cfg, worker_id: str) -> bool:
+def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> bool:
     conn = pool.connect()
     try:
-        job = jobs.claim(conn, worker_id)
+        job = jobs.claim(conn, worker_id, include_kinds=include_kinds,
+                         exclude_kinds=exclude_kinds)
         conn.commit()
         if job is None:
             return False

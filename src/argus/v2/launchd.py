@@ -157,13 +157,36 @@ def default_units(*, python: str, config: str, db_dsn: str, run_root: str,
             stderr_path=log("serve"),
         ),
         Unit(
+            # Orchestrator: sweep only (route/advance/drain/reclaim). Jobs run in
+            # the worker lanes below, so a slow/hung build can't freeze routing.
             label=f"{label_prefix}.up",
-            argv=argv("up", "--poll", "10"),
+            argv=argv("up", "--sweep-only", "--poll", "10"),
             env=base_env,
             keep_alive=True,
             run_at_load=True,
             stdout_path=log("up"),
             stderr_path=log("up"),
+        ),
+        Unit(
+            # Chat lane: owner-facing converse/triage jobs. Separate process so a
+            # reply is never blocked by a pipeline build in the other lane.
+            label=f"{label_prefix}.work-chat",
+            argv=argv("worker", "--lane", "chat", "--poll", "2"),
+            env=base_env,
+            keep_alive=True,
+            run_at_load=True,
+            stdout_path=log("work-chat"),
+            stderr_path=log("work-chat"),
+        ),
+        Unit(
+            # Pipeline lane: background build/qa/research jobs.
+            label=f"{label_prefix}.work-pipeline",
+            argv=argv("worker", "--lane", "pipeline", "--poll", "2"),
+            env=base_env,
+            keep_alive=True,
+            run_at_load=True,
+            stdout_path=log("work-pipeline"),
+            stderr_path=log("work-pipeline"),
         ),
         Unit(
             label=f"{label_prefix}.poll",
