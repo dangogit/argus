@@ -21,7 +21,9 @@ Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
 - [x] 9. Provider breadth: OpenRouter + Ollama engine paths
 - [x] 10. More channels: Discord + generic email gateway behind a capability-optional interface
 - [x] 11. Per-agent (per-team) budgets done. (Typed ask/confirm/suggest interactions = larger subsystem, kept in ROADMAP "Later" by design - not padded with a token version.)
-- [ ] 12. Linux runtime parity: opinionated always-on bundle as systemd units
+- [x] 12. Linux runtime parity: opinionated always-on bundle as systemd units
+
+ALL 12 ITEMS COMPLETE.
 
 ## Done log
 - Item 1 (observability): loop.py resilient `_sweep` + `_backoff_seconds` (sweep crash logs + backs off, no silent orchestrator death); loggers in orchestrator/queue/worker/reconcile; structured logs on claim/finalize/reclaim + worker failure. Test: tests/python/v2/test_orchestrator_loop.py (5 passed). Regression: queue/fencing/reconcile/worker (26 passed).
@@ -35,3 +37,5 @@ Branch: `feat/reliability-capabilities`. Commit per completed+tested item.
 - Item 9 (provider breadth): engine/adapters/openai_compat.py (stdlib urllib, no new dep) backs `openrouter` + `ollama` via OpenAI /chat/completions; registered in ADAPTERS; EngineName literal extended; env-configured (keys/model/base_url/timeout); docs/engines.md table. Test: tests/python/test_adapter_openai_compat.py (6) + updated engine-list test. Checkpoint: full suite (both dirs) 757 passed, 4 skipped.
 - Item 10 (channels): channels/discord.py (REST poll parse_with_offset, skip bots, snowflake cursor, send) + channels/email.py (SMTP outbound; inbound = email_imap connector); both self-register; ChannelBinding.type relaxed Literal->str (loader REGISTRY is single source of truth, removes drift). Test: tests/python/v2/test_channels_discord_email.py (6) + updated 2 drift tests to use mastodon. Checkpoint: full v2 suite 651 passed, 4 skipped. (email gateway = outbound channel + existing inbound connector, non-redundant.)
 - Item 11 (per-team budgets): Team.max_daily_cost_usd; budget.daily_cost_usd(team_id) joins runs->jobs; budget.team_ceiling + over_budget(team_id) checks team cap first then company; route_events defers an over-budget team's event back to 'received' (retry, not stranded) while other teams proceed. Test: tests/python/v2/test_budget.py +3. Checkpoint: full v2 suite 654 passed, 4 skipped. (Typed ask/confirm/suggest = ROADMAP Later, not padded.)
+
+- Item 12 (Linux parity): launchd.render_systemd renders the curated Unit bundle as systemd .service (+ .timer for interval units, env carried via Environment=); write_units gains os_name (macos plists / linux systemd); CLI `argus launchd render --os linux`. The opinionated serve/up/poll/retro/watchdog/backup/logrotate bundle now runs out-of-the-box on Linux, not just macOS. Test: tests/python/v2/test_launchd.py +4. Checkpoint: full v2 suite 658 passed, 4 skipped.
