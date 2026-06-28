@@ -51,3 +51,22 @@ def test_email_build_message():
     assert msg["From"] == "argus@example.com"
     assert msg["Subject"] == "Alert"
     assert "deploy failed" in msg.get_content()
+
+
+def test_discord_skips_non_numeric_id():
+    raw = [{"id": "notanumber", "channel_id": "c", "content": "x", "author": {"username": "u"}},
+           {"id": "40", "channel_id": "c", "content": "ok", "author": {"username": "u"}}]
+    msgs, offset = DiscordChannel.parse_with_offset(raw)
+    assert [m.text for m in msgs] == ["ok"]  # poison id skipped, batch survives
+    assert offset == "40"
+
+
+def test_email_rejects_header_injection():
+    import pytest
+    with pytest.raises(ValueError):
+        build_message("a@x.com\r\nBcc: evil@x.com", "hi", from_addr="f@x.com")
+
+
+def test_email_has_message_id():
+    msg = build_message("a@x.com", "hi", from_addr="f@x.com")
+    assert msg["Message-ID"]

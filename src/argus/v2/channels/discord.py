@@ -22,7 +22,12 @@ class DiscordChannel:
         for m in items:
             mid = m.get("id")
             if mid is not None:
-                max_id = mid if max_id is None else (mid if int(mid) > int(max_id) else max_id)
+                try:
+                    mid_int = int(mid)
+                except (TypeError, ValueError):
+                    continue  # non-numeric snowflake: skip, don't abort the batch
+                if max_id is None or mid_int > int(max_id):
+                    max_id = mid
             author = m.get("author") or {}
             if author.get("bot"):
                 continue  # never react to bot messages (including our own)

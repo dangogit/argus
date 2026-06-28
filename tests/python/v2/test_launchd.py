@@ -127,3 +127,20 @@ def test_default_units_expands_codex_home(monkeypatch):
     )
     assert units[0].env["CODEX_HOME"] == str(Path.home() / ".codex-fleet")
     assert units[0].env["ARGUS_DB_DSN"].startswith("host=127.0.0.1")
+
+
+def test_render_systemd_escapes_percent():
+    unit = launchd.Unit(
+        label="com.argus.up",
+        argv=["/p", "-m", "argus.v2.cli", "up"],
+        env={"ARGUS_DB_DSN": "host=h password=p%40ss"},
+        keep_alive=True)
+    service, _ = launchd.render_systemd(unit)
+    assert 'Environment="ARGUS_DB_DSN=host=h password=p%%40ss"' in service
+
+
+def test_render_systemd_interval_has_no_install():
+    unit = launchd.Unit(label="com.argus.poll",
+                        argv=["/p", "-m", "argus.v2.cli", "poll"], start_interval=300)
+    service, _ = launchd.render_systemd(unit)
+    assert "[Install]" not in service  # timer-driven oneshot must not be enable-able

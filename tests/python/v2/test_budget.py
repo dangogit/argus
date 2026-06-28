@@ -104,3 +104,37 @@ def test_route_events_defers_over_budget_team(conn, tmp_path):
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM events WHERE id=%s", (eid,))
         assert cur.fetchone()[0] == "received"  # deferred for retry, not stranded
+
+
+def test_daily_cost_ignores_bad_data(conn):
+    _run(conn, "1.00")
+    for bad in ("unpriced", "1.2e3", "NaN", "Infinity", " 2 ", "10;DROP"):
+        _run(conn, bad)  # non-decimal: regex must reject, never reach ::numeric
+    assert budget.daily_cost_usd(conn) == 1.00
+
+
+def _cfg_two_teams(tmp_path, dev_cap):
+    y = tmp_path / "two.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n"
+        "  - name: dev\n    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        f"    pipeline: {{ stages: [developer] }}\n    max_daily_cost_usd: {dev_cap}\n"
+        "  - name: ops\n    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n")
+    return loader.load(y)
+
+
+def test_route_defers_over_team_processes_under_team(conn, tmp_path):
+    cfg = _cfg_two_teams(tmp_path, 0.01)
+    _run(conn, "1.00", team="dev")  # dev over its tiny cap; ops uncapped
+    e_dev = events.ingest_message(conn, cfg, team="dev", source="cli", dedup_key="d1", text="hi")
+    e_ops = events.ingest_message(conn, cfg, team="ops", source="cli", dedup_key="o1", text="hi")
+    conn.commit()
+    reconcile.route_events(conn, cfg)
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, defer_until FROM events WHERE id=%s", (e_dev,))
+        status, defer_until = cur.fetchone()
+        assert status == "received" and defer_until is not None  # deferred with backoff
+        cur.execute("SELECT status FROM events WHERE id=%s", (e_ops,))
+        assert cur.fetchone()[0] == "processed"  # under-budget team still flows

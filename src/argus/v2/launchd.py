@@ -51,7 +51,11 @@ def render_systemd(unit: Unit) -> tuple[str, str | None]:
     box, not just a generic host-job renderer."""
     import shlex
     name = _unit_name(unit)
-    env_lines = [f'Environment="{k}={v}"' for k, v in sorted(unit.env.items())]
+    # systemd treats '%' as a specifier; escape it as '%%' in env values and the
+    # ExecStart line, or a DB password containing '%' is silently mangled.
+    def esc(s: str) -> str:
+        return s.replace("%", "%%")
+    env_lines = [f'Environment="{k}={esc(v)}"' for k, v in sorted(unit.env.items())]
     service_type = "simple" if unit.keep_alive else "oneshot"
     service = [
         "[Unit]",
@@ -60,11 +64,14 @@ def render_systemd(unit: Unit) -> tuple[str, str | None]:
         "[Service]",
         f"Type={service_type}",
         *env_lines,
-        "ExecStart=" + " ".join(shlex.quote(a) for a in unit.argv),
+        "ExecStart=" + esc(" ".join(shlex.quote(a) for a in unit.argv)),
     ]
     if unit.keep_alive:
-        service += ["Restart=on-failure", "RestartSec=5"]
-    service += ["", "[Install]", "WantedBy=default.target", ""]
+        # Only long-running services get [Install]; a timer-driven oneshot is
+        # started by its .timer, so enabling its .service would double-fire it.
+        service += ["Restart=on-failure", "RestartSec=5",
+                    "", "[Install]", "WantedBy=default.target"]
+    service.append("")
     timer = None
     if unit.start_interval is not None:
         timer = "\n".join([
@@ -94,6 +101,7 @@ def write_units(units: Iterable[Unit], out_dir: Path, *, os_name: str = "macos")
             service_text, timer_text = render_systemd(unit)
             sp = out_dir / f"argus-{name}.service"
             sp.write_text(service_text, encoding="utf-8")
+            os.chmod(sp, 0o600)  # Environment= lines can carry the DB DSN/secrets
             written.append(sp)
             if timer_text is not None:
                 tp = out_dir / f"argus-{name}.timer"

@@ -74,3 +74,17 @@ def test_alerts_tool_returns_inserted_alert(conn):
     conn.commit()
     resp = _call("argus_alerts")
     assert "disk full" in resp["result"]["content"][0]["text"]
+
+
+def test_non_object_request_rejected():
+    for bad in (42, [1, 2], "str", None):
+        resp = server.handle_request(bad)
+        assert resp["error"]["code"] == -32600  # invalid request, did not crash
+
+
+def test_serve_survives_non_object_frame():
+    stdin = io.StringIO("42\n" + json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n")
+    stdout = io.StringIO()
+    server.serve(stdin, stdout)
+    answered = [json.loads(l) for l in stdout.getvalue().splitlines() if l]
+    assert any(r.get("id") == 1 and "result" in r for r in answered)  # loop survived 42

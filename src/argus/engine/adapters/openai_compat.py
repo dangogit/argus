@@ -30,6 +30,15 @@ def _call(prompt: str, *, base_url: str, api_key: str | None, model: str, label:
     try:
         with urllib.request.urlopen(req, timeout=_timeout()) as resp:
             data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        # Surface the provider's error body (bad key/model/rate-limit) instead of
+        # discarding it. HTTPError is a URLError subclass, so catch it first.
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            pass
+        raise EngineOutageError(f"{label}: HTTP {exc.code} {detail}".rstrip())
     except urllib.error.URLError as exc:
         raise EngineOutageError(f"{label}: {exc.reason}")
     except (TimeoutError, OSError, ValueError) as exc:
