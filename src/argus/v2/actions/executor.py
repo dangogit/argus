@@ -366,6 +366,7 @@ def _execute_status(cur, action_id: str, cfg, payload: dict, existing,
         provider_ref = ref if ref is not None else f"local:{action_id}"
         cur.execute("UPDATE actions SET status='done', provider_ref=%s, updated_at=now() "
                     "WHERE id=%s", (provider_ref, action_id))
+        _maybe_set_typing(cfg, destination_ref, payload, text)
         return
     try:
         ref = _send.edit(cfg, destination_ref, existing, text) if resolvable else None
@@ -376,6 +377,27 @@ def _execute_status(cur, action_id: str, cfg, payload: dict, existing,
         ref = None
     cur.execute("UPDATE actions SET status='done', provider_ref=%s, updated_at=now() "
                 "WHERE id=%s", (ref or existing, action_id))
+    _maybe_set_typing(cfg, destination_ref, payload, text)
+
+
+def _maybe_set_typing(cfg, destination_ref, payload: dict, text: str) -> None:
+    """Fire the native Slack typing-dots for this stage, best-effort, alongside the
+    durable status line. Slack-only in practice: other channels expose no
+    set_typing() so send.set_typing is a no-op, and a missing thread_ts skips it.
+    Never raises - a typing hint must not affect the status write or the drain."""
+    thread_ts = (payload or {}).get("thread_ts")
+    if not cfg or not destination_ref or not thread_ts:
+        return
+    from argus.v2.orchestrator import status as _status
+    spec = _status.typing_for(text)
+    if spec is None:
+        return
+    status_text, loading = spec
+    try:
+        from argus.v2.channels import send as _send
+        _send.set_typing(cfg, destination_ref, thread_ts, status_text, loading)
+    except Exception as exc:
+        log.debug("native typing best-effort failed: %s", exc)
 
 
 # Approval nonce: 128 bits of entropy. This token authorizes an
