@@ -77,3 +77,37 @@ class SlackChannel:
         if not data.get("ok"):
             raise RuntimeError(f"slack chat.update failed: {data.get('error', 'unknown_error')}")
         return str(data.get("ts", message_id))
+
+    def set_typing(self, binding, thread_ts: str, status: str,
+                   loading_messages=None) -> bool:  # pragma: no cover
+        """Native Slack AI typing indicator via assistant.threads.setStatus - the
+        grey italic 'is thinking...' dots in the thread, optionally cycling
+        through loading_messages. Best-effort: returns False instead of raising if
+        the token lacks the surface or the call is rejected, so a typing hint never
+        breaks the durable status line. status='' clears the indicator. Works with
+        the chat:write scope (no assistant-app manifest required).
+
+        ponytail: per-stage fire; Slack auto-clears the indicator on the bot's next
+        reply and after a ~2-min idle timeout, which the next stage re-firing
+        covers. No local clear timer needed."""
+        if not binding.secret or not thread_ts:
+            return False
+        body = {
+            "channel_id": binding.channel_id,
+            "thread_ts": thread_ts,
+            "status": status or "",
+        }
+        if loading_messages:
+            body["loading_messages"] = list(loading_messages)[:10]
+        try:
+            import httpx
+
+            r = httpx.post(
+                "https://slack.com/api/assistant.threads.setStatus",
+                headers={"Authorization": f"Bearer {binding.secret}"},
+                json=body,
+                timeout=10,
+            )
+            return bool(r.json().get("ok"))
+        except Exception:
+            return False
