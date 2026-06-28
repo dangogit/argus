@@ -1,18 +1,20 @@
 :root {
-  --bg: oklch(0.105 0.018 260);
-  --panel: oklch(0.18 0.018 255 / 0.84);
-  --panel-2: oklch(0.24 0.02 250 / 0.86);
-  --panel-soft: oklch(0.97 0.006 255 / 0.055);
-  --text: oklch(0.94 0.008 250);
-  --muted: oklch(0.68 0.018 250);
-  --faint: oklch(0.52 0.018 250);
-  --border: oklch(0.96 0.006 250 / 0.13);
-  --cyan: oklch(0.79 0.09 222);
-  --green: oklch(0.77 0.13 160);
-  --amber: oklch(0.82 0.14 84);
-  --red: oklch(0.67 0.16 28);
-  --focus: oklch(0.82 0.1 222);
-  --shadow: 0 24px 80px oklch(0.02 0.02 260 / 0.42);
+  --bg: #17120f;
+  --panel: rgb(35 27 23 / 0.84);
+  --panel-2: rgb(52 40 33 / 0.88);
+  --panel-soft: rgb(244 243 238 / 0.055);
+  --text: #f4f3ee;
+  --muted: #b1ada1;
+  --faint: #756f66;
+  --border: rgb(244 243 238 / 0.13);
+  --accent: #c15f3c;
+  --accent-2: #d49a6a;
+  --blue: #8ca6ad;
+  --green: #8fa477;
+  --amber: #e0a86d;
+  --red: #d86f55;
+  --focus: #d49a6a;
+  --shadow: 0 24px 80px rgb(0 0 0 / 0.42);
 }
 
 * {
@@ -27,20 +29,20 @@ body {
   margin: 0;
   min-height: 100%;
   background:
-    radial-gradient(circle at 50% -14%, oklch(0.72 0.09 222 / 0.2), transparent 42%),
-    radial-gradient(circle at 82% 12%, oklch(0.75 0.12 170 / 0.08), transparent 28%),
-    linear-gradient(180deg, oklch(0.135 0.018 258), var(--bg) 42%, oklch(0.08 0.015 260));
+    radial-gradient(circle at 50% -14%, rgb(193 95 60 / 0.18), transparent 42%),
+    radial-gradient(circle at 82% 12%, rgb(212 154 106 / 0.09), transparent 28%),
+    linear-gradient(180deg, #211814, var(--bg) 42%, #0f0b09);
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
 }
 
 body::selection {
-  background: oklch(0.78 0.14 220 / 0.35);
+  background: rgb(193 95 60 / 0.35);
 }
 
 a {
-  color: var(--cyan);
+  color: var(--accent-2);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
@@ -55,7 +57,7 @@ select:focus-visible {
 
 header.argus-header {
   align-items: baseline;
-  background: oklch(0.12 0.016 260 / 0.7);
+  background: rgb(23 18 15 / 0.72);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(22px);
   display: flex;
@@ -104,7 +106,7 @@ h3 {
 }
 
 .system-label {
-  color: var(--cyan);
+  color: var(--accent-2);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.18em;
@@ -163,7 +165,7 @@ h3 {
 }
 
 .select-shell {
-  background: oklch(0.08 0.014 260 / 0.82);
+  background: rgb(17 13 11 / 0.82);
   border: 1px solid var(--border);
   border-radius: 999px;
   min-width: 150px;
@@ -211,9 +213,9 @@ h3 {
 }
 
 .filter-submit {
-  background: oklch(0.92 0.008 250);
+  background: #f4f3ee;
   border: 0;
-  color: oklch(0.11 0.016 260);
+  color: #17120f;
   cursor: pointer;
 }
 
@@ -224,7 +226,7 @@ h3 {
 
 .select-shell:focus-within,
 .select-shell:hover {
-  border-color: oklch(0.9 0.02 245 / 0.34);
+  border-color: rgb(212 154 106 / 0.42);
 }
 
 .filter-reset:hover,
@@ -247,22 +249,22 @@ h3 {
 
 .system-pill.clear,
 .agent-status.clear {
-  background: oklch(0.72 0.12 160 / 0.1);
-  border-color: oklch(0.67 0.12 158 / 0.32);
+  background: rgb(143 164 119 / 0.1);
+  border-color: rgb(143 164 119 / 0.32);
   color: var(--green);
 }
 
 .system-pill.waiting,
 .agent-status.waiting {
-  background: oklch(0.8 0.14 84 / 0.1);
-  border-color: oklch(0.72 0.12 83 / 0.34);
+  background: rgb(224 168 109 / 0.1);
+  border-color: rgb(224 168 109 / 0.34);
   color: var(--amber);
 }
 
 .system-pill.blocked,
 .agent-status.blocked {
-  background: oklch(0.66 0.14 28 / 0.1);
-  border-color: oklch(0.62 0.14 31 / 0.34);
+  background: rgb(216 111 85 / 0.1);
+  border-color: rgb(216 111 85 / 0.34);
   color: var(--red);
 }
 
@@ -275,9 +277,9 @@ h3 {
 
 .orbital-stage {
   background:
-    radial-gradient(circle at 50% 48%, oklch(0.78 0.08 222 / 0.13), transparent 34%),
-    radial-gradient(circle at 20% 20%, oklch(0.72 0.11 185 / 0.12), transparent 30%),
-    linear-gradient(145deg, oklch(0.18 0.017 255 / 0.88), oklch(0.1 0.016 260 / 0.92));
+    radial-gradient(circle at 50% 48%, rgb(193 95 60 / 0.14), transparent 34%),
+    radial-gradient(circle at 20% 20%, rgb(212 154 106 / 0.11), transparent 30%),
+    linear-gradient(145deg, rgb(35 27 23 / 0.9), rgb(17 13 11 / 0.94));
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--shadow);
@@ -290,7 +292,7 @@ h3 {
 
 .orbital-stage::before,
 .orbital-stage::after {
-  border: 1px solid oklch(0.9 0.02 245 / 0.12);
+  border: 1px solid rgb(244 243 238 / 0.12);
   border-radius: 999px;
   content: "";
   inset: 11%;
@@ -299,12 +301,12 @@ h3 {
 }
 
 .orbital-stage::after {
-  border-color: oklch(0.78 0.08 222 / 0.14);
+  border-color: rgb(212 154 106 / 0.16);
   inset: 22%;
 }
 
 .scan-ring {
-  border: 1px solid oklch(0.78 0.08 222 / 0.2);
+  border: 1px solid rgb(193 95 60 / 0.2);
   border-radius: 999px;
   inset: 32%;
   pointer-events: none;
@@ -312,13 +314,13 @@ h3 {
 }
 
 .ring-two {
-  border-color: oklch(0.94 0.008 250 / 0.1);
+  border-color: rgb(244 243 238 / 0.1);
   inset: 42%;
 }
 
 .scan-sweep {
   animation: sweep 18s linear infinite;
-  background: conic-gradient(from 0deg, transparent 0deg 302deg, oklch(0.82 0.08 222 / 0.11) 322deg, transparent 344deg 360deg);
+  background: conic-gradient(from 0deg, transparent 0deg 302deg, rgb(212 154 106 / 0.13) 322deg, transparent 344deg 360deg);
   inset: 6%;
   pointer-events: none;
   position: absolute;
@@ -326,8 +328,8 @@ h3 {
 
 .argus-core {
   align-items: center;
-  background: oklch(0.12 0.016 260 / 0.78);
-  border: 1px solid oklch(0.94 0.008 250 / 0.16);
+  background: rgb(17 13 11 / 0.78);
+  border: 1px solid rgb(244 243 238 / 0.16);
   border-radius: 8px;
   backdrop-filter: blur(18px);
   display: grid;
@@ -343,12 +345,12 @@ h3 {
 }
 
 .argus-core img {
-  background: oklch(0.98 0.004 250 / 0.05);
+  background: rgb(244 243 238 / 0.05);
   border: 1px solid var(--border);
   border-radius: 8px;
-  height: 86px;
-  padding: 10px;
-  width: 86px;
+  height: 96px;
+  padding: 6px;
+  width: 96px;
 }
 
 .argus-core strong {
@@ -362,7 +364,7 @@ h3 {
 
 .worker-node {
   align-items: center;
-  background: oklch(0.15 0.016 260 / 0.82);
+  background: rgb(28 21 18 / 0.82);
   border: 1px solid var(--border);
   border-radius: 8px;
   backdrop-filter: blur(16px);
@@ -385,33 +387,49 @@ h3 {
 .worker-node:hover,
 .worker-node:focus-visible,
 .worker-node.selected {
-  background: oklch(0.24 0.018 250 / 0.9);
-  border-color: oklch(0.84 0.08 222 / 0.5);
+  background: rgb(54 40 32 / 0.9);
+  border-color: rgb(212 154 106 / 0.5);
   transform: translate(-50%, -50%) scale(1.02);
 }
 
 .worker-node.blocked {
-  border-color: oklch(0.64 0.15 28 / 0.55);
+  border-color: rgb(216 111 85 / 0.55);
 }
 
 .worker-node.working {
-  border-color: oklch(0.79 0.12 84 / 0.48);
+  border-color: rgb(224 168 109 / 0.48);
 }
 
 .worker-node.waiting {
-  border-color: oklch(0.76 0.09 222 / 0.42);
+  border-color: rgb(140 166 173 / 0.42);
 }
 
 .worker-icon {
   align-items: center;
-  background: oklch(0.95 0.006 250 / 0.06);
+  background: rgb(244 243 238 / 0.06);
   border: 1px solid var(--border);
   border-radius: 8px;
-  color: var(--cyan);
+  color: var(--blue);
   display: inline-flex;
   height: 34px;
   justify-content: center;
   width: 34px;
+}
+
+.role-manager .worker-icon {
+  color: var(--accent-2);
+}
+
+.role-qa .worker-icon {
+  color: var(--green);
+}
+
+.role-senior .worker-icon {
+  color: var(--amber);
+}
+
+.role-outbox .worker-icon {
+  color: var(--accent);
 }
 
 .worker-icon svg {
@@ -447,7 +465,7 @@ h3 {
 
 .worker-badge {
   align-items: center;
-  background: oklch(0.09 0.014 260 / 0.86);
+  background: rgb(15 11 9 / 0.86);
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--muted);
@@ -645,7 +663,7 @@ ul.alert-list {
 }
 
 .error-panel {
-  border-color: oklch(0.62 0.17 31 / 0.6);
+  border-color: rgb(216 111 85 / 0.6);
   padding: 12px 14px;
 }
 
@@ -720,7 +738,7 @@ ul.alert-list {
 }
 
 .login-panel button {
-  background: var(--cyan);
+  background: var(--accent-2);
   border: 0;
   color: var(--bg);
   cursor: pointer;

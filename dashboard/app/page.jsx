@@ -19,6 +19,19 @@ const ROLE_FILTERS = [
 ];
 
 function RoleIcon({ role }) {
+  if (role === "manager") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <circle cx="6" cy="7" r="2" />
+        <circle cx="18" cy="7" r="2" />
+        <circle cx="18" cy="17" r="2" />
+        <path d="M8 8.5 10 10" />
+        <path d="M16 8.5 14 10" />
+        <path d="M14.5 14.5 16.5 16" />
+      </svg>
+    );
+  }
   if (role === "developer") {
     return (
       <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -150,12 +163,16 @@ function workerHref(agent, filter) {
   return hrefFor({ role: filter.role, project: filter.project, agent: agent.id });
 }
 
+function roleClass(role) {
+  return `role-${String(role || "worker").replace(/[^a-z0-9-]/gi, "-").toLowerCase()}`;
+}
+
 function WorkerNode({ agent, filter, index, totalNodes, selected }) {
   const pending = agent.pendingJobs + agent.waitingActions + agent.failedJobs + agent.failedActions + agent.runOutages;
   return (
     <Link
       aria-label={`${agent.label}, ${STATUSES[agent.status] || agent.status}, ${pending} pending`}
-      className={`worker-node ${agent.status} ${selected ? "selected" : ""}`}
+      className={`worker-node ${agent.status} ${roleClass(agent.role)} ${selected ? "selected" : ""}`}
       href={workerHref(agent, filter)}
       style={nodePosition(index, totalNodes)}
     >
