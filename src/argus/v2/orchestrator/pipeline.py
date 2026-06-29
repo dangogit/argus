@@ -382,7 +382,10 @@ def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:
         # status='pending' (never parent-request status), so any non-terminal
         # sibling would otherwise linger as a zombie 'pending' job forever.
         # 'dead' is the terminal-cancel state ('cancelled' is not in the jobs
-        # CHECK constraint).
+        # CHECK constraint). Cancelling 'claimed'/'running' siblings is safe:
+        # a worker's finalize/heartbeat is a fenced CAS on
+        # status IN ('claimed','running'), so once 'dead' the worker is fenced
+        # out and cannot resurrect the job. Do not add 'dead' to that CAS set.
         cur.execute(
             "UPDATE jobs SET status='dead', updated_at=now() "
             "WHERE request_id=%s AND status IN ('pending','claimed','running')",

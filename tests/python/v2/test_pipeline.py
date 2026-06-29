@@ -215,6 +215,13 @@ def test_fail_cancels_sibling_jobs(conn, cfg):
         cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s AND status='pending'",
                     (rid,))
         assert cur.fetchone()[0] == 2  # developer + qa both pending
+        # Simulate a worker mid-run on one sibling: it must still be cancelled,
+        # and the worker's later fenced-CAS write-back cannot resurrect it.
+        cur.execute(
+            "UPDATE jobs SET status='running' WHERE id = ("
+            "  SELECT id FROM jobs WHERE request_id=%s AND status='pending' LIMIT 1)",
+            (rid,))
+    conn.commit()
 
     pipeline._fail(conn, cfg, rid, "build failed")
     conn.commit()
