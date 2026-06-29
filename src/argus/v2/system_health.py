@@ -264,9 +264,21 @@ def argus_service_rss(
 def remediate_findings(
     findings: list[Finding],
     *,
+    conn: psycopg.Connection | None = None,
+    enabled: bool | None = None,
+    cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> list[str]:
-    """Restart only the Argus service named by a high-RSS memory finding."""
+    """Restart only the Argus service named by a high-RSS memory finding.
+
+    Off by default: opt in with ARGUS_HEALTH_AUTO_RESTART=1 (or enabled=True).
+    Each restart is gated by a per-label cooldown recorded in the alerts table,
+    which both throttles a restart loop and leaves an audit row.
+    """
+    if enabled is None:
+        enabled = _bool_env("ARGUS_HEALTH_AUTO_RESTART", False)
+    if not enabled:
+        return []
     restarted: list[str] = []
     for finding in findings:
         if not finding.fingerprint.endswith(":rss-high"):
@@ -274,9 +286,33 @@ def remediate_findings(
         label = str(finding.payload.get("label") or "")
         if not _ARGUS_LAUNCHD_LABEL.match(label):
             continue
+        if conn is not None and not _claim_restart(
+            conn, label, finding.payload, cooldown_seconds
+        ):
+            continue  # cooldown still active, skip to avoid a restart loop
         if _restart_launchd_label(label, runner=runner):
             restarted.append(label)
     return restarted
+
+
+def _claim_restart(
+    conn: psycopg.Connection,
+    label: str,
+    payload: dict,
+    cooldown_seconds: int,
+) -> bool:
+    """Record a restart intent; returns False if a recent one is still cooling down."""
+    alert_id = alerts.record(
+        conn,
+        severity="warn",
+        project="general",
+        fingerprint=f"memory:{label}:restart",
+        message=f"watchdog auto-restart {label} (RSS over cap)",
+        channel="log",
+        payload=payload,
+        cooldown_seconds=cooldown_seconds,
+    )
+    return bool(alert_id)
 
 
 def _restart_launchd_label(
@@ -320,8 +356,12 @@ def _darwin_resident_size(pid: int) -> int | None:
         return None
     if rc != 0:
         return None
-    # rusage_info_v2: 16 byte UUID, then six uint64 fields before resident_size.
-    return int(struct.unpack_from("<Q", buf.raw, 64)[0])
+    # rusage_info_v2 layout: 16-byte UUID, then ri_user_time, ri_system_time,
+    # ri_pkg_idle_wkups, ri_interrupt_wkups, ri_pageins, ri_wired_size,
+    # ri_resident_size (offset 64), ri_phys_footprint (offset 72).
+    # phys_footprint is Apple's canonical per-process memory (Activity Monitor
+    # "Memory"); it excludes shared pages that resident_size double-counts.
+    return int(struct.unpack_from("<Q", buf.raw, 72)[0])
 
 
 def notify_findings(
@@ -504,6 +544,13 @@ def _float_env(name: str, default: float) -> float:
         return float(os.environ.get(name, ""))
     except ValueError:
         return default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _digest(value: str) -> str:

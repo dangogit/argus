@@ -132,7 +132,8 @@ def test_remediate_findings_restarts_only_high_rss_argus_service(monkeypatch):
         payload={"label": "com.argus.work-pipeline"},
     )
 
-    restarted = system_health.remediate_findings([finding], runner=runner)
+    restarted = system_health.remediate_findings(
+        [finding], enabled=True, runner=runner)
 
     assert restarted == ["com.argus.work-pipeline"]
     assert calls == [[
@@ -153,12 +154,59 @@ def test_remediate_findings_ignores_non_argus_label(monkeypatch):
 
     restarted = system_health.remediate_findings(
         [finding],
+        enabled=True,
         runner=lambda argv, **kwargs: calls.append(argv)
         or subprocess.CompletedProcess(argv, 0, "", ""),
     )
 
     assert restarted == []
     assert calls == []
+
+
+def test_remediate_findings_disabled_by_default(monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    monkeypatch.delenv("ARGUS_HEALTH_AUTO_RESTART", raising=False)
+    calls = []
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.argus.work-pipeline:rss-high",
+        message="low host memory",
+        payload={"label": "com.argus.work-pipeline"},
+    )
+
+    restarted = system_health.remediate_findings(
+        [finding],
+        runner=lambda argv, **kwargs: calls.append(argv)
+        or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    assert restarted == []
+    assert calls == []
+
+
+def test_remediate_findings_cooldown_throttles_restart_loop(conn, monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.argus.work-pipeline:rss-high",
+        message="low host memory",
+        payload={"label": "com.argus.work-pipeline"},
+    )
+
+    first = system_health.remediate_findings(
+        [finding], conn=conn, enabled=True, cooldown_seconds=3600, runner=runner)
+    second = system_health.remediate_findings(
+        [finding], conn=conn, enabled=True, cooldown_seconds=3600, runner=runner)
+
+    assert first == ["com.argus.work-pipeline"]
+    assert second == []  # cooldown active, no second kickstart
+    assert len(calls) == 1
 
 
 def test_keepalive_service_labels_reads_plists(tmp_path):

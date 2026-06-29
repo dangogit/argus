@@ -1267,11 +1267,13 @@ def cmd_host(args) -> int:
                     config_path=cfg_path,
                     readiness_failed=rc != 0,
                 )
-                remediated = system_health.remediate_findings(findings)
                 inserted = system_health.notify_findings(conn, cfg, findings)
                 if inserted:
                     executor.process_proposed(conn, cfg)
                     notified = True
+                # Remediate after notifying so the alert captures the live PID,
+                # and gated by conn so each restart is cooldown-throttled + audited.
+                remediated = system_health.remediate_findings(findings, conn=conn)
                 if remediated:
                     print("watchdog: restarted " + ", ".join(remediated))
                 conn.commit()
