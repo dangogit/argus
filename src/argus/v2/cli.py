@@ -1263,15 +1263,19 @@ def cmd_host(args) -> int:
                 cfg = system_health.load_general_routing_config(cfg_path)
             conn = pool.connect()
             try:
-                inserted = system_health.check_and_notify(
-                    conn,
-                    cfg,
+                findings = system_health.collect_findings(
                     config_path=cfg_path,
                     readiness_failed=rc != 0,
                 )
+                inserted = system_health.notify_findings(conn, cfg, findings)
                 if inserted:
                     executor.process_proposed(conn, cfg)
                     notified = True
+                # Remediate after notifying so the alert captures the live PID,
+                # and gated by conn so each restart is cooldown-throttled + audited.
+                remediated = system_health.remediate_findings(findings, conn=conn)
+                if remediated:
+                    print("watchdog: restarted " + ", ".join(remediated))
                 conn.commit()
             finally:
                 conn.close()

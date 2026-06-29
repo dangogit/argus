@@ -66,6 +66,149 @@ def test_launchd_findings_periodic_nonzero_exit_is_not_flagged():
     assert system_health.launchd_findings(runner=runner, service_labels=set()) == []
 
 
+def test_memory_findings_flags_high_rss_argus_service_when_memory_low(monkeypatch):
+    monkeypatch.setenv("ARGUS_HEALTH_MIN_MEMORY_FREE_PERCENT", "20")
+    monkeypatch.setenv("ARGUS_HEALTH_MAX_SERVICE_RSS_MB", "512")
+
+    def runner(argv, **kwargs):
+        if argv == ["memory_pressure"]:
+            return subprocess.CompletedProcess(
+                argv, 0, "System-wide memory free percentage: 8%\n", "")
+        if argv[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(
+                argv, 0,
+                "   111   -15  com.argus.up\n"
+                "   222   -15  com.argus.work-pipeline\n"
+                "     0     0  com.argus.poll\n", "")
+        raise AssertionError(argv)
+
+    rss = {111: 300 * 1024 * 1024, 222: 900 * 1024 * 1024}
+    findings = system_health.memory_findings(
+        runner=runner,
+        rss_reader=lambda pid: rss.get(pid),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].fingerprint == "memory:com.argus.work-pipeline:rss-high"
+    assert "cap 512 MB" in findings[0].message
+    assert findings[0].payload["rss_mb"] == 900
+
+
+def test_memory_findings_low_memory_without_argus_culprit_is_warn(monkeypatch):
+    monkeypatch.setenv("ARGUS_HEALTH_MIN_MEMORY_FREE_PERCENT", "20")
+    monkeypatch.setenv("ARGUS_HEALTH_MAX_SERVICE_RSS_MB", "512")
+
+    def runner(argv, **kwargs):
+        if argv == ["memory_pressure"]:
+            return subprocess.CompletedProcess(
+                argv, 0, "System-wide memory free percentage: 8%\n", "")
+        if argv[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(argv, 0, "   111   -15  com.argus.up\n", "")
+        raise AssertionError(argv)
+
+    findings = system_health.memory_findings(
+        runner=runner,
+        rss_reader=lambda pid: 300 * 1024 * 1024,
+    )
+
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert findings[0].fingerprint == "memory:low:no-argus-culprit"
+    assert "no com.argus.* service above 512 MB RSS" in findings[0].message
+
+
+def test_remediate_findings_restarts_only_high_rss_argus_service(monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.argus.work-pipeline:rss-high",
+        message="low host memory",
+        payload={"label": "com.argus.work-pipeline"},
+    )
+
+    restarted = system_health.remediate_findings(
+        [finding], enabled=True, runner=runner)
+
+    assert restarted == ["com.argus.work-pipeline"]
+    assert calls == [[
+        "launchctl", "kickstart", "-k",
+        f"gui/{system_health.os.getuid()}/com.argus.work-pipeline",
+    ]]
+
+
+def test_remediate_findings_ignores_non_argus_label(monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    calls = []
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.apple.Finder:rss-high",
+        message="low host memory",
+        payload={"label": "com.apple.Finder"},
+    )
+
+    restarted = system_health.remediate_findings(
+        [finding],
+        enabled=True,
+        runner=lambda argv, **kwargs: calls.append(argv)
+        or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    assert restarted == []
+    assert calls == []
+
+
+def test_remediate_findings_disabled_by_default(monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    monkeypatch.delenv("ARGUS_HEALTH_AUTO_RESTART", raising=False)
+    calls = []
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.argus.work-pipeline:rss-high",
+        message="low host memory",
+        payload={"label": "com.argus.work-pipeline"},
+    )
+
+    restarted = system_health.remediate_findings(
+        [finding],
+        runner=lambda argv, **kwargs: calls.append(argv)
+        or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    assert restarted == []
+    assert calls == []
+
+
+def test_remediate_findings_cooldown_throttles_restart_loop(conn, monkeypatch):
+    monkeypatch.setattr(system_health.sys, "platform", "darwin")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="memory:com.argus.work-pipeline:rss-high",
+        message="low host memory",
+        payload={"label": "com.argus.work-pipeline"},
+    )
+
+    first = system_health.remediate_findings(
+        [finding], conn=conn, enabled=True, cooldown_seconds=3600, runner=runner)
+    second = system_health.remediate_findings(
+        [finding], conn=conn, enabled=True, cooldown_seconds=3600, runner=runner)
+
+    assert first == ["com.argus.work-pipeline"]
+    assert second == []  # cooldown active, no second kickstart
+    assert len(calls) == 1
+
+
 def test_keepalive_service_labels_reads_plists(tmp_path):
     import plistlib
     def _plist(name, body):
