@@ -197,6 +197,41 @@ def test_triage_ignore_notifies_control_channel(conn, tmp_path):
     assert triage == "ignore"
 
 
+def test_fail_cancels_sibling_jobs(conn, cfg):
+    """_fail marks the request failed AND cancels its non-terminal sibling jobs.
+    Regression: it only updated the request, leaving sibling jobs stuck
+    'pending' forever (on_job_done early-returns once the request isn't 'open',
+    and jobs.claim filters only on status='pending'), so they became zombies
+    that never advance. They must end up 'dead', not 'pending'."""
+    eid = _event(conn, cfg)
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    # Add a second stage job so there is a sibling to orphan.
+    pipeline.enqueue_stage(conn, cfg, request_id=rid, stage_index=1)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s AND status='pending'",
+                    (rid,))
+        assert cur.fetchone()[0] == 2  # developer + qa both pending
+
+    pipeline._fail(conn, cfg, rid, "build failed")
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "failed"
+        # No sibling job is left lingering in a non-terminal state.
+        cur.execute(
+            "SELECT count(*) FROM jobs WHERE request_id=%s "
+            "AND status IN ('pending','claimed','running')", (rid,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s AND status='dead'",
+                    (rid,))
+        assert cur.fetchone()[0] == 2
+
+
 def test_pr_summary_uses_builder_llm_summary(conn, cfg, tmp_path):
     eid = events.ingest_message(conn, cfg, team="dev", source="cli",
                                 dedup_key="sum1", text="cannot save profile")

@@ -377,6 +377,16 @@ def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:
         team_id, conv_id, origin_kind = row
         cur.execute("UPDATE requests SET status='failed', updated_at=now() WHERE id=%s",
                     (request_id,))
+        # Cancel sibling jobs in the same transaction. on_job_done early-returns
+        # once the request is not 'open', and jobs.claim filters only on
+        # status='pending' (never parent-request status), so any non-terminal
+        # sibling would otherwise linger as a zombie 'pending' job forever.
+        # 'dead' is the terminal-cancel state ('cancelled' is not in the jobs
+        # CHECK constraint).
+        cur.execute(
+            "UPDATE jobs SET status='dead', updated_at=now() "
+            "WHERE request_id=%s AND status IN ('pending','claimed','running')",
+            (request_id,))
         text = _failure_text(conn, request_id, reason)
         if origin_kind == "signal":
             # Auto/signal-origin request: nobody is waiting on it, so don't ping
