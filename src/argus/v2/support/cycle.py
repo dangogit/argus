@@ -94,6 +94,9 @@ def handle_guidance_reply(conn: psycopg.Connection, cfg, team_id: str, text: str
     scfg = source.config or {}
     rejected = _rejects_send(answer)
     explicit_reply = _reply_from_answer(answer)
+    proposed_reply = (req.get("proposed_reply") or "").strip()
+    if not rejected and not explicit_reply and proposed_reply and _approves_send(answer):
+        explicit_reply = proposed_reply
     status = "rejected" if rejected else "sent" if explicit_reply else "answered"
     state.resolve_guidance(team_id, guidance_id, answer, status=status)
     _remember_guidance(conn, cfg, team_id, req, answer)
@@ -131,6 +134,14 @@ def handle_context_message(conn: psycopg.Connection, cfg, *, team_id: str,
     if _is_support_question(answer):
         return ContextResponse(True, reply=_context_answer(req))
     explicit_reply = _reply_from_answer(answer)
+    proposed = (req.get("proposed_reply") or "").strip()
+    if not explicit_reply and proposed and _approves_send(answer):
+        explicit_reply = proposed
+    if not explicit_reply and _approves_send(answer) and not proposed:
+        return ContextResponse(
+            True,
+            reply="No proposed reply to send. Use send: <exact reply> to email the customer.",
+        )
     if not explicit_reply and _requests_email_recheck(answer):
         return ContextResponse(True, reply=_context_retry_answer(req))
     rejected = _rejects_send(answer)
@@ -164,7 +175,8 @@ def handle_context_message(conn: psycopg.Connection, cfg, *, team_id: str,
     _remember_guidance(conn, cfg, team_id, req, answer)
     return ContextResponse(
         True,
-        reply="Learned. No customer reply sent. Use send: <exact reply> to email the customer.",
+        reply='Learned. No customer reply sent. Reply "send" to send the proposed reply, '
+              "or send: <exact reply> to email the customer.",
         context_status="learned",
     )
 
@@ -431,12 +443,14 @@ def _guidance_text(project: str, guidance_id: str, email: EmailSummary,
         preview,
     ]
     if proposed_reply:
-        lines += ["", "Proposed reply:", proposed_reply]
-    lines += [
-        "",
-        f"Reply naturally to teach Argus, or use: support {guidance_id} send: <exact customer reply>",
-        "Plain guidance is learned only. Customer email is sent only with send:.",
-    ]
+        lines += ["", "Proposed reply:", proposed_reply, "",
+                  'Reply "send" to send the proposed reply as-is.',
+                  "Reply send: <your text> to send a different reply.",
+                  "Any other reply teaches Argus (learned, not sent)."]
+    else:
+        lines += ["",
+                  "Reply send: <exact customer reply> to email the customer.",
+                  "Any other reply teaches Argus (learned, not sent)."]
     return "\n".join(lines)
 
 
@@ -492,7 +506,8 @@ def _context_answer(req: dict) -> str:
         "Customer request:",
         _thread_excerpt(req.get("thread", "")),
         "",
-        "No customer reply sent. Reply with guidance to teach Argus, or use send: <exact reply> to email the customer.",
+        'No customer reply sent. Reply "send" to send the proposed reply, '
+        "guidance to teach Argus, or send: <exact reply> to email the customer.",
     ]
     return "\n".join(line for line in lines if line is not None).strip()
 
@@ -688,6 +703,24 @@ def _rejects_send(answer: str) -> bool:
         "no customer reply",
         "archive this",
     ))
+
+
+_APPROVE_PHRASES = {
+    "yes", "y", "yep", "yeah", "yup", "ok", "okay", "k",
+    "send", "send it", "send that", "send this", "send the draft",
+    "send the reply", "send reply", "send as is", "send as-is",
+    "approve", "approved", "approve it", "go", "go ahead", "do it",
+    "ship it", "ship", "lgtm", "looks good", "sounds good", "perfect",
+    "yes send", "yes send it", "ok send", "ok send it", "ok go",
+    "\U0001f44d", "\U0001f44d\U0001f3fb", "\U0001f44d\U0001f3fc",
+    "\U0001f44d\U0001f3fd", "\U0001f44d\U0001f3fe", "\U0001f44d\U0001f3ff",
+}
+
+
+def _approves_send(answer: str) -> bool:
+    body = " ".join((answer or "").strip().lower().split())
+    body = body.strip(".!")
+    return body in _APPROVE_PHRASES
 
 
 def _reply_from_answer(answer: str) -> str:
