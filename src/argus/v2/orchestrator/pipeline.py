@@ -433,6 +433,10 @@ def _handle_recommended_fix(conn: psycopg.Connection, cfg, job: Job, team,
     dev_idx = _index(team, "developer")
     if dev_idx is None:
         dev_idx = job.stage
+    # Deliberately shares the developer-index branch_counters slot with _loop_back
+    # (qa/senior rework). One budget bounds total developer re-dispatches per
+    # request regardless of why, so a recommend-fix retry and a qa-fail rework
+    # can't together exceed max_iters. Do not split this into a separate counter.
     with conn.cursor() as cur:
         cur.execute("SELECT branch_counters FROM requests WHERE id=%s", (job.request_id,))
         counters = dict(cur.fetchone()[0] or {})
@@ -477,6 +481,15 @@ def _found_not_fixed_close(conn: psycopg.Connection, cfg, request_id,
         team_id, conv_id, origin_kind = cur.fetchone()
         cur.execute("UPDATE requests SET status='failed', updated_at=now() WHERE id=%s",
                     (request_id,))
+        # Cancel non-terminal sibling jobs in the same transaction, same as _fail:
+        # this terminal flips the request to 'failed', after which on_job_done
+        # early-returns and jobs.claim never re-checks parent status, so any
+        # pending/claimed/running sibling would otherwise zombie. (Dev-stage-0 has
+        # none today, but this keeps the invariant if the path is reached later.)
+        cur.execute(
+            "UPDATE jobs SET status='dead', updated_at=now() "
+            "WHERE request_id=%s AND status IN ('pending','claimed','running')",
+            (request_id,))
         if origin_kind == "signal":
             alerts.record(conn, severity="warn", project=str(team_id),
                           fingerprint=f"pipeline-found-not-fixed:{request_id}",
@@ -489,7 +502,7 @@ def _found_not_fixed_close(conn: psycopg.Connection, cfg, request_id,
             "idempotency_key, payload) VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
             "ON CONFLICT (idempotency_key) DO NOTHING",
             (request_id, team_id, dest, f"found_not_fixed:{request_id}",
-             psycopg.types.json.Json({"text": text})))
+             Json({"text": text})))
 
 
 def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:

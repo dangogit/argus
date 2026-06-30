@@ -300,6 +300,34 @@ def _prune_worktrees(conn: psycopg.Connection, cfg) -> None:
         wt_dir = wt_root / rid
         if wt_dir.exists():
             shutil.rmtree(wt_dir, ignore_errors=True)
+    _prune_orphan_worktrees(conn, wt_root)
+
+
+def _prune_orphan_worktrees(conn: psycopg.Connection, wt_root) -> None:
+    """Remove worktree dirs whose owning request/job row no longer exists at all.
+    The terminal-request prune above can only match dirs for requests still in the
+    table; when a request row is deleted (e.g. retention cleanup) its worktree dir
+    is never selected and lingers forever (owner-hit: 5 orphan dirs from deleted
+    requests). Here we GC any dir not backed by a live request id or job event_id,
+    and only after a generous age window so a just-created worktree whose request
+    row is momentarily absent is never reaped."""
+    if not wt_root.exists():
+        return
+    with conn.cursor() as cur:
+        cur.execute("SELECT id::text FROM requests")
+        known = {row[0] for row in cur.fetchall()}
+        cur.execute("SELECT DISTINCT event_id::text FROM jobs WHERE event_id IS NOT NULL")
+        known |= {row[0] for row in cur.fetchall()}
+    cutoff = time.time() - 30 * 60  # 30-minute grace
+    for entry in wt_root.iterdir():
+        if not entry.is_dir() or entry.name in known:
+            continue
+        try:
+            if entry.stat().st_mtime > cutoff:
+                continue  # too fresh to be sure it's an orphan
+        except OSError:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
 
 
 def sweep_once(conn: psycopg.Connection, cfg) -> None:
