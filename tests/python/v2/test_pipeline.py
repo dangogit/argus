@@ -39,6 +39,23 @@ def test_enqueue_stage_sets_project_in_snapshot(conn, cfg):
     assert snap.get("project") == "dev"
 
 
+def test_pipeline_roles_get_repair_outcome_contract(conn, cfg):
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    pipeline.enqueue_stage(conn, cfg, request_id=rid, stage_index=2)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT role, exec_snapshot->>'prompt' FROM jobs "
+                    "WHERE request_id=%s AND role IN ('developer','senior') "
+                    "ORDER BY stage", (rid,))
+        rows = cur.fetchall()
+    assert "blocking_issue" in rows[0][1]
+    assert "next_action" in rows[0][1]
+    assert rows[1][0] == "senior"
+    assert "next_action" in rows[1][1]
+
+
 def test_no_fix_close_routes_to_conversation_channel(conn, cfg):
     """The no-fix/blocked close must address the conversation's real channel
     (whatsapp:<jid>), not a bare 'conv:<uuid>' that deliver() drops. Regression:
@@ -410,6 +427,28 @@ def test_dev_genuine_no_fix_unchanged(conn, cfg_project):
     assert "no fix needed" in msg.lower()
 
 
+def test_dev_no_change_records_next_action_when_present(conn, cfg_project):
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="sentry",
+                              fingerprint="NOFIX-ACTION", payload={"err": "noise"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="NOFIX-ACTION")
+    conn.commit()
+    job = _developer_job(conn, rid, {
+        "has_diff": False,
+        "parsed": {"ready": False,
+                   "analysis": "Root cause is upstream config, code is correct.",
+                   "next_action": "Update the upstream config flag."}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons "
+                    "WHERE team_id='dev' AND fingerprint='NOFIX-ACTION'")
+        outcome, note = cur.fetchone()
+    assert outcome == "no-change"
+    assert "Next action: Update the upstream config flag." in note
+
+
 def test_dev_blocked_unchanged(conn, cfg_project):
     """Regression guard: ready=false with blocked markers stays the blocked close
     (warn alert, FAILED), unchanged; blocked takes precedence over recommends-fix."""
@@ -434,6 +473,65 @@ def test_dev_blocked_unchanged(conn, cfg_project):
         sev, msg = cur.fetchone()
     assert sev == "warn"
     assert "blocked" in msg.lower()
+
+
+def test_dev_blocked_records_blocking_issue(conn, cfg_project):
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="sentry",
+                              fingerprint="BLK-ISSUE", payload={"err": "403"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="BLK-ISSUE")
+    conn.commit()
+    job = _developer_job(conn, rid, {
+        "has_diff": False,
+        "parsed": {"ready": False,
+                   "analysis": "Could not access GitHub, connector returns 404.",
+                   "blocking_issue": "Grant GitHub repo access to the token."}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons "
+                    "WHERE team_id='dev' AND fingerprint='BLK-ISSUE'")
+        outcome, note = cur.fetchone()
+    assert outcome == "blocked"
+    assert "Blocking issue: Grant GitHub repo access to the token." in note
+
+
+def test_senior_failure_records_next_action(conn, cfg_project):
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="senior-next", text="fix it")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET branch_counters=%s WHERE id=%s",
+                    (Json({"0": 2}), rid))
+        cur.execute(
+            """
+            INSERT INTO jobs
+              (request_id, event_id, conversation_id, team_id, role, stage, kind,
+               status, idempotency_key, result)
+            VALUES (%s,%s,NULL,'dev','senior',2,'pipeline','done','senior-next',%s)
+            RETURNING id
+            """,
+            (rid, eid, Json({"parsed": {
+                "decision": "changes",
+                "notes": "Null guard is missing.",
+                "next_action": "Add the missing null guard before approval.",
+            }})),
+        )
+        jid = cur.fetchone()[0]
+    job = Job(id=jid, request_id=rid, event_id=eid, conversation_id=None,
+              team_id="dev", role="senior", stage=2, kind="pipeline",
+              status="done", attempts=0, max_attempts=3, claim_token=None,
+              exec_snapshot={}, payload={})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons "
+                    "WHERE team_id='dev' AND fingerprint=%s", (rid,))
+        outcome, note = cur.fetchone()
+    assert outcome == "qa-fail"
+    assert "Next action: Add the missing null guard before approval." in note
 
 
 def test_dev_ready_advances_to_qa(conn, cfg_project):

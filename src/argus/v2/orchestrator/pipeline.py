@@ -28,6 +28,19 @@ from argus.v2.skills import registry as skills
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
 
+_PROCESS_OUTCOME_CONTRACT = {
+    "developer": (
+        "Process rule: for any ARGUS_RESULT with ready=false, include "
+        "blocking_issue when blocked, or next_action when a known root cause "
+        "still needs repair. Keep it concrete and actionable."
+    ),
+    "senior": (
+        "Process rule: for any ARGUS_RESULT with decision other than approve, "
+        "include next_action with the concrete repair needed when you know the "
+        "root cause or required change."
+    ),
+}
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -130,7 +143,8 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
     eng = loader.resolve_engine(cfg, team_id, role_name)
     role = team.role(role_name)
     text = _request_text(conn, event_id)
-    snapshot = {"engine": eng.engine, "model": eng.model, "prompt": role.prompt,
+    prompt = _prompt_with_process_contract(role_name, role.prompt)
+    snapshot = {"engine": eng.engine, "model": eng.model, "prompt": prompt,
                 "config_hash": _config_hash(cfg),
                 # Same as converse/triage/research: selects the hermes per-project
                 # learning profile (HERMES_HOME) so pipeline roles share project
@@ -166,6 +180,13 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
 def _role_snapshot_extra(role: str) -> dict:
     """Hook for tests to inject scripted output per role. No-op in production."""
     return {}
+
+
+def _prompt_with_process_contract(role_name: str, prompt: str) -> str:
+    contract = _PROCESS_OUTCOME_CONTRACT.get(role_name)
+    if not contract:
+        return prompt
+    return f"{prompt}\n\n{contract}" if prompt else contract
 
 
 def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
@@ -209,13 +230,15 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
         # no fabricated change. Otherwise advance to qa.
         if not advisory and not contracts.dev_ready(parsed):
             analysis = parsed.get("analysis") or parsed.get("summary") or "No fix warranted."
-            if _looks_blocked(parsed, analysis):
+            blocked = _looks_blocked(parsed, analysis)
+            note = _repair_outcome_note(parsed, analysis, blocked=blocked)
+            if blocked:
                 # Blocked (no repo/network/gh access, 404, perms) is NOT "no fix
                 # needed". Report the block honestly and record it as such so the
                 # owner sees the real failure and pm_lessons isn't poisoned with a
                 # false no-change. (Owner hit this: GitHub-blocked dev run was
                 # reported as "Investigated, no fix needed".)
-                _record_memory_outcome(conn, job.request_id, "blocked", analysis)
+                _record_memory_outcome(conn, job.request_id, "blocked", note)
                 _no_fix_close(conn, cfg, job.request_id, analysis, blocked=True)
             elif _recommends_fix(parsed, analysis):
                 # Third class: the developer DIAGNOSED a concrete, located fix but
@@ -226,7 +249,7 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                 # visible "found, not fixed" outcome - never a clean no-fix close.
                 _handle_recommended_fix(conn, cfg, job, team, analysis)
             else:
-                _record_memory_outcome(conn, job.request_id, "no-change", analysis)
+                _record_memory_outcome(conn, job.request_id, "no-change", note)
                 _no_fix_close(conn, cfg, job.request_id, analysis)
         else:
             _next(conn, cfg, job.request_id, 1)
@@ -345,6 +368,16 @@ def _recommends_fix(parsed: dict, analysis: str) -> bool:
     return bool(_FILE_REF_RE.search(analysis or ""))
 
 
+def _repair_outcome_note(parsed: dict, analysis: str, *, blocked: bool = False) -> str:
+    issue = str(parsed.get("blocking_issue") or "").strip()
+    action = str(parsed.get("next_action") or "").strip()
+    if blocked and issue:
+        return f"{analysis}\nBlocking issue: {issue}"
+    if action:
+        return f"{analysis}\nNext action: {action}"
+    return analysis
+
+
 def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
                   *, blocked: bool = False) -> None:
     """The developer investigated and no fix is warranted (or, when blocked=True,
@@ -407,9 +440,11 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str) -> N
     current = int(counters.get(key, 0))
     if current >= team.pipeline.max_iters:
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
+        parsed = _job_parsed(conn, job.id)
+        note = _repair_outcome_note(parsed, reason)
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
-            reason,
+            note,
         )
         if _open_draft_pr_after_failure(conn, cfg, job, reason):
             return
