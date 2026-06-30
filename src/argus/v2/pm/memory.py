@@ -6,7 +6,9 @@ from typing import Iterable
 
 import psycopg
 
-_OUTCOMES = frozenset({"proposed", "qa-pass", "qa-fail", "no-change"})
+_OUTCOMES = frozenset({
+    "proposed", "qa-pass", "qa-fail", "no-change", "blocked", "found-not-fixed",
+})
 _ATTR_OUTCOMES = frozenset({"qa-pass", "qa-fail"})
 _MIN_APPLIED = 5
 _MIN_FAILS = 3

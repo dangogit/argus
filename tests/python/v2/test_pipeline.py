@@ -381,9 +381,13 @@ def test_dev_recommends_fix_surfaces_when_budget_exhausted(conn, cfg_project):
         assert cur.fetchone()[0] == 1  # no further re-dispatch
         cur.execute("SELECT severity, message FROM alerts WHERE project='dev'")
         sev, msg = cur.fetchone()
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE fingerprint='RF-EXH'")
+        outcome, note = cur.fetchone()
     assert sev == "warn"  # warn, not info
     assert "no fix was applied" in msg.lower() or "not applied" in msg.lower()
     assert "no change needed" not in msg.lower()
+    assert outcome == "found-not-fixed"
+    assert note.startswith("Next repair action: apply the diagnosed fix.")
 
 
 def test_dev_genuine_no_fix_unchanged(conn, cfg_project):
@@ -432,8 +436,12 @@ def test_dev_blocked_unchanged(conn, cfg_project):
         assert cur.fetchone()[0] == 1  # no re-dispatch for a blocked run
         cur.execute("SELECT severity, message FROM alerts WHERE project='dev'")
         sev, msg = cur.fetchone()
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE fingerprint='BLK-1'")
+        outcome, note = cur.fetchone()
     assert sev == "warn"
     assert "blocked" in msg.lower()
+    assert outcome == "blocked"
+    assert note.startswith("Blocking issue: Could not access GitHub")
 
 
 def test_dev_ready_advances_to_qa(conn, cfg_project):
