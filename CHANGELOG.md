@@ -44,6 +44,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed / Security
 
+- Orchestrator terminal outcomes are recorded honestly. A `ready=false`
+  developer result is split three ways: a genuine `no-change`, a `blocked` run
+  (no repo/network/credential access), and a `found-not-fixed` run where a
+  concrete fix was diagnosed but never applied. The latter two used to be
+  reported as "investigated, no fix needed" and dropped from project memory
+  (the `pm_lessons` outcome set and DB constraint rejected them); they now
+  persist and surface as warnings. Failed-rework and known-root-cause closes
+  also record the blocking issue or next repair action in the lesson note.
+- Orchestrator no longer orphans work on failure: a failing or found-not-fixed
+  terminal cancels its non-terminal sibling jobs in the same transaction
+  instead of leaving zombie `pending` jobs, the diff base ref is resolved
+  correctly, and abandoned worktrees are cleaned up.
 - Approval token widened to 128 bits with a collision-safe insert (no more
   brute-forceable token, no approval left permanently stuck).
 - MCP-rendered config and Linux systemd unit files are written `0600`; systemd
