@@ -134,3 +134,31 @@ def test_setup_cmd_failure_raises_and_cleans_up(git_repo):
     with pytest.raises(RuntimeError):
         repo.create_worktree(git_repo, "req-setupfail")
     assert not repo._wt_path("req-setupfail").exists()
+
+
+def test_diff_resolves_remote_base_when_local_missing(git_repo, tmp_path):
+    """base_branch present only as origin/<branch> (no local ref): diff must
+    resolve to the remote-tracking ref instead of failing 'unknown revision'.
+    Regression: a tadam request whose base was a feature branch present only as
+    origin/<branch> failed `git diff <branch>...HEAD`."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=git_repo.repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "-b", "feat-base"], cwd=git_repo.repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", "feat-base"], cwd=git_repo.repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "main"], cwd=git_repo.repo,
+                   check=True, capture_output=True)
+    # Delete the LOCAL feat-base so it exists only as origin/feat-base.
+    subprocess.run(["git", "branch", "-D", "feat-base"], cwd=git_repo.repo,
+                   check=True, capture_output=True)
+    git_repo.base_branch = "feat-base"
+    git_repo.allow_network = True
+    wt = repo.create_worktree(git_repo, "req-featbase")
+    (Path(wt.path) / "fix.py").write_text("print('x')\n")
+    assert repo.commit_all(wt.path, "fix") is True
+    d = repo.diff(git_repo, wt.path)  # must NOT raise 'unknown revision'
+    assert "fix.py" in d
+    repo.remove(wt)

@@ -134,8 +134,23 @@ def commit_all(path: str, message: str) -> bool:
     return True
 
 
+def _resolve_base_ref(project, repo: str) -> str:
+    """The base ref to diff against. create_worktree branches off
+    origin/<base_branch> when it exists, so the local <base_branch> may not exist
+    at all (it never does for a checkout that only tracks the remote). Diffing
+    against the bare local name then fails with 'unknown revision' (owner-hit on a
+    tadam request whose base was a feature branch present only as origin/<branch>).
+    Prefer the remote-tracking ref, falling back to the local name."""
+    remote = getattr(project, "remote", "origin") or "origin"
+    remote_base = f"{remote}/{project.base_branch}"
+    if _ref_exists(repo, remote_base):
+        return remote_base
+    return project.base_branch
+
+
 def diff(project, path: str) -> str:
-    return _git(path, "diff", f"{project.base_branch}...HEAD")
+    base_ref = _resolve_base_ref(project, path)
+    return _git(path, "diff", f"{base_ref}...HEAD")
 
 
 def remove(worktree: Worktree) -> None:

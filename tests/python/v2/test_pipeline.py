@@ -496,3 +496,21 @@ def test_recommends_fix_heuristic_no_false_positives():
     # blocked + explicit no_fix status both short-circuit regardless of text
     assert _recommends_fix({"status": "blocked"}, real) is False
     assert _recommends_fix({"status": "no_fix"}, real) is False
+
+
+def test_found_not_fixed_close_cancels_sibling_jobs(conn, cfg):
+    """_found_not_fixed_close marks the request failed AND cancels non-terminal
+    sibling jobs (same invariant as _fail), so none zombie as 'pending'."""
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None); conn.commit()
+    pipeline.enqueue_stage(conn, cfg, request_id=rid, stage_index=1); conn.commit()
+    pipeline._found_not_fixed_close(conn, cfg, rid,
+                                    "Found root cause in x.py:1, fix is warranted")
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "failed"
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s "
+                    "AND status IN ('pending','claimed','running')", (rid,))
+        assert cur.fetchone()[0] == 0

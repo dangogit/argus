@@ -202,3 +202,28 @@ def test_sweep_reclaims_expired(conn, cfg):
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM jobs WHERE id=%s", (job.id,))
         assert cur.fetchone()[0] == "pending"
+
+
+def test_sweep_prunes_orphan_worktree_without_request_row(conn, cfg_project, tmp_path,
+                                                          monkeypatch):
+    """A worktree dir whose owning request row was deleted is never matched by the
+    terminal-request prune, so it must be GC'd as an orphan once aged past grace."""
+    import os
+    import time as _time
+    monkeypatch.setenv("ARGUS_RUN_ROOT", str(tmp_path))
+    orphan = tmp_path / "worktrees" / "deadbeef-no-such-request"
+    orphan.mkdir(parents=True)
+    old = _time.time() - 2 * 3600
+    os.utime(orphan, (old, old))
+    reconcile.sweep_once(conn, cfg_project); conn.commit()
+    assert not orphan.exists()
+
+
+def test_sweep_keeps_fresh_orphan_worktree(conn, cfg_project, tmp_path, monkeypatch):
+    """A brand-new dir with no request row yet (dir created before the row commits)
+    is inside the grace window, so it must NOT be reaped."""
+    monkeypatch.setenv("ARGUS_RUN_ROOT", str(tmp_path))
+    fresh = tmp_path / "worktrees" / "00000000-fresh-orphan"
+    fresh.mkdir(parents=True)
+    reconcile.sweep_once(conn, cfg_project); conn.commit()
+    assert fresh.exists()
