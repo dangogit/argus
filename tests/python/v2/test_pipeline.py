@@ -275,6 +275,183 @@ def test_pr_summary_falls_back_to_request_text(conn, cfg, tmp_path):
     assert "file(s):" not in info["body"].split("## Changed Files")[0]
 
 
+def _developer_job(conn, rid, result: dict) -> Job:
+    """Mark the open request's stage-0 developer job done with `result`, then
+    return a Job matching that row so on_job_done can advance the pipeline."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, event_id, conversation_id, team_id FROM jobs "
+                    "WHERE request_id=%s AND role='developer' AND stage=0", (rid,))
+        jid, eid, conv, team_id = cur.fetchone()
+        cur.execute("UPDATE jobs SET status='done', result=%s WHERE id=%s",
+                    (Json(result), jid))
+    return Job(id=jid, request_id=rid, event_id=eid, conversation_id=conv,
+               team_id=team_id, role="developer", stage=0, kind="pipeline",
+               status="done", attempts=0, max_attempts=3, claim_token=None,
+               exec_snapshot={}, payload={})
+
+
+def test_recommends_fix_helper_classifies_diagnosed_but_unapplied():
+    """_recommends_fix: a concrete, located, recommended fix with no diff is the
+    third class of ready=false (not blocked, not genuine no-fix)."""
+    analysis = ("A focused code fix is warranted: require amount > 0 before "
+                "submit. [components/Pay.vue:498] [server/index.ts:374]")
+    assert pipeline._recommends_fix({"ready": False}, analysis) is True
+    # Genuine no-fix: no fix markers, no file ref -> False.
+    assert pipeline._recommends_fix(
+        {"ready": False}, "Reviewed the code; current behavior is correct.") is False
+    # Fix language but no file/line reference -> too vague, stay conservative.
+    assert pipeline._recommends_fix(
+        {"ready": False}, "A fix is warranted somewhere in the codebase.") is False
+    # Blocked text must NOT read as recommends-fix (blocked takes precedence).
+    assert pipeline._recommends_fix(
+        {"status": "blocked"}, "could not access repo [a.ts:1]") is False
+
+
+def test_dev_recommends_fix_redispatches_developer_under_budget(conn, cfg_project):
+    """ready=false + a concrete located fix + no diff, under rework budget:
+    re-dispatch the developer (loop back), do NOT close as no-fix."""
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="rf1", text="amount can go negative")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    analysis = ("A focused code fix is warranted: require amount > 0. "
+                "[components/Pay.vue:498] [server/index.ts:374]")
+    job = _developer_job(conn, rid, {"has_diff": False,
+                                     "parsed": {"ready": False, "analysis": analysis}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "open"  # not closed
+        cur.execute("SELECT branch_counters FROM requests WHERE id=%s", (rid,))
+        assert (cur.fetchone()[0] or {}).get("0") == 1  # developer rework bumped
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s AND role='developer'", (rid,))
+        assert cur.fetchone()[0] == 2  # a fresh developer job was enqueued
+        cur.execute("SELECT count(*) FROM actions WHERE idempotency_key=%s", (f"nofix:{rid}",))
+        assert cur.fetchone()[0] == 0  # NOT closed as no-fix
+
+
+def test_dev_recommends_fix_redispatch_seeds_prior_analysis(conn, cfg_project):
+    """The re-dispatched developer job carries the prior analysis in its brief so
+    it applies the fix instead of re-investigating from scratch."""
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="rf-seed", text="amount can go negative")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    analysis = ("A focused code fix is warranted: require amount > 0. [Pay.vue:498]")
+    job = _developer_job(conn, rid, {"has_diff": False,
+                                     "parsed": {"ready": False, "analysis": analysis}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload->>'text' FROM jobs WHERE request_id=%s "
+                    "AND role='developer' ORDER BY created_at DESC LIMIT 1", (rid,))
+        text = cur.fetchone()[0]
+    assert "Apply" in text or "apply" in text
+    assert "require amount > 0" in text  # prior analysis seeded into the brief
+
+
+def test_dev_recommends_fix_surfaces_when_budget_exhausted(conn, cfg_project):
+    """ready=false + recommends fix + no diff, with the developer rework budget
+    already exhausted: reach a DISTINCT 'found, not fixed' terminal outcome with a
+    WARN alert, never the clean 'no fix needed' close."""
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="sentry",
+                              fingerprint="RF-EXH", payload={"err": "amount<0"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="RF-EXH")
+    conn.commit()
+    # Exhaust the developer rework budget (max_iters=2 in cfg_project).
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET branch_counters=%s WHERE id=%s",
+                    (Json({"0": 2}), rid))
+    conn.commit()
+    analysis = ("Root cause: missing guard. A focused code fix is warranted: "
+                "require amount > 0. [server/index.ts:374]")
+    job = _developer_job(conn, rid, {"has_diff": False,
+                                     "parsed": {"ready": False, "analysis": analysis}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "failed"  # distinct terminal, not done/no-fix
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s AND role='developer'", (rid,))
+        assert cur.fetchone()[0] == 1  # no further re-dispatch
+        cur.execute("SELECT severity, message FROM alerts WHERE project='dev'")
+        sev, msg = cur.fetchone()
+    assert sev == "warn"  # warn, not info
+    assert "no fix was applied" in msg.lower() or "not applied" in msg.lower()
+    assert "no change needed" not in msg.lower()
+
+
+def test_dev_genuine_no_fix_unchanged(conn, cfg_project):
+    """Regression guard: ready=false with no fix markers stays a clean no-fix
+    close (info alert / NOFIX), unchanged behavior."""
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="sentry",
+                              fingerprint="NOFIX-1", payload={"err": "noise"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="NOFIX-1")
+    conn.commit()
+    job = _developer_job(conn, rid, {
+        "has_diff": False,
+        "parsed": {"ready": False,
+                   "analysis": "Reviewed the code; current behavior is correct."}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT severity, message FROM alerts WHERE project='dev'")
+        sev, msg = cur.fetchone()
+    assert sev == "info"
+    assert "no fix needed" in msg.lower()
+
+
+def test_dev_blocked_unchanged(conn, cfg_project):
+    """Regression guard: ready=false with blocked markers stays the blocked close
+    (warn alert, FAILED), unchanged; blocked takes precedence over recommends-fix."""
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="sentry",
+                              fingerprint="BLK-1", payload={"err": "403"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="BLK-1")
+    conn.commit()
+    job = _developer_job(conn, rid, {
+        "has_diff": False,
+        "parsed": {"ready": False,
+                   "analysis": "Could not access GitHub, connector returns 404."}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s AND role='developer'", (rid,))
+        assert cur.fetchone()[0] == 1  # no re-dispatch for a blocked run
+        cur.execute("SELECT severity, message FROM alerts WHERE project='dev'")
+        sev, msg = cur.fetchone()
+    assert sev == "warn"
+    assert "blocked" in msg.lower()
+
+
+def test_dev_ready_advances_to_qa(conn, cfg_project):
+    """Regression guard: ready=true advances to qa (stage 1)."""
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="ready1", text="fix it")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    job = _developer_job(conn, rid, {"has_diff": True,
+                                     "parsed": {"ready": True, "summary": "fixed"}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT role, stage FROM jobs WHERE request_id=%s AND role='qa'", (rid,))
+        assert cur.fetchone() == ("qa", 1)
+
+
 def test_critical_diff_scan_blocks_open_pr(conn, cfg_project, monkeypatch, tmp_path):
     eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
                                 dedup_key="scan-block", text="fix")
@@ -300,3 +477,22 @@ def test_critical_diff_scan_blocks_open_pr(conn, cfg_project, monkeypatch, tmp_p
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT payload->>'text' FROM actions WHERE type='notify'")
         assert "Deterministic diff scan blocked PR" in cur.fetchone()[0]
+
+
+def test_recommends_fix_heuristic_no_false_positives():
+    """_recommends_fix must fire on a real diagnosed-but-unapplied fix and stay
+    quiet on genuine no-fix / negated text (review hardening)."""
+    from argus.v2.orchestrator.pipeline import _recommends_fix
+    real = ("A focused code fix is warranted: require amount > 0 before treating "
+            "a payment as paid. FinalPaymentStep.vue:498 payment-process/index.ts:374")
+    assert _recommends_fix({"ready": False}, real) is True
+    for neg in (
+        "No root cause found in auth.ts; behavior is correct.",
+        "Nothing should be changed in payment.vue, logic is fine",
+        "The error in index.ts is expected and needs to be ignored",
+        "should be correct after the recent change in Pay.vue",
+    ):
+        assert _recommends_fix({"ready": False}, neg) is False
+    # blocked + explicit no_fix status both short-circuit regardless of text
+    assert _recommends_fix({"status": "blocked"}, real) is False
+    assert _recommends_fix({"status": "no_fix"}, real) is False

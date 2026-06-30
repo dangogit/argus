@@ -5,6 +5,7 @@ delivery or two orchestrators."""
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 from typing import Optional
 
@@ -216,6 +217,14 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                 # reported as "Investigated, no fix needed".)
                 _record_memory_outcome(conn, job.request_id, "blocked", analysis)
                 _no_fix_close(conn, cfg, job.request_id, analysis, blocked=True)
+            elif _recommends_fix(parsed, analysis):
+                # Third class: the developer DIAGNOSED a concrete, located fix but
+                # produced no diff. Closing this as "no fix needed" would hide a
+                # real, unapplied defect. Try once more to convert the diagnosis
+                # into an applied fix (bounded by the same rework budget _loop_back
+                # uses); only if that budget is exhausted do we surface it as a
+                # visible "found, not fixed" outcome - never a clean no-fix close.
+                _handle_recommended_fix(conn, cfg, job, team, analysis)
             else:
                 _record_memory_outcome(conn, job.request_id, "no-change", analysis)
                 _no_fix_close(conn, cfg, job.request_id, analysis)
@@ -284,6 +293,56 @@ def _looks_blocked(parsed: dict, analysis: str) -> bool:
         return False
     text = (analysis or "").lower()
     return any(m in text for m in _BLOCKED_MARKERS)
+
+
+# A ready=false dev result that DIAGNOSED a concrete, located fix but produced no
+# diff. This is the third class of ready=false (alongside blocked vs genuine
+# no-fix): the developer found a real bug and a real fix yet left it unapplied,
+# so closing it as "no fix needed" hides a live, diagnosed defect (owner case:
+# "A focused code fix is warranted: require amount > 0 ... [file.vue:498]").
+# Strong recommend-INTENT phrases: each asserts a change is needed, so they do
+# not flip meaning under negation the way bare "root cause"/"should be" do (those
+# match "no root cause found" / "should be correct" and were dropped after review).
+_RECOMMEND_FIX_MARKERS = (
+    "fix is warranted", "focused code fix", "code fix is warranted",
+    "should require", "apply the fix", "apply this fix", "must require",
+    "the fix is", "recommended fix", "should add", "should change",
+    "should guard", "should validate", "needs a fix", "fix should",
+    "the correct fix", "patch should",
+)
+# Genuine no-fix / negation phrases. If any appears, the analysis is saying
+# nothing needs changing - never treat it as a diagnosed-but-unapplied fix, even
+# if a recommend marker also matched (negated context).
+_NO_FIX_MARKERS = (
+    "no fix", "no change", "nothing to fix", "nothing to change",
+    "no root cause", "is correct", "is fine", "works as", "as expected",
+    "expected behavior", "expected behaviour", "no defect", "not a bug",
+    "behaves correctly", "no code change",
+)
+# A file/line reference grounds the recommendation in a concrete location, so we
+# only treat the result as an actionable diagnosis when one is present. Matches
+# path.ext or path.ext:line tokens (e.g. components/Pay.vue:498, src/index.ts).
+_FILE_REF_RE = re.compile(r"[\w./-]+\.[A-Za-z]{1,6}(?::\d+)?")
+
+
+def _recommends_fix(parsed: dict, analysis: str) -> bool:
+    """True when a ready=false developer result identified a CONCRETE, located
+    fix but produced no diff - i.e. a diagnosis that was never applied. Conservative
+    and text-heuristic like _looks_blocked: requires a strong recommend-intent
+    marker AND a file/line reference, and never fires when the run was blocked
+    (blocked takes precedence), when status says no-fix, or when the analysis
+    contains a genuine no-fix/negation phrase."""
+    if _looks_blocked(parsed, analysis):
+        return False
+    status = str(parsed.get("status", "")).lower()
+    if status in ("no_fix", "no_fix_needed", "no-change", "ok", "done"):
+        return False
+    text = (analysis or "").lower()
+    if any(m in text for m in _NO_FIX_MARKERS):
+        return False
+    if not any(m in text for m in _RECOMMEND_FIX_MARKERS):
+        return False
+    return bool(_FILE_REF_RE.search(analysis or ""))
 
 
 def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
@@ -361,6 +420,76 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str) -> N
         cur.execute("UPDATE requests SET branch_counters=%s, updated_at=now() WHERE id=%s",
                     (Json(counters), job.request_id))
     enqueue_stage(conn, cfg, request_id=job.request_id, stage_index=to_idx)
+
+
+def _handle_recommended_fix(conn: psycopg.Connection, cfg, job: Job, team,
+                            analysis: str) -> None:
+    """The developer diagnosed a concrete, located fix but produced no diff.
+    Re-dispatch it once (bounded by the same branch-counter/max_iters budget as
+    _loop_back) with an augmented brief that seeds the prior analysis and tells it
+    to APPLY the fix - converting a diagnosis into a fix attempt. When the budget
+    is exhausted (still no diff after retry), surface a distinct, visible
+    'found, not fixed' outcome instead of a clean 'no fix needed' close."""
+    dev_idx = _index(team, "developer")
+    if dev_idx is None:
+        dev_idx = job.stage
+    with conn.cursor() as cur:
+        cur.execute("SELECT branch_counters FROM requests WHERE id=%s", (job.request_id,))
+        counters = dict(cur.fetchone()[0] or {})
+    key = str(dev_idx)
+    current = int(counters.get(key, 0))
+    if current >= team.pipeline.max_iters:
+        # Budget exhausted: a real fix was found but never applied. Surface it.
+        _record_memory_outcome(conn, job.request_id, "found-not-fixed", analysis)
+        _found_not_fixed_close(conn, cfg, job.request_id, analysis)
+        return
+    # Re-dispatch the developer with the prior diagnosis seeded so it applies the
+    # fix instead of re-investigating from scratch (mirrors _handle_research's
+    # brief seeding).
+    seed = ("A previous developer pass already diagnosed this and located the fix "
+            "but did NOT apply it. Apply the fix it identified now and produce a "
+            "diff. Do NOT re-investigate from scratch.\n\n"
+            f"Prior diagnosis:\n{analysis}")
+    _seed_event_text(conn, job.event_id, seed)
+    counters[key] = current + 1
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET branch_counters=%s, updated_at=now() WHERE id=%s",
+                    (Json(counters), job.request_id))
+    enqueue_stage(conn, cfg, request_id=job.request_id, stage_index=dev_idx)
+
+
+def _found_not_fixed_close(conn: psycopg.Connection, cfg, request_id,
+                           analysis: str) -> None:
+    """Distinct terminal outcome for a diagnosed-but-unapplied fix: the developer
+    found the root cause and a concrete fix but, even after a bounded retry, never
+    produced a diff. This is NOT 'no fix needed' - mark the request FAILED and
+    raise a WARN-severity alert that says a fix is outstanding, so it is visibly
+    different from a clean no-fix resolve and gets owner attention."""
+    text = ("Found root cause but no fix was applied - needs attention. "
+            f"{analysis}")
+    status.set_status_for_request(conn, request_id, status.FAILED)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT r.team_id, r.conversation_id, e.kind "
+            "FROM requests r LEFT JOIN events e ON e.id = r.event_id "
+            "WHERE r.id=%s",
+            (request_id,))
+        team_id, conv_id, origin_kind = cur.fetchone()
+        cur.execute("UPDATE requests SET status='failed', updated_at=now() WHERE id=%s",
+                    (request_id,))
+        if origin_kind == "signal":
+            alerts.record(conn, severity="warn", project=str(team_id),
+                          fingerprint=f"pipeline-found-not-fixed:{request_id}",
+                          message=text, channel="log",
+                          payload={"request_id": str(request_id)})
+            return
+        dest = _control_destination(conn, cfg, team_id, conv_id)
+        cur.execute(
+            "INSERT INTO actions (request_id, team_id, type, risk, destination_ref, "
+            "idempotency_key, payload) VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
+            "ON CONFLICT (idempotency_key) DO NOTHING",
+            (request_id, team_id, dest, f"found_not_fixed:{request_id}",
+             psycopg.types.json.Json({"text": text})))
 
 
 def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:
