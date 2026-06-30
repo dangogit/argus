@@ -684,8 +684,21 @@ def _memory_outcome_note(outcome: str, note: str) -> str:
     if outcome == "found-not-fixed":
         return f"Next repair action: apply the diagnosed fix. Evidence: {note}"
     if outcome == "no-change":
+        if _has_known_root_cause(note):
+            if "Blocking issue:" in note or "Next repair action:" in note:
+                return note
+            return f"Next repair action: address the known root cause. Evidence: {note}"
         return f"Next repair action: none, no code change warranted. Evidence: {note}"
+    if outcome == "qa-fail" and _has_known_root_cause(note):
+        if "Blocking issue:" in note or "Next repair action:" in note:
+            return note
+        return f"Next repair action: address the review failure root cause. Evidence: {note}"
     return note
+
+
+def _has_known_root_cause(text: str) -> bool:
+    lowered = text.lower()
+    return "root cause" in lowered and "no root cause" not in lowered
 
 
 def _parsed_failure_detail(parsed: dict) -> str:

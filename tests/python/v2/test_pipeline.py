@@ -390,6 +390,37 @@ def test_dev_recommends_fix_surfaces_when_budget_exhausted(conn, cfg_project):
     assert note.startswith("Next repair action: apply the diagnosed fix.")
 
 
+def test_memory_outcome_note_requires_repair_action_for_known_root_cause_failure():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "Senior review rejected it. Root cause still present in checkout.py.",
+    )
+
+    assert note.startswith("Next repair action: address the review failure root cause.")
+    assert "Evidence: Senior review rejected it." in note
+
+
+def test_memory_outcome_note_requires_repair_action_for_known_root_cause_no_change():
+    note = pipeline._memory_outcome_note(
+        "no-change",
+        "Root cause is stale fixture data in checkout.py.",
+    )
+
+    assert note.startswith("Next repair action: address the known root cause.")
+    assert "Evidence: Root cause is stale fixture data" in note
+
+
+def test_memory_outcome_note_preserves_existing_blocking_marker_for_known_root_cause():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "senior did not pass. Blocking issue: Root cause still present in checkout.py.",
+    )
+
+    assert note == (
+        "senior did not pass. Blocking issue: Root cause still present in checkout.py."
+    )
+
+
 def test_dev_genuine_no_fix_unchanged(conn, cfg_project):
     """Regression guard: ready=false with no fix markers stays a clean no-fix
     close (info alert / NOFIX), unchanged behavior."""
