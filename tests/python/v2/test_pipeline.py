@@ -477,3 +477,22 @@ def test_critical_diff_scan_blocks_open_pr(conn, cfg_project, monkeypatch, tmp_p
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT payload->>'text' FROM actions WHERE type='notify'")
         assert "Deterministic diff scan blocked PR" in cur.fetchone()[0]
+
+
+def test_recommends_fix_heuristic_no_false_positives():
+    """_recommends_fix must fire on a real diagnosed-but-unapplied fix and stay
+    quiet on genuine no-fix / negated text (review hardening)."""
+    from argus.v2.orchestrator.pipeline import _recommends_fix
+    real = ("A focused code fix is warranted: require amount > 0 before treating "
+            "a payment as paid. FinalPaymentStep.vue:498 payment-process/index.ts:374")
+    assert _recommends_fix({"ready": False}, real) is True
+    for neg in (
+        "No root cause found in auth.ts; behavior is correct.",
+        "Nothing should be changed in payment.vue, logic is fine",
+        "The error in index.ts is expected and needs to be ignored",
+        "should be correct after the recent change in Pay.vue",
+    ):
+        assert _recommends_fix({"ready": False}, neg) is False
+    # blocked + explicit no_fix status both short-circuit regardless of text
+    assert _recommends_fix({"status": "blocked"}, real) is False
+    assert _recommends_fix({"status": "no_fix"}, real) is False

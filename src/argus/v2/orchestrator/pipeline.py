@@ -300,11 +300,24 @@ def _looks_blocked(parsed: dict, analysis: str) -> bool:
 # no-fix): the developer found a real bug and a real fix yet left it unapplied,
 # so closing it as "no fix needed" hides a live, diagnosed defect (owner case:
 # "A focused code fix is warranted: require amount > 0 ... [file.vue:498]").
+# Strong recommend-INTENT phrases: each asserts a change is needed, so they do
+# not flip meaning under negation the way bare "root cause"/"should be" do (those
+# match "no root cause found" / "should be correct" and were dropped after review).
 _RECOMMEND_FIX_MARKERS = (
     "fix is warranted", "focused code fix", "code fix is warranted",
-    "root cause", "should require", "should be", "apply the", "apply a",
-    "needs to", "must require", "the fix is", "recommended fix", "should add",
-    "should change", "should guard", "should validate",
+    "should require", "apply the fix", "apply this fix", "must require",
+    "the fix is", "recommended fix", "should add", "should change",
+    "should guard", "should validate", "needs a fix", "fix should",
+    "the correct fix", "patch should",
+)
+# Genuine no-fix / negation phrases. If any appears, the analysis is saying
+# nothing needs changing - never treat it as a diagnosed-but-unapplied fix, even
+# if a recommend marker also matched (negated context).
+_NO_FIX_MARKERS = (
+    "no fix", "no change", "nothing to fix", "nothing to change",
+    "no root cause", "is correct", "is fine", "works as", "as expected",
+    "expected behavior", "expected behaviour", "no defect", "not a bug",
+    "behaves correctly", "no code change",
 )
 # A file/line reference grounds the recommendation in a concrete location, so we
 # only treat the result as an actionable diagnosis when one is present. Matches
@@ -315,15 +328,18 @@ _FILE_REF_RE = re.compile(r"[\w./-]+\.[A-Za-z]{1,6}(?::\d+)?")
 def _recommends_fix(parsed: dict, analysis: str) -> bool:
     """True when a ready=false developer result identified a CONCRETE, located
     fix but produced no diff - i.e. a diagnosis that was never applied. Conservative
-    and text-heuristic like _looks_blocked: requires both a recommend-fix marker
-    AND a file/line reference, and never fires when the run was blocked (blocked
-    takes precedence) or when the analysis genuinely says nothing needs changing."""
+    and text-heuristic like _looks_blocked: requires a strong recommend-intent
+    marker AND a file/line reference, and never fires when the run was blocked
+    (blocked takes precedence), when status says no-fix, or when the analysis
+    contains a genuine no-fix/negation phrase."""
     if _looks_blocked(parsed, analysis):
         return False
     status = str(parsed.get("status", "")).lower()
     if status in ("no_fix", "no_fix_needed", "no-change", "ok", "done"):
         return False
     text = (analysis or "").lower()
+    if any(m in text for m in _NO_FIX_MARKERS):
+        return False
     if not any(m in text for m in _RECOMMEND_FIX_MARKERS):
         return False
     return bool(_FILE_REF_RE.search(analysis or ""))
