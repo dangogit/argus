@@ -93,6 +93,33 @@ def test_looks_blocked_distinguishes_block_from_no_fix():
     assert pipeline._looks_blocked({"status": "no_fix"}, "could not find a bug") is False
 
 
+def test_repair_outcome_note_records_required_follow_up_details():
+    assert "Blocking issue: Could not access GitHub." in pipeline._repair_outcome_note(
+        {"analysis": "Could not access GitHub."},
+        "Could not access GitHub.",
+        blocked=True,
+    )
+    assert "Next action: Repair the known root cause:" in pipeline._repair_outcome_note(
+        {"analysis": "Root cause is upstream config, code is correct."},
+        "Root cause is upstream config, code is correct.",
+    )
+    assert "Next action: Repair the known root cause:" in pipeline._repair_outcome_note(
+        {"notes": "Root cause: missing null guard."},
+        "senior did not pass after 2 rework attempt(s).",
+    )
+    assert "Next action: Repair the known root cause: missing null guard" in (
+        pipeline._repair_outcome_note(
+            {"root_cause": "missing null guard"},
+            "senior did not pass after 2 rework attempt(s).",
+        )
+    )
+    no_root = pipeline._repair_outcome_note(
+        {"analysis": "No root cause found; behavior is correct."},
+        "No root cause found; behavior is correct.",
+    )
+    assert "Next action:" not in no_root
+
+
 def test_enqueue_stage_is_idempotent(conn, cfg):
     eid = _event(conn, cfg); conn.commit()
     rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
@@ -449,6 +476,27 @@ def test_dev_no_change_records_next_action_when_present(conn, cfg_project):
     assert "Next action: Update the upstream config flag." in note
 
 
+def test_dev_no_change_with_known_root_cause_records_repair_action(conn, cfg_project):
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="sentry",
+                              fingerprint="NOFIX-ROOT", payload={"err": "noise"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="NOFIX-ROOT")
+    conn.commit()
+    job = _developer_job(conn, rid, {
+        "has_diff": False,
+        "parsed": {"ready": False,
+                   "analysis": "Root cause is upstream config, code is correct."}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons "
+                    "WHERE team_id='dev' AND fingerprint='NOFIX-ROOT'")
+        outcome, note = cur.fetchone()
+    assert outcome == "no-change"
+    assert "Next action: Repair the known root cause:" in note
+
+
 def test_dev_blocked_unchanged(conn, cfg_project):
     """Regression guard: ready=false with blocked markers stays the blocked close
     (warn alert, FAILED), unchanged; blocked takes precedence over recommends-fix."""
@@ -473,6 +521,27 @@ def test_dev_blocked_unchanged(conn, cfg_project):
         sev, msg = cur.fetchone()
     assert sev == "warn"
     assert "blocked" in msg.lower()
+
+
+def test_dev_blocked_records_analysis_as_blocking_issue(conn, cfg_project):
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="sentry",
+                              fingerprint="BLK-AUTO", payload={"err": "403"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="BLK-AUTO")
+    conn.commit()
+    job = _developer_job(conn, rid, {
+        "has_diff": False,
+        "parsed": {"ready": False,
+                   "analysis": "Could not access GitHub, connector returns 404."}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons "
+                    "WHERE team_id='dev' AND fingerprint='BLK-AUTO'")
+        outcome, note = cur.fetchone()
+    assert outcome == "blocked"
+    assert "Blocking issue: Could not access GitHub, connector returns 404." in note
 
 
 def test_dev_blocked_records_blocking_issue(conn, cfg_project):
@@ -532,6 +601,42 @@ def test_senior_failure_records_next_action(conn, cfg_project):
         outcome, note = cur.fetchone()
     assert outcome == "qa-fail"
     assert "Next action: Add the missing null guard before approval." in note
+
+
+def test_senior_failure_with_known_root_cause_records_repair_action(conn, cfg_project):
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="senior-root", text="fix it")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET branch_counters=%s WHERE id=%s",
+                    (Json({"0": 2}), rid))
+        cur.execute(
+            """
+            INSERT INTO jobs
+              (request_id, event_id, conversation_id, team_id, role, stage, kind,
+               status, idempotency_key, result)
+            VALUES (%s,%s,NULL,'dev','senior',2,'pipeline','done','senior-root',%s)
+            RETURNING id
+            """,
+            (rid, eid, Json({"parsed": {
+                "decision": "changes",
+                "notes": "Root cause: missing null guard.",
+            }})),
+        )
+        jid = cur.fetchone()[0]
+    job = Job(id=jid, request_id=rid, event_id=eid, conversation_id=None,
+              team_id="dev", role="senior", stage=2, kind="pipeline",
+              status="done", attempts=0, max_attempts=3, claim_token=None,
+              exec_snapshot={}, payload={})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons "
+                    "WHERE team_id='dev' AND fingerprint=%s", (rid,))
+        outcome, note = cur.fetchone()
+    assert outcome == "qa-fail"
+    assert "Next action: Repair the known root cause: Root cause: missing null guard." in note
 
 
 def test_dev_ready_advances_to_qa(conn, cfg_project):

@@ -371,11 +371,57 @@ def _recommends_fix(parsed: dict, analysis: str) -> bool:
 def _repair_outcome_note(parsed: dict, analysis: str, *, blocked: bool = False) -> str:
     issue = str(parsed.get("blocking_issue") or "").strip()
     action = str(parsed.get("next_action") or "").strip()
-    if blocked and issue:
-        return f"{analysis}\nBlocking issue: {issue}"
+    if blocked:
+        blocking = issue or _structured_detail(parsed, analysis)
+        if blocking:
+            return f"{analysis}\nBlocking issue: {blocking}"
     if action:
         return f"{analysis}\nNext action: {action}"
+    repair = _known_repair_action(parsed, analysis)
+    if repair:
+        return f"{analysis}\nNext action: {repair}"
     return analysis
+
+
+def _structured_detail(parsed: dict, analysis: str) -> str:
+    for key in ("blocking_issue", "required_change", "root_cause", "cause",
+                "notes", "analysis", "summary"):
+        value = str(parsed.get(key) or "").strip()
+        if value:
+            return value
+    return (analysis or "").strip()
+
+
+_KNOWN_REPAIR_MARKERS = (
+    "root cause", "required change", "concrete fix", "known cause",
+)
+_UNKNOWN_REPAIR_MARKERS = (
+    "no root cause", "root cause unknown", "unknown root cause",
+    "no required change", "no concrete fix", "no known cause",
+)
+
+
+def _known_repair_action(parsed: dict, analysis: str) -> str:
+    required = str(parsed.get("required_change") or "").strip()
+    if required:
+        return f"Apply the required change: {required}"
+    root_cause = str(parsed.get("root_cause") or parsed.get("cause") or "").strip()
+    if root_cause:
+        return f"Repair the known root cause: {root_cause}"
+    for key in ("notes", "analysis", "summary"):
+        value = str(parsed.get(key) or "").strip()
+        if value and _mentions_known_repair(value):
+            return f"Repair the known root cause: {value}"
+    if _mentions_known_repair(analysis):
+        return f"Repair the known root cause: {(analysis or '').strip()}"
+    return ""
+
+
+def _mentions_known_repair(text: str) -> bool:
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in _UNKNOWN_REPAIR_MARKERS):
+        return False
+    return any(marker in lowered for marker in _KNOWN_REPAIR_MARKERS)
 
 
 def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
@@ -703,6 +749,8 @@ def _record_memory_outcome(conn: psycopg.Connection, request_id: str,
     try:
         pm_memory.record_request_outcome(conn, request_id=request_id,
                                          outcome=outcome, note=note)
+    except ValueError:
+        raise
     except Exception:
         pass
 

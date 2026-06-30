@@ -10,6 +10,14 @@ _OUTCOMES = frozenset({
     "proposed", "qa-pass", "qa-fail", "no-change", "blocked", "found-not-fixed",
 })
 _ATTR_OUTCOMES = frozenset({"qa-pass", "qa-fail"})
+_ROOT_CAUSE_OUTCOMES = frozenset({"qa-fail", "no-change", "found-not-fixed"})
+_KNOWN_REPAIR_MARKERS = (
+    "root cause", "required change", "concrete fix", "known cause",
+)
+_UNKNOWN_REPAIR_MARKERS = (
+    "no root cause", "root cause unknown", "unknown root cause",
+    "no required change", "no concrete fix", "no known cause",
+)
 _MIN_APPLIED = 5
 _MIN_FAILS = 3
 _FAIL_RATE = 0.5
@@ -27,6 +35,7 @@ def append(conn: psycopg.Connection, *, team_id: str, fingerprint: str,
            finding: str, outcome: str, note: str = "") -> None:
     if outcome not in _OUTCOMES:
         raise ValueError(f"invalid memory outcome: {outcome}")
+    _require_follow_up_detail(outcome, note)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -118,6 +127,7 @@ def record_request_outcome(conn: psycopg.Connection, *, request_id: str,
                            outcome: str, note: str = "") -> None:
     if outcome not in _OUTCOMES:
         raise ValueError(f"invalid memory outcome: {outcome}")
+    _require_follow_up_detail(outcome, note)
     team_id, fingerprint, finding = _request_info(conn, request_id)
     append(conn, team_id=team_id, fingerprint=fingerprint, finding=finding,
            outcome=outcome, note=note)
@@ -144,6 +154,21 @@ def _request_info(conn: psycopg.Connection, request_id: str) -> tuple[str, str, 
     if not row:
         raise ValueError(f"unknown request: {request_id}")
     return row[0], row[1], row[2]
+
+
+def _require_follow_up_detail(outcome: str, note: str) -> None:
+    if outcome == "blocked" and "Blocking issue:" not in note:
+        raise ValueError("blocked memory outcomes require a Blocking issue note")
+    if outcome in _ROOT_CAUSE_OUTCOMES and _mentions_known_repair(note) \
+            and "Next action:" not in note:
+        raise ValueError("known-root-cause memory outcomes require a Next action note")
+
+
+def _mentions_known_repair(text: str) -> bool:
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in _UNKNOWN_REPAIR_MARKERS):
+        return False
+    return any(marker in lowered for marker in _KNOWN_REPAIR_MARKERS)
 
 
 def _injected_fingerprints(conn: psycopg.Connection, request_id: str) -> list[str]:

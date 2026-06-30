@@ -1,3 +1,4 @@
+import pytest
 from psycopg.types.json import Json
 
 from argus.v2.pm import memory
@@ -89,3 +90,18 @@ def test_record_request_outcome_writes_lesson_and_attribution(conn):
             (rid,),
         )
         assert cur.fetchall() == [("prior", "qa-pass")]
+
+
+def test_failure_outcomes_require_concrete_follow_up_detail():
+    with pytest.raises(ValueError, match="Blocking issue"):
+        memory._require_follow_up_detail("blocked", "Could not access GitHub.")
+
+    with pytest.raises(ValueError, match="Next action"):
+        memory._require_follow_up_detail("no-change", "Root cause is upstream config.")
+
+    memory._require_follow_up_detail(
+        "blocked", "Could not access GitHub.\nBlocking issue: grant repo access.")
+    memory._require_follow_up_detail(
+        "no-change",
+        "Root cause is upstream config.\nNext action: update the upstream config flag.",
+    )
