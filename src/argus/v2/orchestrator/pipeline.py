@@ -769,7 +769,7 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
     for role, result in rows:
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
         if role == "qa":
-            verdict = parsed.get("verdict") or ("pass" if (result or {}).get("test_exit") == 0 else "pass")
+            verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
             parts.append(f"QA: {verdict}")
         elif role == "senior":
             parts.append(f"Senior: {parsed.get('decision') or 'approve'}")
