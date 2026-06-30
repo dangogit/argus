@@ -239,13 +239,15 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
             else:
                 _approve_done(conn, cfg, job)
         else:
-            _loop_back(conn, cfg, job, team, to_role="developer")
+            _loop_back(conn, cfg, job, team, to_role="developer",
+                       detail=_parsed_failure_detail(parsed))
     elif role == "senior":
         decision = contracts.senior_decision(parsed)
         if decision == "approve" or (advisory and "decision" not in parsed):
             _approve_done(conn, cfg, job)
         else:
-            _loop_back(conn, cfg, job, team, to_role="developer")
+            _loop_back(conn, cfg, job, team, to_role="developer",
+                       detail=_parsed_failure_detail(parsed))
     else:
         # Generic linear advance for any other role
         next_index = job.stage + 1
@@ -394,7 +396,8 @@ def _next(conn: psycopg.Connection, cfg, request_id: str, stage_index: int) -> N
         enqueue_stage(conn, cfg, request_id=request_id, stage_index=stage_index)
 
 
-def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str) -> None:
+def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
+               detail: str = "") -> None:
     """Loop back to to_role, bumping the branch counter. If over max_iters, fail."""
     to_idx = _index(team, to_role)
     if to_idx is None:
@@ -407,6 +410,8 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str) -> N
     current = int(counters.get(key, 0))
     if current >= team.pipeline.max_iters:
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
+        if detail:
+            reason = f"{reason} Blocking issue: {detail}"
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
             reason,
@@ -667,9 +672,41 @@ def _record_memory_outcome(conn: psycopg.Connection, request_id: str,
                            outcome: str, note: str) -> None:
     try:
         pm_memory.record_request_outcome(conn, request_id=request_id,
-                                         outcome=outcome, note=note)
+                                         outcome=outcome,
+                                         note=_memory_outcome_note(outcome, note))
     except Exception:
         pass
+
+
+def _memory_outcome_note(outcome: str, note: str) -> str:
+    if outcome == "blocked":
+        return f"Blocking issue: {note}"
+    if outcome == "found-not-fixed":
+        return f"Next repair action: apply the diagnosed fix. Evidence: {note}"
+    if outcome == "no-change":
+        if _has_known_root_cause(note):
+            if "Blocking issue:" in note or "Next repair action:" in note:
+                return note
+            return f"Next repair action: address the known root cause. Evidence: {note}"
+        return f"Next repair action: none, no code change warranted. Evidence: {note}"
+    if outcome == "qa-fail" and _has_known_root_cause(note):
+        if "Blocking issue:" in note or "Next repair action:" in note:
+            return note
+        return f"Next repair action: address the review failure root cause. Evidence: {note}"
+    return note
+
+
+def _has_known_root_cause(text: str) -> bool:
+    lowered = text.lower()
+    return "root cause" in lowered and "no root cause" not in lowered
+
+
+def _parsed_failure_detail(parsed: dict) -> str:
+    for key in ("reason", "analysis", "summary", "message"):
+        value = parsed.get(key)
+        if value:
+            return str(value)
+    return ""
 
 
 def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,

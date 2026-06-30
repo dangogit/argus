@@ -381,9 +381,44 @@ def test_dev_recommends_fix_surfaces_when_budget_exhausted(conn, cfg_project):
         assert cur.fetchone()[0] == 1  # no further re-dispatch
         cur.execute("SELECT severity, message FROM alerts WHERE project='dev'")
         sev, msg = cur.fetchone()
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE fingerprint='RF-EXH'")
+        outcome, note = cur.fetchone()
     assert sev == "warn"  # warn, not info
     assert "no fix was applied" in msg.lower() or "not applied" in msg.lower()
     assert "no change needed" not in msg.lower()
+    assert outcome == "found-not-fixed"
+    assert note.startswith("Next repair action: apply the diagnosed fix.")
+
+
+def test_memory_outcome_note_requires_repair_action_for_known_root_cause_failure():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "Senior review rejected it. Root cause still present in checkout.py.",
+    )
+
+    assert note.startswith("Next repair action: address the review failure root cause.")
+    assert "Evidence: Senior review rejected it." in note
+
+
+def test_memory_outcome_note_requires_repair_action_for_known_root_cause_no_change():
+    note = pipeline._memory_outcome_note(
+        "no-change",
+        "Root cause is stale fixture data in checkout.py.",
+    )
+
+    assert note.startswith("Next repair action: address the known root cause.")
+    assert "Evidence: Root cause is stale fixture data" in note
+
+
+def test_memory_outcome_note_preserves_existing_blocking_marker_for_known_root_cause():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "senior did not pass. Blocking issue: Root cause still present in checkout.py.",
+    )
+
+    assert note == (
+        "senior did not pass. Blocking issue: Root cause still present in checkout.py."
+    )
 
 
 def test_dev_genuine_no_fix_unchanged(conn, cfg_project):
@@ -432,8 +467,12 @@ def test_dev_blocked_unchanged(conn, cfg_project):
         assert cur.fetchone()[0] == 1  # no re-dispatch for a blocked run
         cur.execute("SELECT severity, message FROM alerts WHERE project='dev'")
         sev, msg = cur.fetchone()
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE fingerprint='BLK-1'")
+        outcome, note = cur.fetchone()
     assert sev == "warn"
     assert "blocked" in msg.lower()
+    assert outcome == "blocked"
+    assert note.startswith("Blocking issue: Could not access GitHub")
 
 
 def test_dev_ready_advances_to_qa(conn, cfg_project):

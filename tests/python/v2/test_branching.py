@@ -70,6 +70,31 @@ def test_exhausted_qa_records_project_memory(conn, cfg_project):
         assert cur.fetchall() == [("prior", "qa-fail")]
 
 
+def test_exhausted_senior_records_blocking_detail(conn, cfg_project):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(conn, cfg_project, text="fix checkout total"); conn.commit()
+
+    _finish_stage(conn, "developer", {"parsed": {}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+    senior = _finish_stage(conn, "senior", {
+        "parsed": {
+            "decision": "reject",
+            "reason": "Root cause still present in checkout.py: missing total guard.",
+        }
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, senior.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "failed"
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        outcome, note = cur.fetchone()
+    assert outcome == "qa-fail"
+    assert "Blocking issue: Root cause still present in checkout.py" in note
+
+
 def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, tmp_path):
     cfg_project.team("dev").pipeline.max_iters = 0
     rid = _open(conn, cfg_project, text="fix OpenClaw email lookup"); conn.commit()
