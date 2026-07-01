@@ -182,7 +182,11 @@ class BrowserVerify(BaseModel):
     backend: Literal["hermes", "browser-use"] = "hermes"
     hermes_model: str = "gpt-5.5"   # only model accepted by ChatGPT/Codex accounts
     ui_globs: List[str] = Field(default_factory=lambda: [
-        "**/*.vue", "src/views/**", "src/components/**", "**/*.css", "src/styles/**",
+        # Extension-based so it catches UI markup/styles across Vue + React/Next +
+        # Svelte anywhere, WITHOUT matching backend .ts (Next API routes, edge
+        # functions, composables, server logic) which would trigger it spuriously.
+        "**/*.vue", "**/*.tsx", "**/*.jsx", "**/*.svelte",
+        "**/*.css", "**/*.scss",
     ])
     vercel_project_id: Optional[str] = None
     vercel_team_id: Optional[str] = None   # required for team-scoped Vercel projects
