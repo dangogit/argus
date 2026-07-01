@@ -98,25 +98,32 @@ def _default_runner(
 ) -> str:  # pragma: no cover - needs browser-use + chromium + LLM key
     """Run a headless browser-use agent and return its final result text.
 
-    Lazy import so the package is only required when the stage actually runs.
-    Finalize the exact call against the installed browser-use version; the beta
-    API below supports headless + allowed_domains (domain allowlist keeps the
-    agent confined to the preview + its API host).
+    Lazy import so browser-use is only required when the stage actually runs.
+    Validated against browser-use 0.13.1 (top-level API). The domain allowlist
+    confines the agent to the preview + its API host. LLM provider is inferred
+    from the model name (gpt*/o* => OpenAI, else Claude), so prod uses Claude and
+    a test can drive it with OpenAI.
     """
     import asyncio
 
-    from browser_use.beta import Agent, BrowserProfile, ChatAnthropic
+    from browser_use import Agent, BrowserProfile, ChatAnthropic, ChatOpenAI
+
+    def _make_llm(m: str):
+        name = m.split("/")[-1]
+        if name.lower().startswith(("gpt", "o1", "o3", "o4", "chatgpt")):
+            return ChatOpenAI(model=name, temperature=0.0)
+        return ChatAnthropic(model=name, temperature=0.0)
 
     async def _run() -> str:
         agent = Agent(
             task=task,
-            llm=ChatAnthropic(model=model, temperature=0.0),
+            llm=_make_llm(model),
             browser_profile=BrowserProfile(
                 headless=True,
                 allowed_domains=list(allowed_domains),
             ),
         )
-        history = await agent.run()
+        history = await asyncio.wait_for(agent.run(max_steps=12), timeout=timeout_seconds)
         return history.final_result() or ""
 
     return asyncio.run(_run())

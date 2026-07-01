@@ -105,10 +105,24 @@ a qa fail; no new failure plumbing.
 
 ## Status
 
-DONE (feature/browser-verify): `browser/preview.py`, `browser/runner.py`, tests
-(12 green). Isolated, not wired in. REMAINING: schema `BrowserVerify`; the
-`_advance` change (generalize qa-advance + `_is_browser_verify` branch);
-worker.py step; then enablement.
+FULLY BUILT + E2E-PROVEN on `feature/browser-verify` (742 unit tests green):
+- `browser/preview.py`, `browser/runner.py`, schema `BrowserVerify`, the
+  `_advance` change (generalized qa-advance + `_is_browser_verify` branch),
+  worker `_run_browser_verify`, `workspace.push`.
+- runner finalized against browser-use 0.13.1 (top-level `Agent` +
+  `ChatAnthropic`/`ChatOpenAI` + `BrowserProfile(headless, allowed_domains)`).
+
+E2E (2026-07-01, against the real arvuyot Vercel project):
+- Preview discovery returned the live dev preview URL. FOUND+FIXED 2 bugs unit
+  tests could not: Vercel needs `teamId` for team-scoped projects, and
+  non-production branch previews report `target=None` (so `&target=preview`
+  dropped them).
+- browser-use drove the live preview headless (gpt-4o-mini) through
+  `run_browser_check` -> verdict PASS with a real reason. Negative run against a
+  dead preview -> fail-closed.
+
+REMAINING: only enablement (secrets + install + config flip). Not wired to any
+live team.
 
 ## Rollout (safe)
 
