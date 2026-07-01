@@ -178,6 +178,67 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
     return True
 
 
+def list_dead(conn: psycopg.Connection, *, limit: int = 50) -> list[dict]:
+    """Dead jobs (exhausted max_attempts), newest first, with a best-effort
+    last-error snippet pulled the same way the dead-job alert does: jobs.result
+    first, else the most recent run row's output."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT j.id, j.team_id, j.kind, j.attempts, j.max_attempts, j.result,
+                   j.updated_at,
+                   (SELECT output FROM runs WHERE job_id = j.id
+                    ORDER BY started_at DESC LIMIT 1) AS last_run_output
+            FROM jobs j WHERE j.status='dead'
+            ORDER BY j.updated_at DESC LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+    out = []
+    for job_id, team_id, kind, attempts, max_attempts, result, died_at, last_run_output in rows:
+        detail = ""
+        if isinstance(result, dict):
+            detail = str(result.get("test_output") or result.get("output")
+                         or result.get("error") or "").strip()
+        if not detail:
+            detail = str(last_run_output or "").strip()
+        out.append({
+            "id": str(job_id), "team_id": team_id, "kind": kind,
+            "attempts": attempts, "max_attempts": max_attempts,
+            "last_error": detail, "died_at": died_at,
+        })
+    return out
+
+
+def retry_dead(conn: psycopg.Connection, job_id: str) -> bool:
+    """Make a dead job claimable again: reset to pending, clear claim/lease
+    state, zero attempts, and bump max_attempts by one so it gets a fresh
+    attempt budget instead of dying again on its first heartbeat check.
+    Returns False if the job does not exist or is not currently dead."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs SET
+                status='pending',
+                attempts=0,
+                max_attempts=max_attempts + 1,
+                claim_token=NULL,
+                claimed_by=NULL, claimed_at=NULL,
+                lease_expires_at=NULL, heartbeat_at=NULL,
+                run_after=now(),
+                advanced_at=NULL,
+                updated_at=now()
+            WHERE id=%s AND status='dead'
+            """,
+            (job_id,),
+        )
+        ok = cur.rowcount == 1
+    if ok:
+        log.info("dead job %s reset to pending for retry", job_id)
+    return ok
+
+
 def reclaim_expired(conn: psycopg.Connection) -> int:
     """Requeue jobs whose lease expired (worker crash). Rotate the token so the
     old holder is fenced. To dead past max_attempts."""

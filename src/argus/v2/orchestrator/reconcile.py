@@ -330,11 +330,69 @@ def _prune_orphan_worktrees(conn: psycopg.Connection, wt_root) -> None:
         shutil.rmtree(entry, ignore_errors=True)
 
 
+def _dead_job_error_detail(conn: psycopg.Connection, job_id: str, result) -> str:
+    """Best-effort last error for a dead job. A job reclaimed straight to
+    'dead' (lease timeout past max_attempts) never went through finalize(), so
+    jobs.result is usually null; fall back to the most recent run row's output,
+    same fields _last_failure_detail checks for a failed request."""
+    if isinstance(result, dict):
+        detail = str(result.get("test_output") or result.get("output")
+                     or result.get("error") or "").strip()
+        if detail:
+            return detail[-1200:]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT output FROM runs WHERE job_id=%s ORDER BY started_at DESC LIMIT 1",
+            (job_id,))
+        row = cur.fetchone()
+    detail = str(row[0] or "").strip() if row else ""
+    return detail[-1200:] if detail else ""
+
+
+def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
+    """Surface every job that exhausted max_attempts (status='dead') to its
+    team's control channel. Idempotent via 'dead-job:<job_id>' so a repeat
+    sweep (or reclaim_expired flipping the same row again, which it cannot
+    since dead is terminal) never double-alerts."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, team_id, kind, attempts, max_attempts, result "
+            "FROM jobs WHERE status='dead' "
+            "  AND NOT EXISTS (SELECT 1 FROM actions a "
+            "    WHERE a.idempotency_key = 'dead-job:' || jobs.id::text)"
+        )
+        rows = cur.fetchall()
+    for job_id, team_id, kind, attempts, max_attempts, result in rows:
+        job_id = str(job_id)
+        detail = _dead_job_error_detail(conn, job_id, result)
+        lines = [
+            f"Job {job_id} (kind={kind}, team={team_id}) died after "
+            f"{attempts}/{max_attempts} attempts.",
+        ]
+        if detail:
+            lines += ["", "Last error:", detail]
+        text = "\n".join(lines)
+        dest = _team_control_dest(cfg, team_id) or "cli:local"
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO actions (job_id, team_id, type, risk, destination_ref, "
+                "idempotency_key, payload) VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
+                "ON CONFLICT (idempotency_key) DO NOTHING",
+                (job_id, team_id, dest, f"dead-job:{job_id}", Json({"text": text})))
+
+
 def sweep_once(conn: psycopg.Connection, cfg) -> None:
     # 0. Route unprocessed events (front decision: reply vs dispatch).
     route_events(conn, cfg)
     # 1. Reclaim crashed jobs.
     jobs.reclaim_expired(conn)
+    # 1b. Alert on jobs that just went dead (exhausted max_attempts). Kind-
+    # agnostic: on_job_done/_sweep_converse only react to dead status for
+    # kinds they know how to advance, so without this a dead job outside those
+    # paths (or one whose downstream handling swallows it) would never surface
+    # to a human. Runs before the pipeline-advance step below so the alert
+    # exists even if that step also fails the request.
+    _notify_dead_jobs(conn, cfg)
     # 2. Advance pipelines for terminal jobs not yet advanced.
     with conn.cursor() as cur:
         cur.execute(

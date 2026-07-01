@@ -572,6 +572,26 @@ def cmd_recover(args) -> int:
         conn.close()
 
 
+def cmd_dead_job(args) -> int:
+    conn = pool.connect()
+    try:
+        if args.dead_job_cmd == "list":
+            for row in queue.list_dead(conn, limit=args.limit):
+                died_at = row["died_at"].isoformat() if row["died_at"] else ""
+                snippet = row["last_error"][:80]
+                print(f"{row['id']}\t{row['team_id']}\t{row['kind']}\t"
+                      f"{row['attempts']}/{row['max_attempts']}\t{snippet}\t{died_at}")
+            return 0
+        if args.dead_job_cmd == "retry":
+            ok = queue.retry_dead(conn, args.job_id)
+            conn.commit()
+            print("queued for retry" if ok else "no dead job with that id")
+            return 0 if ok else 1
+    finally:
+        conn.close()
+    return 1
+
+
 def cmd_poll(args) -> int:
     from argus.v2.connectors import driver
     cfg = _cfg(); conn = pool.connect()
@@ -1482,6 +1502,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("approve"); s.add_argument("nonce"); s.set_defaults(fn=cmd_approve)
     s = sub.add_parser("reject"); s.add_argument("nonce"); s.set_defaults(fn=cmd_reject)
     s = sub.add_parser("recover"); s.set_defaults(fn=cmd_recover)
+    s = sub.add_parser("dead-job")
+    djs = s.add_subparsers(dest="dead_job_cmd", required=True)
+    r = djs.add_parser("list")
+    r.add_argument("--limit", type=int, default=50)
+    r.set_defaults(fn=cmd_dead_job)
+    r = djs.add_parser("retry")
+    r.add_argument("job_id")
+    r.set_defaults(fn=cmd_dead_job)
     s = sub.add_parser("poll")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--source", action="append", default=[])
