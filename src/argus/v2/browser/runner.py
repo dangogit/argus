@@ -44,18 +44,25 @@ def parse_verdict(text: str) -> BrowserCheckResult:
     FAIL-CLOSED: anything not clearly a PASS is a fail. A broken, ambiguous, or
     empty run must never silently approve a UI change.
     """
+    import re
+
     raw = (text or "").strip()
     if not raw:
         return BrowserCheckResult("fail", "no verdict produced", raw)
     upper = raw.upper()
     first = upper.splitlines()[0]
-    # Prefer an explicit token on the first line.
-    if first.startswith("FAIL") or "FAIL" in first:
+
+    # Word-boundary match so PASSWORD / BYPASS / COMPASS / SURPASS (common on a
+    # login screen the agent describes) are NOT read as the verdict PASS.
+    def _has(word: str, s: str) -> bool:
+        return re.search(rf"\b{word}\b", s) is not None
+
+    if _has("FAIL", first):
         return BrowserCheckResult("fail", _first_reason(raw), raw)
-    if first.startswith("PASS") or "PASS" in first:
+    if _has("PASS", first):
         return BrowserCheckResult("pass", _first_reason(raw), raw)
-    # Fall back to a single unambiguous token anywhere.
-    has_pass, has_fail = "PASS" in upper, "FAIL" in upper
+    # Fall back to a single unambiguous verdict token anywhere.
+    has_pass, has_fail = _has("PASS", upper), _has("FAIL", upper)
     if has_pass and not has_fail:
         return BrowserCheckResult("pass", _first_reason(raw), raw)
     if has_fail and not has_pass:

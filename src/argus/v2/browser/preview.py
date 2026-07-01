@@ -95,17 +95,23 @@ def discover_preview_url(
 
         sleep = time.sleep
 
+    from urllib.parse import quote
+
     headers = {"Authorization": f"Bearer {token}"}
     # NOTE (learned e2e): do NOT filter by target=preview - Vercel reports
     # target=None (not "preview") for non-production branch deployments, so that
     # filter drops exactly the previews we want. Team-scoped projects also require
     # teamId or the API returns an empty list.
+    # URL-encode values: Argus branch names are argus/<team>/<uuid> (slashes) and
+    # would otherwise break the query string.
+    qbranch = quote(branch, safe="")
+    qproject = quote(project_id, safe="")
     query = (
         f"{VERCEL_API}/v6/deployments"
-        f"?projectId={project_id}&meta-githubCommitRef={branch}&limit=1"
+        f"?projectId={qproject}&meta-githubCommitRef={qbranch}&limit=1"
     )
     if team_id:
-        query += f"&teamId={team_id}"
+        query += f"&teamId={quote(team_id, safe='')}"
 
     # attempts covers the whole build budget; +1 so a 0s interval still polls once.
     attempts = max(1, build_timeout_seconds // max(1, poll_interval_seconds)) + 1

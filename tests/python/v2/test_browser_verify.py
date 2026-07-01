@@ -117,6 +117,14 @@ def test_parse_verdict_fail_closed_on_empty_or_ambiguous():
     assert parse_verdict("i clicked around and it seemed ok").verdict == "fail"
 
 
+def test_parse_verdict_ignores_pass_like_words():
+    # A login-screen description must NOT be read as PASS via substring.
+    assert parse_verdict("The password field and bypass link render fine.").verdict == "fail"
+    assert parse_verdict("Filled the password field.\nStill no verdict.").verdict == "fail"
+    # But a real verdict word still wins, even next to pass-like words.
+    assert parse_verdict("Checked the password field.\nPASS it renders").verdict == "pass"
+
+
 def test_build_task_includes_url_files_and_login():
     task = build_task(
         url="https://preview.vercel.app/admin",
