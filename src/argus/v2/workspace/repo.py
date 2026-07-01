@@ -17,8 +17,9 @@ class Worktree:
     repo: str  # absolute path to the main repo
 
 
-def _git(cwd: str, *args: str, check: bool = True) -> str:
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+def _git(cwd: str, *args: str, check: bool = True, timeout: int | None = None) -> str:
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                       timeout=timeout)
     if check and r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
     return r.stdout
@@ -132,6 +133,19 @@ def commit_all(path: str, message: str) -> bool:
         return False
     _git(path, "commit", "-m", message)
     return True
+
+
+def push(project, branch: str, path: str) -> None:
+    """Push the work branch to the remote so a preview/CI build can pick it up.
+
+    Runs from the worktree `path` (HEAD is the branch). --force-with-lease is safe
+    on our own bot branch and avoids spurious non-fast-forward errors when a
+    re-verify pushes again. Requires network (branch push only, no PR)."""
+    remote = getattr(project, "remote", "origin") or "origin"
+    # Timeout so an unreachable/stalled remote cannot block the worker thread
+    # indefinitely (push runs synchronously in the browser_verify job path).
+    _git(path, "push", "--force-with-lease", "-u", remote, f"HEAD:{branch}",
+         check=True, timeout=120)
 
 
 def _resolve_base_ref(project, repo: str) -> str:

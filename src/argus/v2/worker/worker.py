@@ -3,10 +3,19 @@ fencing token. The caller drives the loop (CLI `up`)."""
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from datetime import datetime, timezone
 from threading import Event, Thread
+from urllib.parse import urlparse
 
+from argus.v2.browser import (
+    PreviewError,
+    diff_touches_ui,
+    discover_preview_url,
+    discover_preview_url_firebase,
+    run_browser_check,
+)
 from argus.v2.context import assemble as ctx
 from argus.v2.db import pool
 from argus.v2.front import front
@@ -79,9 +88,15 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                 if memory:
                     context = f"{context}\n\n{memory}" if context else memory
                     memory_fingerprints = pm_memory.fingerprints(conn, team_id=job.team_id)
-            run, result, actions = job_exec.run_job(cfg, job, context=context,
-                                                    workdir=workdir)
-            result["parsed"] = contracts.parse_result(run.output or "")
+            if (team and project and _is_browser_verify_role(team, job.role)
+                    and getattr(project, "browser_verify", None)
+                    and project.browser_verify.enabled):
+                # browser-use IS the agent for this stage: no LLM role dispatch.
+                run, result, actions = _run_browser_verify(job, project, workdir)
+            else:
+                run, result, actions = job_exec.run_job(cfg, job, context=context,
+                                                        workdir=workdir)
+                result["parsed"] = contracts.parse_result(run.output or "")
             if memory_fingerprints:
                 result["memory_fingerprints"] = memory_fingerprints
             actions = _harden_actions(cfg, job, actions)
@@ -254,3 +269,73 @@ def _is_builder_role(team, role_name: str) -> bool:
         return team.role(role_name).kind == "builder"
     except KeyError:
         return False
+
+
+def _is_browser_verify_role(team, role_name: str) -> bool:
+    try:
+        return team.role(role_name).kind == "judge" and role_name == "browser_verify"
+    except KeyError:
+        return False
+
+
+def _bv_result(verdict: str, reason: str, *, url=None, skipped=False,
+               prompt: str = "", raw: str = ""):
+    """Build the (run, result, actions) triple for a browser_verify job so the
+    normal finalize path stores it and the pipeline reads parsed.verdict."""
+    parsed = {"verdict": verdict, "analysis": reason, "ready": verdict == "pass"}
+    result = {
+        "parsed": parsed,
+        "browser_verify": {"verdict": verdict, "reason": reason, "url": url,
+                           "skipped": skipped},
+    }
+    run = RunRecord(role="browser_verify", engine="browser-use", status="ok",
+                    prompt=prompt or None, output=(raw or reason))
+    return run, result, []
+
+
+def _run_browser_verify(job, project, workdir):
+    """Run the browser_verify stage: gate on the diff, push the branch, poll the
+    Vercel preview, and run a browser-use agent. Returns (run, result, actions).
+    Fail-closed: any error => verdict 'fail' (the PR is drafted, a human reviews)."""
+    bv = project.browser_verify
+    summary = (job.payload or {}).get("text", job.role)
+    diff = workspace.diff(project, workdir)
+    if not diff_touches_ui(diff, bv.ui_globs):
+        return _bv_result("pass", "no UI files changed; browser check skipped",
+                          skipped=True, prompt=summary)
+    changed = [ln[len("+++ b/"):].strip() for ln in diff.splitlines()
+               if ln.startswith("+++ b/") and "/dev/null" not in ln]
+    branch = f"{project.work_branch_prefix}/{job.request_id}"
+    try:
+        if bv.discovery == "firebase":
+            # Build + deploy the change's own Firebase preview channel from the
+            # worktree (no branch push; the CI preview is PR-triggered).
+            url = discover_preview_url_firebase(
+                workdir=workdir, project=bv.firebase_project,
+                channel=f"argus-{str(job.request_id)[:12]}",
+                build_cmd=bv.firebase_build_cmd,
+                expires=bv.firebase_channel_expires,
+                build_timeout_seconds=bv.firebase_build_timeout_seconds,
+            )
+        else:
+            token = os.environ.get(bv.vercel_token_env, "")
+            workspace.push(project, branch, workdir)
+            url = discover_preview_url(
+                project_id=bv.vercel_project_id, branch=branch, token=token,
+                team_id=bv.vercel_team_id,
+                build_timeout_seconds=bv.build_timeout_seconds,
+                poll_interval_seconds=bv.poll_interval_seconds,
+            )
+        allowed = [h for h in [urlparse(url).hostname, bv.api_host] if h]
+        bv_model = bv.hermes_model if bv.backend == "hermes" else bv.browser_model
+        res = run_browser_check(
+            preview_url=url, base_path=bv.base_path, changed_files=changed,
+            summary=summary, allowed_domains=allowed, model=bv_model,
+            test_login=bv.test_login, browser_venv_python=bv.browser_venv_python,
+            backend=bv.backend,
+        )
+        return _bv_result(res.verdict, res.reason, url=url, prompt=summary, raw=res.raw)
+    except PreviewError as exc:
+        return _bv_result("fail", f"preview unavailable: {exc}", prompt=summary)
+    except Exception as exc:  # noqa: BLE001 - fail-closed
+        return _bv_result("fail", f"browser verify error: {exc}", prompt=summary)

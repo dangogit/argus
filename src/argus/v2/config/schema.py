@@ -159,12 +159,56 @@ class Project(BaseModel):
                                         # worktree; only network opens. Off by default.
     autofix: "Autofix" = Field(default_factory=lambda: Autofix())
     pm: "ProjectPm" = Field(default_factory=lambda: ProjectPm())
+    browser_verify: "BrowserVerify" = Field(default_factory=lambda: BrowserVerify())
 
 
 class Autofix(BaseModel):
     mode: Literal["propose-pr", "propose-only"] = "propose-pr"
     draft: bool = False
     force_draft_on_fail: bool = True
+
+
+class BrowserVerify(BaseModel):
+    """Config for the browser_verify stage (docs/browser-verify-design.md).
+
+    Off by default. When enabled and a team has a `browser_verify` judge stage,
+    it pushes the work branch, polls the Vercel preview, and runs a browser-use
+    agent against it - but only when the diff touches UI files (`ui_globs`).
+    """
+    enabled: bool = False
+    # 'hermes' drives the browser via the hermes `browser` toolset on the Codex
+    # subscription (gpt-5.5) - no browser-use install, no metered LLM key.
+    # 'browser-use' uses the browser-use library (needs a metered LLM key).
+    backend: Literal["hermes", "browser-use"] = "hermes"
+    hermes_model: str = "gpt-5.5"   # only model accepted by ChatGPT/Codex accounts
+    ui_globs: List[str] = Field(default_factory=lambda: [
+        # Extension-based so it catches UI markup/styles across Vue + React/Next +
+        # Svelte anywhere, WITHOUT matching backend .ts (Next API routes, edge
+        # functions, composables, server logic) which would trigger it spuriously.
+        "**/*.vue", "**/*.tsx", "**/*.jsx", "**/*.svelte",
+        "**/*.css", "**/*.scss",
+    ])
+    # How to get a preview URL of the change.
+    # 'vercel': push the branch, poll the Vercel API for the preview build.
+    # 'firebase': build the site in the worktree and deploy a Firebase Hosting
+    #   preview channel (for repos whose preview is PR-triggered, not push-built,
+    #   e.g. luma on Firebase). No branch push needed.
+    discovery: Literal["vercel", "firebase"] = "vercel"
+    vercel_project_id: Optional[str] = None
+    vercel_team_id: Optional[str] = None   # required for team-scoped Vercel projects
+    vercel_token_env: str = "VERCEL_TOKEN"
+    firebase_project: Optional[str] = None            # e.g. luma-web-ai-staging
+    firebase_build_cmd: str = "npm ci && npm run build"
+    firebase_channel_expires: str = "1d"
+    firebase_build_timeout_seconds: int = 900         # build + deploy can be slow
+    build_timeout_seconds: int = 300
+    poll_interval_seconds: int = 10
+    base_path: str = "/"
+    browser_model: str = "claude-sonnet-4-6"
+    api_host: Optional[str] = None          # extra allowed_domain (e.g. Supabase host)
+    test_login: Optional[dict] = None        # {"phone": ..., "otp": ...} for authed screens
+    browser_venv_python: Optional[str] = None  # dedicated venv python w/ browser-use;
+                                               # None => import browser-use in-process
 
 
 class ProjectPm(BaseModel):

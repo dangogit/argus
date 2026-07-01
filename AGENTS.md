@@ -198,6 +198,37 @@ For the smoke-to-live path, including manager roles, continuous workers, PM
 auto-fix, launchd/systemd, and stable webhook URLs, use
 `docs/live-onboarding.md`.
 
+## Browser Verification
+
+Optional `browser_verify` judge stage that checks UI changes in a real browser
+against a preview of the change. Off by default. Enable per team by adding a
+`browser_verify` role, putting it in `pipeline.stages` between `qa` and `senior`,
+and setting `project.browser_verify.enabled: true`. Gated on the diff: it runs
+only when a UI file changes (`*.vue`, `*.tsx`, `*.jsx`, `*.svelte`, `*.css`,
+`*.scss`); backend-only diffs auto-pass. Fail-closed: any error is a fail, which
+keeps the PR draft. Full design in `docs/browser-verify-design.md`.
+
+Backend (`browser_verify.backend`):
+
+- `hermes` (default): drives the browser via the hermes `browser` toolset on the
+  `openai-codex` provider (the Codex subscription, `gpt-5.5`). No browser-use, no
+  metered LLM key.
+- `browser-use`: the browser-use library. Needs a metered LLM key and runs in a
+  dedicated venv via `browser_venv_python`.
+
+Preview discovery (`browser_verify.discovery`):
+
+- `vercel` (default): push the branch, poll the Vercel API. Needs
+  `vercel_project_id`, `vercel_team_id`, and `VERCEL_TOKEN` in the environment.
+- `firebase`: build the site in the worktree and deploy a Firebase Hosting
+  preview channel (`firebase_project` + a working `firebase` login). For repos
+  whose preview is PR-triggered rather than built on branch push.
+
+Code: `src/argus/v2/browser` (discovery + runner), `_run_browser_verify` in
+`src/argus/v2/worker/worker.py`, and the `_is_browser_verify` branch in
+`src/argus/v2/orchestrator/pipeline.py`. Verdict is fail-closed and reuses the
+existing judge to `force_draft_on_fail` machinery.
+
 ## Verification
 
 Python gate:
