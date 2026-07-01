@@ -1,8 +1,11 @@
 """Tests for the browser-verify preview helpers (docs/browser-verify-design.md)."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from argus.v2.browser import (
+    BrowserCheckResult,
     PreviewFailed,
     PreviewTimeout,
     build_task,
@@ -11,6 +14,8 @@ from argus.v2.browser import (
     parse_verdict,
     run_browser_check,
 )
+from argus.v2.config import schema
+from argus.v2.worker import worker
 
 UI_GLOBS = ["**/*.vue", "src/views/**", "src/components/**", "**/*.css", "src/styles/**"]
 
@@ -159,3 +164,56 @@ def test_run_browser_check_fail_closed_on_runner_exception():
     )
     assert res.verdict == "fail"
     assert "chromium crashed" in res.reason
+
+
+# --- worker._run_browser_verify (gate / push / preview / browser) ------------
+
+def _project(**bv):
+    return schema.Project(
+        repo="/x",
+        browser_verify=schema.BrowserVerify(enabled=True, vercel_project_id="prj", **bv),
+    )
+
+
+def _job():
+    return SimpleNamespace(payload={"text": "fix admin table"}, request_id="req-1", role="browser_verify")
+
+
+def test_bv_worker_skips_backend_only_diff(monkeypatch):
+    calls = {"push": 0, "discover": 0}
+    monkeypatch.setattr(worker.workspace, "diff", lambda p, w: _diff("src/composables/usePayment.ts"))
+    monkeypatch.setattr(worker.workspace, "push", lambda *a, **k: calls.__setitem__("push", calls["push"] + 1))
+    monkeypatch.setattr(worker, "discover_preview_url", lambda **k: calls.__setitem__("discover", calls["discover"] + 1) or "https://x")
+
+    _run, result, _actions = worker._run_browser_verify(_job(), _project(), "/wd")
+    assert result["parsed"]["verdict"] == "pass"
+    assert result["browser_verify"]["skipped"] is True
+    assert calls == {"push": 0, "discover": 0}  # no push, no preview poll
+
+
+def test_bv_worker_ui_diff_runs_browser(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(worker.workspace, "diff", lambda p, w: _diff("src/components/Admin.vue"))
+    monkeypatch.setattr(worker.workspace, "push", lambda project, branch, path: seen.update(branch=branch))
+    monkeypatch.setattr(worker, "discover_preview_url", lambda **k: "https://arvuyot-abc.vercel.app")
+    monkeypatch.setattr(worker, "run_browser_check", lambda **k: seen.update(k) or BrowserCheckResult("pass", "renders", "PASS renders"))
+
+    _run, result, _actions = worker._run_browser_verify(_job(), _project(api_host="staging.supabase.co"), "/wd")
+    assert result["parsed"]["verdict"] == "pass"
+    assert result["browser_verify"]["url"] == "https://arvuyot-abc.vercel.app"
+    assert "argus/req-1" in seen["branch"]
+    assert seen["allowed_domains"] == ["arvuyot-abc.vercel.app", "staging.supabase.co"]
+    assert seen["changed_files"] == ["src/components/Admin.vue"]
+
+
+def test_bv_worker_fail_closed_on_preview_error(monkeypatch):
+    monkeypatch.setattr(worker.workspace, "diff", lambda p, w: _diff("src/components/Admin.vue"))
+    monkeypatch.setattr(worker.workspace, "push", lambda *a, **k: None)
+
+    def boom(**_k):
+        raise PreviewTimeout("no preview after 300s")
+
+    monkeypatch.setattr(worker, "discover_preview_url", boom)
+    _run, result, _actions = worker._run_browser_verify(_job(), _project(), "/wd")
+    assert result["parsed"]["verdict"] == "fail"
+    assert "preview unavailable" in result["parsed"]["analysis"]

@@ -159,12 +159,34 @@ class Project(BaseModel):
                                         # worktree; only network opens. Off by default.
     autofix: "Autofix" = Field(default_factory=lambda: Autofix())
     pm: "ProjectPm" = Field(default_factory=lambda: ProjectPm())
+    browser_verify: "BrowserVerify" = Field(default_factory=lambda: BrowserVerify())
 
 
 class Autofix(BaseModel):
     mode: Literal["propose-pr", "propose-only"] = "propose-pr"
     draft: bool = False
     force_draft_on_fail: bool = True
+
+
+class BrowserVerify(BaseModel):
+    """Config for the browser_verify stage (docs/browser-verify-design.md).
+
+    Off by default. When enabled and a team has a `browser_verify` judge stage,
+    it pushes the work branch, polls the Vercel preview, and runs a browser-use
+    agent against it - but only when the diff touches UI files (`ui_globs`).
+    """
+    enabled: bool = False
+    ui_globs: List[str] = Field(default_factory=lambda: [
+        "**/*.vue", "src/views/**", "src/components/**", "**/*.css", "src/styles/**",
+    ])
+    vercel_project_id: Optional[str] = None
+    vercel_token_env: str = "VERCEL_TOKEN"
+    build_timeout_seconds: int = 300
+    poll_interval_seconds: int = 10
+    base_path: str = "/"
+    browser_model: str = "claude-sonnet-4-6"
+    api_host: Optional[str] = None          # extra allowed_domain (e.g. Supabase host)
+    test_login: Optional[dict] = None        # {"phone": ..., "otp": ...} for authed screens
 
 
 class ProjectPm(BaseModel):

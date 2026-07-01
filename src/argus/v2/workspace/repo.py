@@ -134,6 +134,16 @@ def commit_all(path: str, message: str) -> bool:
     return True
 
 
+def push(project, branch: str, path: str) -> None:
+    """Push the work branch to the remote so a preview/CI build can pick it up.
+
+    Runs from the worktree `path` (HEAD is the branch). --force-with-lease is safe
+    on our own bot branch and avoids spurious non-fast-forward errors when a
+    re-verify pushes again. Requires network (branch push only, no PR)."""
+    remote = getattr(project, "remote", "origin") or "origin"
+    _git(path, "push", "--force-with-lease", "-u", remote, f"HEAD:{branch}", check=True)
+
+
 def _resolve_base_ref(project, repo: str) -> str:
     """The base ref to diff against. create_worktree branches off
     origin/<base_branch> when it exists, so the local <base_branch> may not exist

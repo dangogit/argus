@@ -233,11 +233,17 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
     elif _is_qa(team, role):
         verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
         if verdict == "pass" or (advisory and "verdict" not in parsed and (result or {}).get("test_exit") is None):
-            senior_idx = _index(team, "senior")
-            if senior_idx is not None:
-                _next(conn, cfg, job.request_id, senior_idx)
-            else:
-                _approve_done(conn, cfg, job)
+            _advance_or_done(conn, cfg, job, team)
+        else:
+            _loop_back(conn, cfg, job, team, to_role="developer",
+                       detail=_parsed_failure_detail(parsed))
+    elif _is_browser_verify(team, role):
+        # The verdict is written by the worker from the browser-use result, or set
+        # to 'pass' when the diff touched no UI files (skipped). Fail-closed: any
+        # missing/non-pass verdict routes back to the developer.
+        bv_verdict = (parsed or {}).get("verdict")
+        if bv_verdict == "pass" or (advisory and "verdict" not in (parsed or {})):
+            _advance_or_done(conn, cfg, job, team)
         else:
             _loop_back(conn, cfg, job, team, to_role="developer",
                        detail=_parsed_failure_detail(parsed))
@@ -382,6 +388,19 @@ def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
             "ON CONFLICT (idempotency_key) DO NOTHING",
             (request_id, team_id, dest, f"nofix:{request_id}",
              psycopg.types.json.Json({"text": text})))
+
+
+def _advance_or_done(conn: psycopg.Connection, cfg, job: Job, team) -> None:
+    """Advance a judge stage (qa / browser_verify) on pass: enqueue the next stage,
+    or if this was the last stage, approve and record the open_pr action. Advancing
+    to the *next* stage (not a hardcoded 'senior') is what lets a browser_verify
+    stage sit between qa and senior; for a plain developer->qa->senior pipeline the
+    next stage after qa is still senior, so behavior is unchanged."""
+    next_index = job.stage + 1
+    if next_index >= len(team.pipeline.stages):
+        _approve_done(conn, cfg, job)
+    else:
+        _next(conn, cfg, job.request_id, next_index)
 
 
 def _next(conn: psycopg.Connection, cfg, request_id: str, stage_index: int) -> None:
@@ -771,6 +790,8 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
             parts.append(f"QA: {verdict}")
+        elif role == "browser_verify":
+            parts.append(f"Browser: {parsed.get('verdict') or 'skip'}")
         elif role == "senior":
             parts.append(f"Senior: {parsed.get('decision') or 'approve'}")
     return "; ".join(parts) or "QA and senior approved"
@@ -895,6 +916,15 @@ def _is_qa(team, role_name: str) -> bool:
     try:
         role = team.role(role_name)
         return role.kind == "judge" and role_name == "qa"
+    except KeyError:
+        return False
+
+
+def _is_browser_verify(team, role_name: str) -> bool:
+    """True if role_name is the browser_verify judge stage."""
+    try:
+        role = team.role(role_name)
+        return role.kind == "judge" and role_name == "browser_verify"
     except KeyError:
         return False
 
