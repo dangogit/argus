@@ -1,8 +1,10 @@
 import os
+import json
 from pathlib import Path
 
 from argus.engine import EngineResult
 from argus.engine.adapters import _proc
+from argus.v2.config.schema import McpConfig, McpServer
 from argus.v2.worker import exec as job_exec
 from argus.v2.queue.models import Job
 
@@ -54,6 +56,41 @@ def test_run_job_restores_per_job_engine_env(monkeypatch, tmp_path):
     assert calls == [("project-a", "m1"), (None, None)]
     assert "ARGUS_PROJECT" not in os.environ
     assert "ARGUS_MODEL" not in os.environ
+
+
+def test_run_job_merges_global_and_team_mcp(monkeypatch, tmp_path):
+    seen = {}
+
+    class Cfg:
+        mcp = McpConfig(servers=[
+            McpServer(name="global-memory", command="sh", tools=["search_code"]),
+        ])
+
+        def team(self, name):
+            assert name == "dev"
+            return type("TeamCfg", (), {"mcp": McpConfig(servers=[
+                McpServer(name="codebase-memory", command="sh", tools=["trace_path"]),
+            ])})()
+
+    def fake_run_agent(engine, prompt):
+        path = os.environ.get("ARGUS_CLAUDE_MCP_CONFIG")
+        seen["mcp"] = json.loads(Path(path).read_text())
+        seen["allowed"] = os.environ.get("ARGUS_CLAUDE_ALLOWED_TOOLS")
+        return EngineResult(text="ok")
+
+    monkeypatch.delenv("ARGUS_CLAUDE_MCP_CONFIG", raising=False)
+    monkeypatch.delenv("ARGUS_CLAUDE_ALLOWED_TOOLS", raising=False)
+    monkeypatch.setattr(job_exec, "run_agent", fake_run_agent)
+
+    job_exec.run_job(Cfg(), _job({"engine": "claude-code", "prompt": "p"}, str(tmp_path)),
+                     workdir=str(tmp_path))
+
+    assert set(seen["mcp"]["mcpServers"]) == {"global-memory", "codebase-memory"}
+    assert seen["allowed"] == (
+        "mcp__global-memory__search_code,mcp__codebase-memory__trace_path"
+    )
+    assert "ARGUS_CLAUDE_MCP_CONFIG" not in os.environ
+    assert "ARGUS_CLAUDE_ALLOWED_TOOLS" not in os.environ
 
 
 def test_engine_runner_timeout_returns_none(tmp_path, monkeypatch):

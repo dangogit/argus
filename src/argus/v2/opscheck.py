@@ -71,12 +71,17 @@ def _mcp_checks(cfg) -> list[Check]:
     present). Echo-safe: no live protocol handshake (that is P1)."""
     from argus.v2.mcp import config as mcp_config
     out: list[Check] = []
-    for s in getattr(getattr(cfg, "mcp", None), "servers", []) or []:
+    pairs = [(None, s) for s in getattr(getattr(cfg, "mcp", None), "servers", []) or []]
+    for team in getattr(cfg, "teams", []) or []:
+        for s in getattr(getattr(team, "mcp", None), "servers", []) or []:
+            pairs.append((team.name, s))
+    for team_name, s in pairs:
+        name = f"{team_name}/{s.name}" if team_name else s.name
         errs = mcp_config.validate_server(s)
         if errs:
-            out.append(Check("mcp", s.name, "blocked", "; ".join(errs)))
+            out.append(Check("mcp", name, "blocked", "; ".join(errs)))
         else:
-            out.append(Check("mcp", s.name, "ok", f"transport={s.transport}"))
+            out.append(Check("mcp", name, "ok", f"transport={s.transport}"))
     return out
 
 

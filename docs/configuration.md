@@ -150,6 +150,55 @@ Use team overrides sparingly. A team should override `notifications`,
 `pipeline`, `project`, or `support` only when it has a real operational
 difference.
 
+## MCP Servers
+
+Argus can pass operator-configured MCP servers to MCP-aware engines. Configure
+MCP servers in YAML, keep secrets in env vars, and let `argus doctor` validate
+that commands and env names exist before live work starts.
+Today this is wired through the Claude Code worker path; engines without MCP
+support ignore the config.
+
+Use top-level `mcp.servers` only for tools every team may use. Prefer
+`teams[].mcp.servers` for project-local tools such as
+`codebase-memory-mcp`, so one repo graph is not exposed to unrelated projects.
+
+Example project-local codebase memory:
+
+```yaml
+teams:
+  - name: dev
+    project:
+      repo: /absolute/path/to/project
+      base_branch: main
+    roles:
+      - { name: developer, kind: builder, prompt: "Implement the change." }
+      - { name: qa, kind: judge, prompt: "Run checks." }
+    pipeline: { stages: [developer, qa] }
+    mcp:
+      servers:
+        - name: codebase-memory
+          transport: stdio
+          command: codebase-memory-mcp
+          tools:
+            - search_code
+            - get_architecture
+            - trace_path
+            - detect_changes
+```
+
+`tools` is a Claude Code allowlist. Plain names become
+`mcp__<server>__<tool>` when Argus launches Claude Code. Leave `tools` empty
+only when the server is fully trusted for that team.
+
+For `codebase-memory-mcp`, install the binary as an operator step. Do not let an
+agent auto-install or rewrite global agent configs. If using the upstream setup
+script, pass `--skip-config` and wire it through `argus.yaml` instead. Keep
+`.codebase-memory/` local at first; commit `.codebase-memory/graph.db.zst` only
+after graph churn and privacy are acceptable for that repo.
+
+Agent rule: use codebase memory to find likely files, symbols, call paths, and
+impact areas. Then read source files and tests before claiming facts or editing.
+
 ## Config Directory Mode
 
 Single-file YAML is easiest for one team. Config-directory mode is better once

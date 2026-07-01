@@ -229,6 +229,14 @@ Code: `src/argus/v2/browser` (discovery + runner), `_run_browser_verify` in
 `src/argus/v2/orchestrator/pipeline.py`. Verdict is fail-closed and reuses the
 existing judge to `force_draft_on_fail` machinery.
 
+## Codebase Memory MCP
+
+`codebase-memory-mcp` is optional project-local code intelligence. Configure it
+through `teams[].mcp.servers` with a small read/search allowlist. Do not use its
+auto-installer to rewrite agent configs from inside Argus work. Treat graph
+answers as pointers only: use them to find files, call paths, and impact areas,
+then read source and tests before making claims or edits.
+
 ## Verification
 
 Python gate:

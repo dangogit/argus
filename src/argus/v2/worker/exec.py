@@ -56,16 +56,23 @@ def run_job(cfg, job: Job, context: str = "",
     prev_model = os.environ.get("ARGUS_MODEL")
     prev_network = os.environ.get("ARGUS_CODEX_NETWORK")
     prev_mcp = os.environ.get("ARGUS_CLAUDE_MCP_CONFIG")
+    prev_allowed_tools = os.environ.get("ARGUS_CLAUDE_ALLOWED_TOOLS")
     # Render operator-configured MCP servers to a temp file (NOT the worktree -
     # that would pollute the builder's diff) and point the engine at it. echo
     # and other engines ignore the env var; only the MCP-aware engine uses it.
     mcp_dir = None
-    mcp_servers = getattr(getattr(cfg, "mcp", None), "servers", []) or []
+    mcp_servers = _mcp_servers_for_job(cfg, job)
     if mcp_servers:
         mcp_dir = tempfile.mkdtemp(prefix="argus-mcp-")
         os.environ["ARGUS_CLAUDE_MCP_CONFIG"] = mcp_config.materialize(mcp_servers, mcp_dir)
+        allowed = mcp_config.claude_allowed_tools(mcp_servers)
+        if allowed:
+            os.environ["ARGUS_CLAUDE_ALLOWED_TOOLS"] = ",".join(allowed)
+        else:
+            os.environ.pop("ARGUS_CLAUDE_ALLOWED_TOOLS", None)
     else:
         os.environ.pop("ARGUS_CLAUDE_MCP_CONFIG", None)
+        os.environ.pop("ARGUS_CLAUDE_ALLOWED_TOOLS", None)
     os.environ["ARGUS_AGENT_CWD"] = work
     if snap.get("project"):
         os.environ["ARGUS_PROJECT"] = snap["project"]
@@ -107,8 +114,26 @@ def run_job(cfg, job: Job, context: str = "",
         _restore_env("ARGUS_MODEL", prev_model)
         _restore_env("ARGUS_CODEX_NETWORK", prev_network)
         _restore_env("ARGUS_CLAUDE_MCP_CONFIG", prev_mcp)
+        _restore_env("ARGUS_CLAUDE_ALLOWED_TOOLS", prev_allowed_tools)
         if mcp_dir:
             shutil.rmtree(mcp_dir, ignore_errors=True)
+
+
+def _mcp_servers_for_job(cfg, job) -> list:
+    if cfg is None:
+        return []
+    by_name = {}
+    for server in getattr(getattr(cfg, "mcp", None), "servers", []) or []:
+        by_name[server.name] = server
+    team_id = getattr(job, "team_id", None)
+    if team_id:
+        try:
+            team = cfg.team(team_id)
+        except Exception:
+            team = None
+        for server in getattr(getattr(team, "mcp", None), "servers", []) or []:
+            by_name[server.name] = server
+    return list(by_name.values())
 
 
 def extract_script(text: str):
