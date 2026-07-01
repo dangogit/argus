@@ -5,8 +5,11 @@ import pytest
 from argus.v2.browser import (
     PreviewFailed,
     PreviewTimeout,
+    build_task,
     diff_touches_ui,
     discover_preview_url,
+    parse_verdict,
+    run_browser_check,
 )
 
 UI_GLOBS = ["**/*.vue", "src/views/**", "src/components/**", "**/*.css", "src/styles/**"]
@@ -93,3 +96,66 @@ def test_discover_preview_requires_config():
         discover_preview_url(project_id="", branch="b", token="t", http=_http_seq({}))
     with pytest.raises(PreviewFailed):
         discover_preview_url(project_id="p", branch="b", token="", http=_http_seq({}))
+
+
+# --- browser-use runner ------------------------------------------------------
+
+def test_parse_verdict_pass_and_fail():
+    assert parse_verdict("PASS looks good").verdict == "pass"
+    assert parse_verdict("FAIL button missing").verdict == "fail"
+    # verdict on the final line after agent narration
+    assert parse_verdict("did stuff\nPASS renders fine").verdict == "pass"
+
+
+def test_parse_verdict_fail_closed_on_empty_or_ambiguous():
+    assert parse_verdict("").verdict == "fail"
+    assert parse_verdict("i clicked around and it seemed ok").verdict == "fail"
+
+
+def test_build_task_includes_url_files_and_login():
+    task = build_task(
+        url="https://preview.vercel.app/admin",
+        changed_files=["src/views/admin/Foo.vue"],
+        summary="fix admin table",
+        test_login={"phone": "0547505454", "otp": "123456"},
+    )
+    assert "https://preview.vercel.app/admin" in task
+    assert "src/views/admin/Foo.vue" in task
+    assert "0547505454" in task and "123456" in task
+    assert "PASS" in task and "FAIL" in task
+
+
+def test_run_browser_check_uses_injected_runner():
+    seen = {}
+
+    def fake_runner(*, task, allowed_domains, model, timeout_seconds):
+        seen["task"] = task
+        seen["domains"] = allowed_domains
+        return "PASS the screen renders"
+
+    res = run_browser_check(
+        preview_url="https://preview.vercel.app",
+        base_path="/admin",
+        changed_files=["src/components/X.vue"],
+        summary="tweak",
+        allowed_domains=["*.vercel.app"],
+        runner=fake_runner,
+    )
+    assert res.verdict == "pass"
+    assert "https://preview.vercel.app/admin" in seen["task"]
+    assert seen["domains"] == ["*.vercel.app"]
+
+
+def test_run_browser_check_fail_closed_on_runner_exception():
+    def boom(**_kw):
+        raise RuntimeError("chromium crashed")
+
+    res = run_browser_check(
+        preview_url="https://p.vercel.app",
+        changed_files=["a.vue"],
+        summary="x",
+        allowed_domains=["*"],
+        runner=boom,
+    )
+    assert res.verdict == "fail"
+    assert "chromium crashed" in res.reason

@@ -40,10 +40,13 @@ the real Vercel preview, gated on the diff (no browser run for backend-only chan
 - `poll_interval_seconds: int = 10`
 - `base_path: str = "/"` (entry path to open)
 
-Team gets a `browser_verify` role (kind: judge, engine: claude/codex, `skills:
-[playwright]`, a prompt telling it to open the preview URL, exercise the changed
-UI, and emit `verdict: pass|fail` with a one-line reason + screenshot) and the
-stage added to `pipeline.stages`.
+- `browser_model: str = "claude-sonnet-4-6"` (browser-use agent LLM)
+- `api_host: Optional[str]` (extra allowed_domain, e.g. the Supabase host so
+  login/API works)
+
+Team gets a `browser_verify` role (kind: judge) and the stage added to
+`pipeline.stages`. The verification itself is run by **browser-use** (below), not
+by a scripted Playwright skill.
 
 ## Preview discovery module (new: src/argus/v2/browser/preview.py)
 
@@ -61,11 +64,25 @@ When role is the browser_verify judge and `project.browser_verify.enabled`:
    short-circuit: finalize the job with `parsed.verdict = "pass"` and
    `browser_skipped = true` (no push, no agent, no browser). Cheap + safe.
 2. Else: `workspace.push(project, workdir)` (triggers the Vercel preview build),
-   `url = discover_preview_url(...)`, then run the judge agent with the preview URL
-   + the changed-file list + the playwright skill injected into context. The agent
-   drives Playwright headless against `url + base_path`, returns `verdict`.
-3. On any preview error (timeout/failed): verdict `fail` with the reason (so a
-   broken preview does not silently pass).
+   `url = discover_preview_url(...)`, then `run_browser_check(preview_url=url,
+   base_path, changed_files, summary=<request title>, allowed_domains=[preview
+   host, api_host], model=browser_model, test_login=<from config>)`. Write the
+   returned `verdict` into the job result (`parsed.verdict`).
+3. On any preview error (timeout/failed) OR browser run error: verdict `fail`
+   with the reason (fail-closed - a broken preview/run never silently passes).
+
+## Browser runner (browser-use) — src/argus/v2/browser/runner.py (DONE)
+
+Uses browser-use (github.com/browser-use/browser-use): an LLM browser agent that
+drives the page itself, so we hand it a task + preview URL and read a PASS/FAIL
+verdict instead of hand-scripting Playwright.
+- `run_browser_check(...) -> BrowserCheckResult{verdict, reason, raw}`. The real
+  run is behind an injectable `runner` seam (default: headless browser-use beta
+  `Agent(task, llm=ChatAnthropic(model), browser_profile=BrowserProfile(
+  headless=True, allowed_domains=[...]))`, `history.final_result()`), so tests
+  need no browser/chromium/LLM key.
+- `parse_verdict` is FAIL-CLOSED: empty/ambiguous output => fail.
+- `allowed_domains` confines the agent to the preview + API host.
 
 `diff_touches_ui(diff_text, globs)` — small helper (fnmatch over changed paths).
 
@@ -75,20 +92,33 @@ Judge verdict `fail` → `_loop_back` to developer (bounded by `max_iters`) →
 `force_draft_on_fail` opens the PR as draft with the browser findings. Same path as
 a qa fail; no new failure plumbing.
 
-## Tests (tests/python/v2/test_browser_verify.py)
+## Tests (tests/python/v2/test_browser_verify.py) — 12 passing (DONE)
 
-- `diff_touches_ui`: UI diff true; backend-only diff false.
-- skip path: backend-only diff → verdict pass, no push/http called.
-- discover_preview_url: mocked http → polls PENDING→READY→url; timeout raises;
-  ERROR raises.
-- `_advance`: browser_verify pass advances to senior; fail loops back to developer
-  (assert a normal team without the stage is unchanged).
+- `diff_touches_ui`: UI diff true; backend-only diff false; added-file case.
+- `discover_preview_url`: mocked http polls BUILDING→READY→url; timeout raises;
+  ERROR raises; missing config raises.
+- runner: `parse_verdict` pass/fail/fail-closed; `build_task` includes url/files/
+  login; `run_browser_check` uses injected runner; fail-closed on runner exception.
+- TODO (with the wiring): `_advance` browser_verify pass→senior, fail→developer;
+  assert a team WITHOUT the stage is unchanged. Worker skip-path (backend diff →
+  pass, no push/http/browser).
+
+## Status
+
+DONE (feature/browser-verify): `browser/preview.py`, `browser/runner.py`, tests
+(12 green). Isolated, not wired in. REMAINING: schema `BrowserVerify`; the
+`_advance` change (generalize qa-advance + `_is_browser_verify` branch);
+worker.py step; then enablement.
 
 ## Rollout (safe)
 
-1. Build on `feature/browser-verify`, all unit tests green.
+1. Build on `feature/browser-verify`, all unit tests green. ✅ foundation
 2. Do NOT add the stage to any live team in `~/argus-run/v2-argus.yaml` yet.
-3. Add `VERCEL_TOKEN` to `~/argus-run/secrets.env`.
-4. Enable for **arvuyot-yashir only** (add the role + stage), restart
-   `com.argus.up`, and watch the next UI PR verify against a real preview before
-   rolling to other teams.
+3. Secrets in `~/argus-run/secrets.env`: `VERCEL_TOKEN` (preview discovery) and
+   `ANTHROPIC_API_KEY` (browser-use agent). Install browser-use in the argus venv:
+   `pip install "browser-use[core]"` (bundles the chromium runtime). Finalize
+   `runner._default_runner` against the installed version (beta vs stable import).
+4. Enable for **arvuyot-yashir only** (add the role + stage; set `api_host` to the
+   staging Supabase host so login works; `test_login` = staging phone/OTP),
+   restart `com.argus.up`, and watch the next UI PR verify against a real preview
+   before rolling to other teams.
