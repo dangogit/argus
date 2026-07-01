@@ -157,18 +157,38 @@ def extract_script(text: str):
     return None
 
 
+def _minimal_env() -> dict:
+    """Build a minimal env for the code-mode subprocess. The model-authored
+    script is untrusted (prompt injection can steer it), so it must not inherit
+    connector secrets (GITHUB_TOKEN, SLACK_BOT_TOKEN, etc.) loaded into the
+    worker process from ARGUS_ENV_FILES. Keep only what standard tools and git
+    need to run; nothing else crosses the boundary."""
+    env = {}
+    for name in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"):
+        value = os.environ.get(name)
+        if value is not None:
+            env[name] = value
+    return env
+
+
 def _run_code_mode(text: str, work: str):
     """Code mode: run ONE model-authored script inside the throwaway worktree to
     batch edits, instead of N action round-trips. The caller gates on the frozen
     snapshot flag (builder/worker role on an allow_code_mode project); untrusted
     advisor/converse paths never set it. Worktree-local only -- outward actions
-    still flow through the action pipeline + risk gate. Returns None if no script."""
+    still flow through the action pipeline + risk gate. Returns None if no script.
+
+    Runs with a minimal env (see _minimal_env) and a non-login shell (`bash -c`,
+    not `-lc`): a login shell sources the user's profile (~/.zshenv,
+    ~/.bash_profile, etc.), which can re-import secrets or add unexpected PATH
+    entries. Plain `-c` skips that, so the allowlisted env above is the actual
+    env the script sees."""
     script = extract_script(text)
     if not script:
         return None
     timeout = float(os.environ.get("ARGUS_CODE_MODE_TIMEOUT", "120"))
     try:
-        proc = subprocess.run(["bash", "-lc", script], cwd=work,
+        proc = subprocess.run(["bash", "-c", script], cwd=work, env=_minimal_env(),
                               capture_output=True, text=True, timeout=timeout)
         combined = (proc.stdout or "") + (proc.stderr or "")
         return {"exit": proc.returncode, "output": combined[-_CODE_MODE_CAP:]}
