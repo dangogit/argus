@@ -56,6 +56,17 @@ def test_render_http_entry():
         "mcpServers": {"web": {"type": "http", "url": "https://mcp.example.com"}}}
 
 
+def test_claude_allowed_tools_from_server_tool_allowlist():
+    s = McpServer(name="codebase-memory", transport="stdio", command="sh",
+                  tools=["search_code", "trace_path", "*", "mcp__other__tool"])
+    assert mcp.claude_allowed_tools([s]) == [
+        "mcp__codebase-memory__search_code",
+        "mcp__codebase-memory__trace_path",
+        "mcp__codebase-memory__*",
+        "mcp__other__tool",
+    ]
+
+
 def test_materialize_none_when_empty(tmp_path):
     assert mcp.materialize([], tmp_path) is None
 
@@ -85,6 +96,24 @@ def test_doctor_mcp_check_flags_bad_server(tmp_path):
     assert by_name["bad"].status == "blocked"
 
 
+def test_doctor_mcp_check_includes_team_servers(tmp_path):
+    from argus.v2 import opscheck
+    y = tmp_path / "a.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n"
+        "  - name: dev\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n"
+        "    mcp:\n"
+        "      servers:\n"
+        "        - { name: codebase-memory, transport: stdio, command: sh }\n")
+    cfg = loader.load(y)
+    checks = opscheck._mcp_checks(cfg)
+    by_name = {c.name: c for c in checks}
+    assert by_name["dev/codebase-memory"].status == "ok"
+
+
 def test_config_loads_mcp_block(tmp_path):
     y = tmp_path / "a.yaml"
     y.write_text(
@@ -96,3 +125,23 @@ def test_config_loads_mcp_block(tmp_path):
     cfg = loader.load(y)
     assert len(cfg.mcp.servers) == 1
     assert cfg.mcp.servers[0].name == "fs"
+
+
+def test_config_loads_team_mcp_block(tmp_path):
+    y = tmp_path / "a.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n"
+        "  - name: dev\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n"
+        "    mcp:\n"
+        "      servers:\n"
+        "        - name: codebase-memory\n"
+        "          transport: stdio\n"
+        "          command: codebase-memory-mcp\n"
+        "          tools: [search_code, trace_path]\n")
+    cfg = loader.load(y)
+    server = cfg.team("dev").mcp.servers[0]
+    assert server.name == "codebase-memory"
+    assert server.tools == ["search_code", "trace_path"]

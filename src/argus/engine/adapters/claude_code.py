@@ -35,6 +35,9 @@ def run(prompt: str) -> EngineResult:
     mcp_config = os.environ.get("ARGUS_CLAUDE_MCP_CONFIG")
     if mcp_config:
         argv += ["--mcp-config", mcp_config]
+    allowed_tools = os.environ.get("ARGUS_CLAUDE_ALLOWED_TOOLS")
+    if allowed_tools:
+        argv += ["--allowedTools", allowed_tools]
     argv += ["--permission-mode", perm, "--tools", tools]
 
     out = run_with_retries(argv, cwd=cwd, stdin_text=prompt)

@@ -57,6 +57,28 @@ def render_claude_config(servers) -> dict:
     return {"mcpServers": out}
 
 
+def claude_allowed_tools(servers) -> list[str]:
+    """Return Claude Code MCP tool names from each server's `tools` allowlist.
+
+    Operators may write plain MCP tool names (`search_code`), wildcard (`*`), or
+    full Claude Code tool names (`mcp__server__tool`). Empty allowlists preserve
+    Claude Code's normal MCP behavior.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    for s in servers:
+        server = str(getattr(s, "name", "") or "").strip()
+        for raw in getattr(s, "tools", []) or []:
+            tool = str(raw).strip()
+            if not tool:
+                continue
+            name = tool if tool.startswith("mcp__") else f"mcp__{server}__{tool}"
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
 def materialize(servers, dest_dir: str | os.PathLike) -> str | None:
     """Write the rendered Claude MCP config to dest_dir and return its path, or
     None when no servers are configured (so callers add no flag)."""

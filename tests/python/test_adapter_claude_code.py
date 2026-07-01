@@ -49,6 +49,14 @@ def test_hermetic_flag(tmp_path, monkeypatch):
     assert "--strict-mcp-config" in result.text
 
 
+def test_mcp_allowed_tools_flag(tmp_path, monkeypatch):
+    _fake_claude(tmp_path, monkeypatch, 'echo "ARGS:$*"\n')
+    monkeypatch.setenv("ARGUS_CLAUDE_ALLOWED_TOOLS",
+                       "mcp__codebase-memory__search_code,mcp__codebase-memory__trace_path")
+    result = run_agent("claude-code", "x")
+    assert "--allowedTools mcp__codebase-memory__search_code,mcp__codebase-memory__trace_path" in result.text
+
+
 def test_hard_failure_is_outage(tmp_path, monkeypatch, capsys):
     _fake_claude(tmp_path, monkeypatch, 'echo "fatal" >&2\nexit 1\n')
     with pytest.raises(EngineOutageError):
