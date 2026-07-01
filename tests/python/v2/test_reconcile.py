@@ -1,3 +1,4 @@
+from argus.v2.config import loader
 from argus.v2.orchestrator import reconcile
 from argus.v2.ingress import events
 from argus.v2.orchestrator import pipeline
@@ -227,3 +228,64 @@ def test_sweep_keeps_fresh_orphan_worktree(conn, cfg_project, tmp_path, monkeypa
     fresh.mkdir(parents=True)
     reconcile.sweep_once(conn, cfg_project); conn.commit()
     assert fresh.exists()
+
+
+def _cfg_with_control_channel(tmp_path):
+    y = tmp_path / "dead-job.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n  - name: dev\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n"
+        "    channels: [ { type: fake, role: control, channel_id: chat } ]\n",
+        encoding="utf-8",
+    )
+    return loader.load(y)
+
+
+def test_sweep_notifies_dead_job(conn, tmp_path):
+    cfg = _cfg_with_control_channel(tmp_path)
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer", stage=0,
+                idempotency_key="dead-1", exec_snapshot={}, payload={}, max_attempts=1)
+    conn.commit()
+    job = jobs.claim(conn, "w1"); conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET lease_expires_at=now() - interval '1 min' WHERE id=%s",
+                    (job.id,))
+    conn.commit()
+
+    reconcile.sweep_once(conn, cfg); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM jobs WHERE id=%s", (job.id,))
+        assert cur.fetchone()[0] == "dead"
+        cur.execute(
+            "SELECT destination_ref, payload->>'text' FROM actions "
+            "WHERE idempotency_key=%s", (f"dead-job:{job.id}",))
+        row = cur.fetchone()
+    assert row is not None
+    dest, text = row
+    assert dest == "fake:chat"
+    assert job.id in text
+    assert "kind=pipeline" in text
+    assert "team=dev" in text
+
+
+def test_sweep_dead_job_notify_is_idempotent_across_double_sweep(conn, tmp_path):
+    cfg = _cfg_with_control_channel(tmp_path)
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer", stage=0,
+                idempotency_key="dead-2", exec_snapshot={}, payload={}, max_attempts=1)
+    conn.commit()
+    job = jobs.claim(conn, "w1"); conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET lease_expires_at=now() - interval '1 min' WHERE id=%s",
+                    (job.id,))
+    conn.commit()
+
+    reconcile.sweep_once(conn, cfg); conn.commit()
+    reconcile.sweep_once(conn, cfg); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE idempotency_key=%s",
+                    (f"dead-job:{job.id}",))
+        assert cur.fetchone()[0] == 1

@@ -4,6 +4,8 @@ import plistlib
 import pytest
 
 from argus.v2 import cli
+from argus.v2.queue import jobs
+from argus.v2.queue.models import RunRecord
 
 FIX = Path(__file__).parent / "fixtures" / "argus.yaml"
 
@@ -654,3 +656,68 @@ def test_poll_dry_run_reports_counts_without_ingesting(tmp_path, conn, pg_dsn,
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM events")
         assert cur.fetchone()[0] == 0
+
+
+def _make_dead_job(conn, *, idempotency_key):
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer", stage=0,
+                idempotency_key=idempotency_key, exec_snapshot={"engine": "echo"},
+                payload={}, max_attempts=1)
+    conn.commit()
+    job = jobs.claim(conn, "w1"); conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET lease_expires_at=now() - interval '1 min' WHERE id=%s",
+                    (job.id,))
+    conn.commit()
+    jobs.reclaim_expired(conn); conn.commit()
+    return job.id
+
+
+def test_dead_job_list_shows_dead_job(conn, pg_dsn, monkeypatch, capsys):
+    monkeypatch.setenv("ARGUS_DB_DSN", pg_dsn)
+    monkeypatch.setenv("ARGUS_CONFIG_V2", str(FIX))
+    job_id = _make_dead_job(conn, idempotency_key="cli-dead-1")
+
+    rc = cli.main(["dead-job", "list"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert job_id in out
+    assert "dev" in out
+    assert "pipeline" in out
+
+
+def test_dead_job_retry_makes_job_claimable_and_completable(conn, pg_dsn, monkeypatch, capsys):
+    monkeypatch.setenv("ARGUS_DB_DSN", pg_dsn)
+    monkeypatch.setenv("ARGUS_CONFIG_V2", str(FIX))
+    job_id = _make_dead_job(conn, idempotency_key="cli-dead-2")
+
+    rc = cli.main(["dead-job", "retry", job_id])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "retry" in out.lower()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, attempts, max_attempts FROM jobs WHERE id=%s", (job_id,))
+        status, attempts, max_attempts = cur.fetchone()
+    assert status == "pending"
+    assert attempts == 0
+    assert max_attempts == 2  # bumped so it can survive one more failed attempt
+
+    # Now claimable and completable, like any normal job.
+    job = jobs.claim(conn, "w2"); conn.commit()
+    assert job.id == job_id
+    ok = jobs.finalize(conn, job.id, job.claim_token, status="done", result={},
+                       run=RunRecord(role="developer", engine="echo", status="ok"),
+                       actions=[])
+    conn.commit()
+    assert ok is True
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM jobs WHERE id=%s", (job.id,))
+        assert cur.fetchone()[0] == "done"
+
+
+def test_dead_job_retry_unknown_id_fails(conn, pg_dsn, monkeypatch, capsys):
+    monkeypatch.setenv("ARGUS_DB_DSN", pg_dsn)
+    monkeypatch.setenv("ARGUS_CONFIG_V2", str(FIX))
+    rc = cli.main(["dead-job", "retry", "00000000-0000-0000-0000-000000000000"])
+    assert rc == 1
