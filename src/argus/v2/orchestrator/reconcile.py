@@ -353,13 +353,18 @@ def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
     """Surface every job that exhausted max_attempts (status='dead') to its
     team's control channel. Idempotent via 'dead-job:<job_id>' so a repeat
     sweep (or reclaim_expired flipping the same row again, which it cannot
-    since dead is terminal) never double-alerts."""
+    since dead is terminal) never double-alerts. Scoped to jobs created in the
+    last 7 days and capped per sweep: on a database that predates this alert,
+    an unbounded scan would flood every control channel with alerts for jobs
+    that died long ago."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, team_id, kind, attempts, max_attempts, result "
             "FROM jobs WHERE status='dead' "
+            "  AND created_at > now() - interval '7 days' "
             "  AND NOT EXISTS (SELECT 1 FROM actions a "
-            "    WHERE a.idempotency_key = 'dead-job:' || jobs.id::text)"
+            "    WHERE a.idempotency_key = 'dead-job:' || jobs.id::text) "
+            "ORDER BY created_at DESC LIMIT 50"
         )
         rows = cur.fetchall()
     for job_id, team_id, kind, attempts, max_attempts, result in rows:
