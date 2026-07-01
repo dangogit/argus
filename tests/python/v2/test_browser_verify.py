@@ -133,7 +133,7 @@ def test_build_task_includes_url_files_and_login():
 def test_run_browser_check_uses_injected_runner():
     seen = {}
 
-    def fake_runner(*, task, allowed_domains, model, timeout_seconds):
+    def fake_runner(*, task, allowed_domains, model, timeout_seconds, browser_venv_python=None):
         seen["task"] = task
         seen["domains"] = allowed_domains
         return "PASS the screen renders"

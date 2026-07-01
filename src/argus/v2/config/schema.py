@@ -188,6 +188,8 @@ class BrowserVerify(BaseModel):
     browser_model: str = "claude-sonnet-4-6"
     api_host: Optional[str] = None          # extra allowed_domain (e.g. Supabase host)
     test_login: Optional[dict] = None        # {"phone": ..., "otp": ...} for authed screens
+    browser_venv_python: Optional[str] = None  # dedicated venv python w/ browser-use;
+                                               # None => import browser-use in-process
 
 
 class ProjectPm(BaseModel):

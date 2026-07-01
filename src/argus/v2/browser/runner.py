@@ -14,6 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
+from argus.v2.browser._bu_run import RESULT_END as _RESULT_END
+from argus.v2.browser._bu_run import RESULT_START as _RESULT_START
+
 # Default Claude model for the browser agent. Sonnet is fast + capable enough for
 # UI verification; override via config.
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -95,15 +98,43 @@ def _default_runner(
     allowed_domains: Sequence[str],
     model: str,
     timeout_seconds: int,
+    browser_venv_python: Optional[str] = None,
 ) -> str:  # pragma: no cover - needs browser-use + chromium + LLM key
     """Run a headless browser-use agent and return its final result text.
 
-    Lazy import so browser-use is only required when the stage actually runs.
-    Validated against browser-use 0.13.1 (top-level API). The domain allowlist
-    confines the agent to the preview + its API host. LLM provider is inferred
-    from the model name (gpt*/o* => OpenAI, else Claude), so prod uses Claude and
-    a test can drive it with OpenAI.
+    Preferred: `browser_venv_python` points at a DEDICATED venv that has
+    browser-use, and we subprocess into _bu_run.py there - so the production argus
+    runtime never imports browser-use (avoids dep conflicts). If it is not set we
+    fall back to importing browser-use in-process (requires it in this venv).
+    Validated against browser-use 0.13.1.
     """
+    import json
+    import subprocess
+    from pathlib import Path
+
+    if browser_venv_python:
+        script = str(Path(__file__).with_name("_bu_run.py"))
+        payload = json.dumps({
+            "task": task,
+            "allowed_domains": list(allowed_domains),
+            "model": model,
+            "timeout": timeout_seconds,
+        })
+        proc = subprocess.run(
+            [browser_venv_python, script],
+            input=payload, capture_output=True, text=True,
+            timeout=timeout_seconds + 90,  # child has its own wait_for; +buffer for chromium startup
+        )
+        out = proc.stdout or ""
+        start, end = out.find(_RESULT_START), out.find(_RESULT_END)
+        if start != -1 and end != -1:
+            return out[start + len(_RESULT_START):end].strip()
+        raise RuntimeError(
+            f"browser child produced no result (rc={proc.returncode}): "
+            f"{(proc.stderr or out)[-500:]}"
+        )
+
+    # In-process fallback (browser-use must be importable in this venv).
     import asyncio
 
     from browser_use import Agent, BrowserProfile, ChatAnthropic, ChatOpenAI
@@ -139,6 +170,7 @@ def run_browser_check(
     model: str = DEFAULT_MODEL,
     timeout_seconds: int = 180,
     test_login: Optional[dict] = None,
+    browser_venv_python: Optional[str] = None,
     runner: Callable[..., str] = _default_runner,
 ) -> BrowserCheckResult:
     """Drive a browser-use agent against the preview and return a PASS/FAIL verdict.
@@ -154,6 +186,7 @@ def run_browser_check(
             allowed_domains=list(allowed_domains),
             model=model,
             timeout_seconds=timeout_seconds,
+            browser_venv_python=browser_venv_python,
         )
     except Exception as exc:  # noqa: BLE001 - any failure = fail-closed
         return BrowserCheckResult("fail", f"browser run error: {exc}", str(exc))
