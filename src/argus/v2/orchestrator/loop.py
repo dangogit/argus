@@ -78,7 +78,7 @@ def _acquire():
         if not cur.fetchone()[0]:
             conn.close()
             raise RuntimeError("another orchestrator holds the advisory lock")
-        cur.execute("LISTEN argus_jobs; LISTEN argus_actions;")
+        cur.execute("LISTEN argus_jobs; LISTEN argus_actions; LISTEN argus_events;")
     return conn
 
 
