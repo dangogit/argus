@@ -1,18 +1,18 @@
-# Browser-verify stage (Vercel preview) — design
+# Browser-verify stage (Vercel preview) - design
 
 Confirmed 2026-07-01. Gives Argus a pre-merge browser check of UI changes against
 the real Vercel preview, gated on the diff (no browser run for backend-only changes).
 
-## Backend (how the browser is driven) — DEFAULT: hermes on the Codex sub
+## Backend (how the browser is driven) - DEFAULT: hermes on the Codex sub
 
 Two backends behind an injectable runner (config `browser_verify.backend`):
-- **`hermes` (default)** — drives the browser via the hermes `browser` toolset on
+- **`hermes` (default)** - drives the browser via the hermes `browser` toolset on
   the **openai-codex** provider (the Codex/ChatGPT subscription, `gpt-5.5`). NO
   browser-use install, NO metered LLM key. `_hermes_runner` shells
   `hermes -z <task> -t browser --yolo -m gpt-5.5`; `_extract_hermes_verdict` pulls
   the final PASS/FAIL line. e2e-proven 2026-07-01 (verdict pass on the live arvuyot
   preview, zero metered spend).
-- **`browser-use`** — the browser-use library (needs a metered OpenAI/Anthropic key
+- **`browser-use`** - the browser-use library (needs a metered OpenAI/Anthropic key
   or a paid browser-use-cloud key). Kept as a fallback. Runs in a dedicated venv via
   subprocess (`browser_venv_python`) so the argus runtime never imports it.
 
@@ -24,7 +24,7 @@ browser toolset. That is the whole reason `hermes` is the default backend.
 ## Goal / decisions (locked)
 
 - Verify target: **Vercel preview** (the deployed artifact), pre-merge.
-- Trigger: **deterministic diff gate** — run the browser check only when the diff
+- Trigger: **deterministic diff gate** - run the browser check only when the diff
   touches UI files (`*.vue`, `src/views/`, `src/components/`, styles). Backend-only
   diffs skip it (auto-pass). This is the "PM/QA decide depending on the changes".
 - Architecture **A**: a `browser_verify` **judge** stage inserted between `qa` and
@@ -34,17 +34,17 @@ browser toolset. That is the whole reason `hermes` is the default backend.
   end (re-push is idempotent). A fail reuses the existing judge→rework→
   `force_draft_on_fail` machinery (same as a qa fail).
 
-## Core state-machine change (affects ALL teams — must be verdict-safe)
+## Core state-machine change (affects ALL teams - must be verdict-safe)
 
 `pipeline._advance`:
 - Today `qa` hardcodes its successor as `senior` (`_index(team,"senior")`).
   Generalize: qa advances to the **next stage** (`job.stage+1`). For a team with
-  no browser_verify stage this is still `senior` — behavior unchanged.
+  no browser_verify stage this is still `senior` - behavior unchanged.
 - Add `_is_browser_verify(team, role)` (judge kind + name `browser_verify`) and an
   `elif` branch mirroring qa: `verdict = parsed.get("verdict")` → pass advances to
   next stage (senior); fail `_loop_back(to_role="developer")`. Without this branch
   a browser_verify judge falls into the generic linear advance and its verdict is
-  **ignored** (silent pass) — the bug this section prevents.
+  **ignored** (silent pass) - the bug this section prevents.
 - `_checks_summary` / `_build_checks`: add a `Browser: pass|fail` line.
 
 ## Config (schema.py)
@@ -89,7 +89,7 @@ When role is the browser_verify judge and `project.browser_verify.enabled`:
 3. On any preview error (timeout/failed) OR browser run error: verdict `fail`
    with the reason (fail-closed - a broken preview/run never silently passes).
 
-## Browser runner (browser-use) — src/argus/v2/browser/runner.py (DONE)
+## Browser runner (browser-use) - src/argus/v2/browser/runner.py (DONE)
 
 Uses browser-use (github.com/browser-use/browser-use): an LLM browser agent that
 drives the page itself, so we hand it a task + preview URL and read a PASS/FAIL
@@ -102,7 +102,7 @@ verdict instead of hand-scripting Playwright.
 - `parse_verdict` is FAIL-CLOSED: empty/ambiguous output => fail.
 - `allowed_domains` confines the agent to the preview + API host.
 
-`diff_touches_ui(diff_text, globs)` — small helper (fnmatch over changed paths).
+`diff_touches_ui(diff_text, globs)` - small helper (fnmatch over changed paths).
 
 ## On fail
 
@@ -110,7 +110,7 @@ Judge verdict `fail` → `_loop_back` to developer (bounded by `max_iters`) →
 `force_draft_on_fail` opens the PR as draft with the browser findings. Same path as
 a qa fail; no new failure plumbing.
 
-## Tests (tests/python/v2/test_browser_verify.py) — 12 passing (DONE)
+## Tests (tests/python/v2/test_browser_verify.py) - 12 passing (DONE)
 
 - `diff_touches_ui`: UI diff true; backend-only diff false; added-file case.
 - `discover_preview_url`: mocked http polls BUILDING→READY→url; timeout raises;
@@ -145,7 +145,7 @@ E2E (2026-07-01, against the real arvuyot Vercel project):
 
 REMAINING: only enablement (config flip). Not wired to any live team.
 
-## Rollout (safe) — hermes backend needs ZERO new secrets
+## Rollout (safe) - hermes backend needs ZERO new secrets
 
 1. Build on `feature/browser-verify`, all unit tests green. ✅
 2. Do NOT add the stage to any live team in `~/argus-run/v2-argus.yaml` yet.
