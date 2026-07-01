@@ -3,6 +3,24 @@
 Confirmed 2026-07-01. Gives Argus a pre-merge browser check of UI changes against
 the real Vercel preview, gated on the diff (no browser run for backend-only changes).
 
+## Backend (how the browser is driven) — DEFAULT: hermes on the Codex sub
+
+Two backends behind an injectable runner (config `browser_verify.backend`):
+- **`hermes` (default)** — drives the browser via the hermes `browser` toolset on
+  the **openai-codex** provider (the Codex/ChatGPT subscription, `gpt-5.5`). NO
+  browser-use install, NO metered LLM key. `_hermes_runner` shells
+  `hermes -z <task> -t browser --yolo -m gpt-5.5`; `_extract_hermes_verdict` pulls
+  the final PASS/FAIL line. e2e-proven 2026-07-01 (verdict pass on the live arvuyot
+  preview, zero metered spend).
+- **`browser-use`** — the browser-use library (needs a metered OpenAI/Anthropic key
+  or a paid browser-use-cloud key). Kept as a fallback. Runs in a dedicated venv via
+  subprocess (`browser_venv_python`) so the argus runtime never imports it.
+
+Note: the Codex subscription cannot be exposed as a raw OpenAI API (hermes `proxy`
+only fronts nous/xai), which is why browser-use itself can't use the sub - but
+hermes CAN, because it calls the Codex responses backend directly and has its own
+browser toolset. That is the whole reason `hermes` is the default backend.
+
 ## Goal / decisions (locked)
 
 - Verify target: **Vercel preview** (the deployed artifact), pre-merge.
@@ -121,18 +139,24 @@ E2E (2026-07-01, against the real arvuyot Vercel project):
   `run_browser_check` -> verdict PASS with a real reason. Negative run against a
   dead preview -> fail-closed.
 
-REMAINING: only enablement (secrets + install + config flip). Not wired to any
-live team.
+- hermes backend added + e2e-proven: `run_browser_check(backend='hermes')` drove
+  the live preview on the Codex subscription (no browser-use, no metered key) ->
+  verdict pass. 744 unit tests green.
 
-## Rollout (safe)
+REMAINING: only enablement (config flip). Not wired to any live team.
 
-1. Build on `feature/browser-verify`, all unit tests green. ✅ foundation
+## Rollout (safe) — hermes backend needs ZERO new secrets
+
+1. Build on `feature/browser-verify`, all unit tests green. ✅
 2. Do NOT add the stage to any live team in `~/argus-run/v2-argus.yaml` yet.
-3. Secrets in `~/argus-run/secrets.env`: `VERCEL_TOKEN` (preview discovery) and
-   `ANTHROPIC_API_KEY` (browser-use agent). Install browser-use in the argus venv:
-   `pip install "browser-use[core]"` (bundles the chromium runtime). Finalize
-   `runner._default_runner` against the installed version (beta vs stable import).
-4. Enable for **arvuyot-yashir only** (add the role + stage; set `api_host` to the
-   staging Supabase host so login works; `test_login` = staging phone/OTP),
-   restart `com.argus.up`, and watch the next UI PR verify against a real preview
-   before rolling to other teams.
+3. With `backend: hermes` (default) NO new secrets and NO install are needed:
+   hermes + openai-codex is already set up (the Codex sub). Preview discovery still
+   uses `VERCEL_TOKEN` for now (TODO: switch to `gh` deployment-status discovery,
+   proven feasible, to drop that too). browser-use backend is optional/fallback
+   (needs `pip install browser-use` + a metered key).
+4. Enable for **arvuyot-yashir only**: add the `browser_verify` judge role + put it
+   in `pipeline.stages` between qa and senior; set `browser_verify.enabled: true`,
+   `vercel_project_id: prj_MdRC...`, `vercel_team_id: team_Vse...`, `api_host:
+   qpayfsqrcgdwsaeiqmcg.supabase.co`, `test_login: {phone, otp}`. Restart
+   `com.argus.up`, watch the next UI PR verify against a real preview before
+   rolling to other teams.

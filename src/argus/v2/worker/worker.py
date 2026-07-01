@@ -315,10 +315,12 @@ def _run_browser_verify(job, project, workdir):
             poll_interval_seconds=bv.poll_interval_seconds,
         )
         allowed = [h for h in [urlparse(url).hostname, bv.api_host] if h]
+        bv_model = bv.hermes_model if bv.backend == "hermes" else bv.browser_model
         res = run_browser_check(
             preview_url=url, base_path=bv.base_path, changed_files=changed,
-            summary=summary, allowed_domains=allowed, model=bv.browser_model,
+            summary=summary, allowed_domains=allowed, model=bv_model,
             test_login=bv.test_login, browser_venv_python=bv.browser_venv_python,
+            backend=bv.backend,
         )
         return _bv_result(res.verdict, res.reason, url=url, prompt=summary, raw=res.raw)
     except PreviewError as exc:

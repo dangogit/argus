@@ -176,6 +176,11 @@ class BrowserVerify(BaseModel):
     agent against it - but only when the diff touches UI files (`ui_globs`).
     """
     enabled: bool = False
+    # 'hermes' drives the browser via the hermes `browser` toolset on the Codex
+    # subscription (gpt-5.5) - no browser-use install, no metered LLM key.
+    # 'browser-use' uses the browser-use library (needs a metered LLM key).
+    backend: Literal["hermes", "browser-use"] = "hermes"
+    hermes_model: str = "gpt-5.5"   # only model accepted by ChatGPT/Codex accounts
     ui_globs: List[str] = Field(default_factory=lambda: [
         "**/*.vue", "src/views/**", "src/components/**", "**/*.css", "src/styles/**",
     ])

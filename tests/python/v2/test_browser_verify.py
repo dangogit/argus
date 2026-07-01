@@ -217,3 +217,37 @@ def test_bv_worker_fail_closed_on_preview_error(monkeypatch):
     _run, result, _actions = worker._run_browser_verify(_job(), _project(), "/wd")
     assert result["parsed"]["verdict"] == "fail"
     assert "preview unavailable" in result["parsed"]["analysis"]
+
+
+# --- hermes backend verdict extraction ---------------------------------------
+
+def test_extract_hermes_verdict():
+    from argus.v2.browser.runner import _extract_hermes_verdict, parse_verdict
+
+    # verdict is the last PASS/FAIL line (hermes prints the final answer last)
+    assert _extract_hermes_verdict("browsing...\nclicked\nPASS it renders").startswith("PASS")
+    # ANSI codes stripped
+    assert _extract_hermes_verdict("\x1b[32mFAIL blank page\x1b[0m").startswith("FAIL")
+    # a PASS final answer wins over earlier tool-log noise that mentions fail
+    out = "step1: could not find button (fail)\nretried\nPASS final: screen works"
+    assert parse_verdict(_extract_hermes_verdict(out)).verdict == "pass"
+    # no verdict token -> last non-empty line -> parse_verdict fails closed
+    assert parse_verdict(_extract_hermes_verdict("did stuff\nno verdict here")).verdict == "fail"
+    assert _extract_hermes_verdict("") == ""
+
+
+def test_run_browser_check_hermes_backend_selects_runner(monkeypatch):
+    import argus.v2.browser.runner as rmod
+
+    called = {}
+
+    def fake_hermes(**_k):
+        called["hermes"] = True
+        return "PASS ok"
+
+    monkeypatch.setattr(rmod, "_hermes_runner", fake_hermes)
+    res = rmod.run_browser_check(
+        preview_url="https://p.vercel.app", changed_files=["a.vue"],
+        summary="x", allowed_domains=["*"], backend="hermes", model="gpt-5.5",
+    )
+    assert called.get("hermes") and res.verdict == "pass"

@@ -160,6 +160,57 @@ def _default_runner(
     return asyncio.run(_run())
 
 
+_ANSI_RE = None
+
+
+def _extract_hermes_verdict(output: str) -> str:
+    """Pull the verdict line out of a hermes CLI transcript.
+
+    hermes prints its final answer last; the task instructs it to make the final
+    line start with PASS/FAIL. Return the last line that starts with PASS/FAIL
+    (ANSI-stripped), else the last non-empty line. parse_verdict handles the rest
+    (fail-closed on empty/ambiguous)."""
+    import re
+
+    global _ANSI_RE
+    if _ANSI_RE is None:
+        _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+    lines = [_ANSI_RE.sub("", ln).strip() for ln in (output or "").splitlines()]
+    lines = [ln for ln in lines if ln]
+    for ln in reversed(lines):
+        u = ln.upper()
+        if u.startswith("PASS") or u.startswith("FAIL"):
+            return ln
+    return lines[-1] if lines else ""
+
+
+def _hermes_runner(
+    *,
+    task: str,
+    allowed_domains: Sequence[str],
+    model: str,
+    timeout_seconds: int,
+    browser_venv_python: Optional[str] = None,
+) -> str:  # pragma: no cover - needs the hermes CLI + a browser + the Codex sub
+    """Drive the browser via the hermes `browser` toolset on the Codex
+    subscription (openai-codex). No browser-use, no metered LLM key. allowed_domains
+    can't be enforced through the CLI, so the task already pins the exact URL.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    hermes = shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
+    cmd = [hermes, "-z", task, "-t", "browser", "--yolo"]
+    if model:
+        cmd += ["-m", model]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout_seconds + 120,
+    )
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    return _extract_hermes_verdict(combined)
+
+
 def run_browser_check(
     *,
     preview_url: str,
@@ -171,13 +222,18 @@ def run_browser_check(
     timeout_seconds: int = 180,
     test_login: Optional[dict] = None,
     browser_venv_python: Optional[str] = None,
-    runner: Callable[..., str] = _default_runner,
+    backend: str = "browser-use",
+    runner: Optional[Callable[..., str]] = None,
 ) -> BrowserCheckResult:
-    """Drive a browser-use agent against the preview and return a PASS/FAIL verdict.
+    """Drive a browser against the preview and return a PASS/FAIL verdict.
 
-    Any exception from the run is treated as FAIL (fail-closed) so a crashed
-    browser run cannot approve a change.
+    backend 'hermes' -> hermes browser toolset on the Codex subscription;
+    'browser-use' -> the browser-use library. An explicit `runner` overrides the
+    backend (used by tests). Any exception is treated as FAIL (fail-closed) so a
+    crashed run cannot approve a change.
     """
+    if runner is None:
+        runner = _hermes_runner if backend == "hermes" else _default_runner
     url = preview_url.rstrip("/") + (base_path if base_path.startswith("/") else "/" + base_path)
     task = build_task(url=url, changed_files=changed_files, summary=summary, test_login=test_login)
     try:
