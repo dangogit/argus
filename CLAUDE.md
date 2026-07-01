@@ -9,3 +9,7 @@ For daily learning work, use `docs/retro.md` as the product contract.
 approval gates for merge, deploy, outward messages, secrets, and destructive
 work. It also queues PM digests to project control channels and a CEO retro
 brief to the `ceo-brief` control channel unless run with `--no-notify`.
+
+For the pre-merge browser check of UI changes (the `browser_verify` stage,
+Vercel or Firebase preview, driven on the Codex subscription via hermes), see
+the Browser Verification section in `AGENTS.md` and `docs/browser-verify-design.md`.
