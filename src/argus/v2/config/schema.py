@@ -188,9 +188,19 @@ class BrowserVerify(BaseModel):
         "**/*.vue", "**/*.tsx", "**/*.jsx", "**/*.svelte",
         "**/*.css", "**/*.scss",
     ])
+    # How to get a preview URL of the change.
+    # 'vercel': push the branch, poll the Vercel API for the preview build.
+    # 'firebase': build the site in the worktree and deploy a Firebase Hosting
+    #   preview channel (for repos whose preview is PR-triggered, not push-built,
+    #   e.g. luma on Firebase). No branch push needed.
+    discovery: Literal["vercel", "firebase"] = "vercel"
     vercel_project_id: Optional[str] = None
     vercel_team_id: Optional[str] = None   # required for team-scoped Vercel projects
     vercel_token_env: str = "VERCEL_TOKEN"
+    firebase_project: Optional[str] = None            # e.g. luma-web-ai-staging
+    firebase_build_cmd: str = "npm ci && npm run build"
+    firebase_channel_expires: str = "1d"
+    firebase_build_timeout_seconds: int = 900         # build + deploy can be slow
     build_timeout_seconds: int = 300
     poll_interval_seconds: int = 10
     base_path: str = "/"

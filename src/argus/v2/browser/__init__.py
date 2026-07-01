@@ -11,6 +11,7 @@ from argus.v2.browser.preview import (
     PreviewTimeout,
     diff_touches_ui,
     discover_preview_url,
+    discover_preview_url_firebase,
 )
 from argus.v2.browser.runner import (
     BrowserCheckResult,
@@ -25,6 +26,7 @@ __all__ = [
     "PreviewTimeout",
     "diff_touches_ui",
     "discover_preview_url",
+    "discover_preview_url_firebase",
     "BrowserCheckResult",
     "build_task",
     "parse_verdict",

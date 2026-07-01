@@ -129,3 +129,74 @@ def discover_preview_url(
     raise PreviewTimeout(
         f"preview not READY after {build_timeout_seconds}s (last state: {last_state})"
     )
+
+
+def _default_run(args: list, *, cwd: str, timeout: int) -> str:  # pragma: no cover - subprocess
+    """Run argv (NO shell) in cwd and return stdout. Raises PreviewFailed on nonzero."""
+    import subprocess
+
+    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    if p.returncode != 0:
+        raise PreviewFailed(f"command failed ({p.returncode}): {(p.stderr or p.stdout)[-400:]}")
+    return p.stdout
+
+
+_CHANNEL_RE = None
+
+
+def _safe_channel(name: str) -> str:
+    """Firebase channel ids are [a-z0-9-]; sanitize so nothing odd reaches argv."""
+    import re
+
+    global _CHANNEL_RE
+    if _CHANNEL_RE is None:
+        _CHANNEL_RE = re.compile(r"[^a-z0-9-]")
+    return _CHANNEL_RE.sub("-", (name or "").lower())[:60] or "argus-preview"
+
+
+def _extract_firebase_url(deploy_json: str) -> str:
+    """Pull the preview channel URL out of `firebase hosting:channel:deploy --json`.
+
+    Shape: {"status":"success","result":{"<site>":{"url":"https://...web.app",...}}}.
+    Defensive: return the first result url that looks like a hosting URL.
+    """
+    import json
+
+    data = json.loads(deploy_json)
+    result = (data or {}).get("result") or {}
+    for site_info in result.values():
+        url = (site_info or {}).get("url")
+        if url and (".web.app" in url or ".firebaseapp.com" in url):
+            return url
+    raise PreviewFailed(f"firebase channel:deploy produced no url: {deploy_json[:300]}")
+
+
+def discover_preview_url_firebase(
+    *,
+    workdir: str,
+    project: str,
+    channel: str,
+    build_cmd: str = "npm ci && npm run build",
+    expires: str = "1d",
+    build_timeout_seconds: int = 900,
+    run: Callable[..., str] = _default_run,
+) -> str:
+    """Build the site in the worktree and deploy a Firebase Hosting preview
+    channel, returning its URL. For repos whose preview is PR-triggered (so a
+    branch push does not produce one) - the worker builds + deploys the change's
+    own preview instead. `run(argv, cwd, timeout) -> str` is injectable for tests.
+    """
+    if not project:
+        raise PreviewFailed("no firebase_project configured")
+    ch = _safe_channel(channel)
+    # Build the site (produces the hosting `public` dir, e.g. dist/). build_cmd is
+    # a trusted config string that may use shell operators (&&), so run it via
+    # `bash -lc` as a single argv element - never Python shell=True.
+    run(["bash", "-lc", build_cmd], cwd=workdir, timeout=build_timeout_seconds)
+    # Deploy as argv (no shell): channel/project can't be shell-interpreted.
+    out = run(
+        ["firebase", "hosting:channel:deploy", ch, "--project", project,
+         "--expires", expires, "--json", "--non-interactive"],
+        cwd=workdir, timeout=build_timeout_seconds,
+    )
+    return _extract_firebase_url(out)

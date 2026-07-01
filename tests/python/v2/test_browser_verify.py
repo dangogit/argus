@@ -251,3 +251,68 @@ def test_run_browser_check_hermes_backend_selects_runner(monkeypatch):
         summary="x", allowed_domains=["*"], backend="hermes", model="gpt-5.5",
     )
     assert called.get("hermes") and res.verdict == "pass"
+
+
+# --- firebase discovery (build + channel deploy) ------------------------------
+
+def test_extract_firebase_url():
+    from argus.v2.browser.preview import _extract_firebase_url
+
+    js = '{"status":"success","result":{"luma-web-ai-staging":{"url":"https://luma-web-ai-staging--argus-abc.web.app","expireTime":"x"}}}'
+    assert _extract_firebase_url(js) == "https://luma-web-ai-staging--argus-abc.web.app"
+    with pytest.raises(PreviewFailed):
+        _extract_firebase_url('{"status":"success","result":{"s":{"nourl":1}}}')
+
+
+def test_safe_channel():
+    from argus.v2.browser.preview import _safe_channel
+
+    assert _safe_channel("argus-6FCC.EE/x y") == "argus-6fcc-ee-x-y"
+    assert _safe_channel("") == "argus-preview"
+
+
+def test_discover_firebase_builds_then_deploys():
+    from argus.v2.browser import discover_preview_url_firebase
+
+    calls = []
+
+    def fake_run(argv, *, cwd, timeout):
+        calls.append(argv)
+        if argv[:2] == ["bash", "-lc"]:
+            return ""  # build
+        return '{"result":{"luma-web-ai-staging":{"url":"https://luma-web-ai-staging--argus-x.web.app"}}}'
+
+    url = discover_preview_url_firebase(
+        workdir="/wd", project="luma-web-ai-staging", channel="argus-x",
+        build_cmd="npm ci && npm run build", run=fake_run,
+    )
+    assert url == "https://luma-web-ai-staging--argus-x.web.app"
+    assert calls[0] == ["bash", "-lc", "npm ci && npm run build"]           # build first
+    assert calls[1][:2] == ["firebase", "hosting:channel:deploy"]           # then deploy (argv, no shell)
+    assert "--project" in calls[1] and "luma-web-ai-staging" in calls[1]
+
+
+def test_discover_firebase_requires_project():
+    from argus.v2.browser import discover_preview_url_firebase
+
+    with pytest.raises(PreviewFailed):
+        discover_preview_url_firebase(workdir="/wd", project="", channel="c", run=lambda *a, **k: "")
+
+
+def test_bv_worker_firebase_discovery(monkeypatch):
+    # discovery=firebase => build+deploy locally, NO branch push, verdict from hermes.
+    seen = {}
+    monkeypatch.setattr(worker.workspace, "diff", lambda p, w: _diff("src/components/Hero.tsx"))
+    monkeypatch.setattr(worker.workspace, "push",
+                        lambda *a, **k: seen.__setitem__("pushed", True))
+    monkeypatch.setattr(worker, "discover_preview_url_firebase",
+                        lambda **k: seen.update(k) or "https://luma-web-ai-staging--argus-x.web.app")
+    monkeypatch.setattr(worker, "run_browser_check",
+                        lambda **k: BrowserCheckResult("pass", "renders", "PASS renders"))
+
+    proj = schema.Project(repo="/x", browser_verify=schema.BrowserVerify(
+        enabled=True, discovery="firebase", firebase_project="luma-web-ai-staging"))
+    _run, result, _actions = worker._run_browser_verify(_job(), proj, "/wd")
+    assert result["parsed"]["verdict"] == "pass"
+    assert "pushed" not in seen                       # firebase path must not push the branch
+    assert seen["project"] == "luma-web-ai-staging"

@@ -13,6 +13,7 @@ from argus.v2.browser import (
     PreviewError,
     diff_touches_ui,
     discover_preview_url,
+    discover_preview_url_firebase,
     run_browser_check,
 )
 from argus.v2.context import assemble as ctx
@@ -306,14 +307,25 @@ def _run_browser_verify(job, project, workdir):
                if ln.startswith("+++ b/") and "/dev/null" not in ln]
     branch = f"{project.work_branch_prefix}/{job.request_id}"
     try:
-        token = os.environ.get(bv.vercel_token_env, "")
-        workspace.push(project, branch, workdir)
-        url = discover_preview_url(
-            project_id=bv.vercel_project_id, branch=branch, token=token,
-            team_id=bv.vercel_team_id,
-            build_timeout_seconds=bv.build_timeout_seconds,
-            poll_interval_seconds=bv.poll_interval_seconds,
-        )
+        if bv.discovery == "firebase":
+            # Build + deploy the change's own Firebase preview channel from the
+            # worktree (no branch push; the CI preview is PR-triggered).
+            url = discover_preview_url_firebase(
+                workdir=workdir, project=bv.firebase_project,
+                channel=f"argus-{str(job.request_id)[:12]}",
+                build_cmd=bv.firebase_build_cmd,
+                expires=bv.firebase_channel_expires,
+                build_timeout_seconds=bv.firebase_build_timeout_seconds,
+            )
+        else:
+            token = os.environ.get(bv.vercel_token_env, "")
+            workspace.push(project, branch, workdir)
+            url = discover_preview_url(
+                project_id=bv.vercel_project_id, branch=branch, token=token,
+                team_id=bv.vercel_team_id,
+                build_timeout_seconds=bv.build_timeout_seconds,
+                poll_interval_seconds=bv.poll_interval_seconds,
+            )
         allowed = [h for h in [urlparse(url).hostname, bv.api_host] if h]
         bv_model = bv.hermes_model if bv.backend == "hermes" else bv.browser_model
         res = run_browser_check(
