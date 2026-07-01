@@ -180,6 +180,7 @@ class BrowserVerify(BaseModel):
         "**/*.vue", "src/views/**", "src/components/**", "**/*.css", "src/styles/**",
     ])
     vercel_project_id: Optional[str] = None
+    vercel_team_id: Optional[str] = None   # required for team-scoped Vercel projects
     vercel_token_env: str = "VERCEL_TOKEN"
     build_timeout_seconds: int = 300
     poll_interval_seconds: int = 10

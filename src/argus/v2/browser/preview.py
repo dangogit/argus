@@ -73,6 +73,7 @@ def discover_preview_url(
     project_id: str,
     branch: str,
     token: str,
+    team_id: Optional[str] = None,
     build_timeout_seconds: int = 300,
     poll_interval_seconds: int = 10,
     http: Callable[[str, dict], dict] = _default_http,
@@ -95,10 +96,16 @@ def discover_preview_url(
         sleep = time.sleep
 
     headers = {"Authorization": f"Bearer {token}"}
+    # NOTE (learned e2e): do NOT filter by target=preview - Vercel reports
+    # target=None (not "preview") for non-production branch deployments, so that
+    # filter drops exactly the previews we want. Team-scoped projects also require
+    # teamId or the API returns an empty list.
     query = (
         f"{VERCEL_API}/v6/deployments"
-        f"?projectId={project_id}&meta-githubCommitRef={branch}&limit=1&target=preview"
+        f"?projectId={project_id}&meta-githubCommitRef={branch}&limit=1"
     )
+    if team_id:
+        query += f"&teamId={team_id}"
 
     # attempts covers the whole build budget; +1 so a 0s interval still polls once.
     attempts = max(1, build_timeout_seconds // max(1, poll_interval_seconds)) + 1

@@ -310,6 +310,7 @@ def _run_browser_verify(job, project, workdir):
         workspace.push(project, branch, workdir)
         url = discover_preview_url(
             project_id=bv.vercel_project_id, branch=branch, token=token,
+            team_id=bv.vercel_team_id,
             build_timeout_seconds=bv.build_timeout_seconds,
             poll_interval_seconds=bv.poll_interval_seconds,
         )
