@@ -51,3 +51,33 @@ def test_parse_error_tracking_issues_seen_cursor_dedups():
 
     assert again == []
     assert new_cursor == cursor
+
+
+def test_fetch_uses_shared_client_and_still_parses(monkeypatch):
+    """Smoke test: fetch() now goes through connectors.client.fetch_json instead
+    of a hand-rolled httpx.get call, but the request shape and the parsed result
+    must be unchanged."""
+    import httpx
+
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append({"url": url, "headers": headers, "params": params, "timeout": timeout})
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json=RAW, request=request)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    source = type("S", (), {
+        "config": {"project": "42", "host": "https://us.posthog.com"},
+        "secret": "tok", "team": "luma", "name": "ph1",
+    })()
+
+    data = PostHogConnector().fetch(source, {})
+
+    assert data == RAW
+    assert len(calls) == 1
+    assert calls[0]["url"] == "https://us.posthog.com/api/projects/42/activity_log/"
+    assert calls[0]["headers"]["Authorization"] == "Bearer tok"
+
+    signals, _ = PostHogConnector.parse(data, {})
+    assert {s.fingerprint for s in signals} == {"9001", "9003"}

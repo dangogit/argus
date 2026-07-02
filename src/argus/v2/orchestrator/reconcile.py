@@ -390,6 +390,53 @@ def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> int:
     return alerted
 
 
+def _source_team(cfg, source_name: str) -> str | None:
+    """Look up the team a connector source routes to (company-scoped sources
+    carry it directly; team-scoped sources belong to their team)."""
+    for s in cfg.company.sources if cfg and cfg.company else []:
+        if s.name == source_name:
+            return s.team
+    for t in cfg.teams if cfg else []:
+        for s in t.sources:
+            if s.name == source_name:
+                return t.name
+    return None
+
+
+def _notify_connector_auth_failures(conn: psycopg.Connection, cfg) -> int:
+    """Surface a connector stuck in an 'auth' failure (bad/expired key) to its
+    team's control channel. A broken key otherwise backs off silently for up to
+    an hour with nothing telling a human to go fix it. Idempotent via
+    'connector-auth:<team>:<source>' so a still-broken key alerts once, not
+    every sweep; a later success clears error_category (see driver._clear_failure)
+    so a fixed-then-broken-again key can alert a second time."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT source_name, last_error FROM connector_state "
+            "WHERE error_category='auth'")
+        rows = cur.fetchall()
+    alerted = 0
+    for source_name, last_error in rows:
+        team_id = _source_team(cfg, source_name)
+        if not team_id:
+            continue
+        dest = _team_control_dest(cfg, team_id)
+        if not dest:
+            continue
+        text = (f"Connector '{source_name}' is failing auth ({last_error or 'unauthorized'}). "
+                f"The key is likely expired or revoked; polling is paused until it's fixed.")
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO actions (team_id, type, risk, destination_ref, "
+                "idempotency_key, payload) "
+                "VALUES (%s,'notify','reversible_internal',%s,%s,%s) "
+                "ON CONFLICT (idempotency_key) DO NOTHING",
+                (team_id, dest, f"connector-auth:{team_id}:{source_name}", Json({"text": text})))
+            if cur.rowcount:
+                alerted += 1
+    return alerted
+
+
 def sweep_once(conn: psycopg.Connection, cfg) -> dict:
     """Run one reconciliation pass. Returns a counts dict of what happened
     (plus duration_ms) and logs a one-line summary: INFO when any work was
@@ -407,6 +454,10 @@ def sweep_once(conn: psycopg.Connection, cfg) -> dict:
     # to a human. Runs before the pipeline-advance step below so the alert
     # exists even if that step also fails the request.
     counts["dead_jobs_alerted"] = _notify_dead_jobs(conn, cfg)
+    # 1c. Alert on connectors stuck failing auth (bad/expired key). Separate
+    # from dead-job alerting: this is polled by launchd's own com.argus.poll
+    # cadence, not a pipeline job, so it needs its own idempotent sweep here.
+    counts["connector_auth_alerted"] = _notify_connector_auth_failures(conn, cfg)
     # 2. Advance pipelines for terminal jobs not yet advanced.
     with conn.cursor() as cur:
         cur.execute(

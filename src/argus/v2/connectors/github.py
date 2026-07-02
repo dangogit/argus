@@ -51,7 +51,7 @@ class GitHubConnector:
         return signals, {"seen": next_seen[-_SEEN_CAP:]}
 
     def fetch(self, source, state: dict):  # pragma: no cover
-        import httpx
+        from argus.v2.connectors.client import fetch_json
 
         cfg = source.config or {}
         repo = cfg.get("repo", "")
@@ -68,7 +68,7 @@ class GitHubConnector:
             return []
         limit = int(cfg.get("limit", 20))
         url = f"https://api.github.com/repos/{repo}/issues"
-        r = httpx.get(
+        data = fetch_json(
             url,
             params={"state": "open", "per_page": limit,
                     "labels": ",".join(str(x) for x in labels)},
@@ -79,8 +79,6 @@ class GitHubConnector:
             },
             timeout=float(cfg.get("timeout", 15)),
         )
-        r.raise_for_status()
-        data = r.json()
         return data if isinstance(data, list) else []
 
     def poll(self, source, state: dict):

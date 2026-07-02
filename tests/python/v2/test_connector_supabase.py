@@ -149,3 +149,65 @@ def test_driver_ingests_supabase_signals(conn, tmp_path, monkeypatch):
             "supabase-demo-bug_reports-1",
             "supabase-demo-bug_reports-2",
         ]
+
+
+def test_fetch_uses_shared_client_and_still_parses(monkeypatch):
+    """Smoke test: fetch() now goes through connectors.client.fetch_json instead
+    of a hand-rolled httpx.get call, but the request shape and the parsed result
+    must be unchanged."""
+    import httpx
+
+    rows = [{"id": 1, "title": "A", "created_at": "2026-06-17T01:00:00Z"}]
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append({"url": url, "headers": headers, "timeout": timeout})
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json=rows, request=request)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    src = SourceRef(name="sb", type="supabase", team="dev",
+                    config={"project": "demo", "url": "https://example.supabase.co"},
+                    secret="key")
+
+    data = SupabaseConnector().fetch(src, {})
+
+    assert data == rows
+    assert len(calls) == 1
+    assert calls[0]["url"].startswith("https://example.supabase.co/rest/v1/bug_reports?")
+    assert calls[0]["headers"] == {"apikey": "key", "Authorization": "Bearer key"}
+    assert calls[0]["timeout"] == 15.0
+
+    signals, _ = SupabaseConnector.parse(data, {}, project="demo")
+    assert [s.fingerprint for s in signals] == ["supabase-demo-bug_reports-1"]
+
+
+def test_fetch_falls_back_on_missing_cursor_column(monkeypatch):
+    """The 42703 (undefined column) fallback path still works with fetch_json:
+    the first call errors, the retry without cursor_column succeeds."""
+    import httpx
+
+    rows = [{"id": 5, "title": "B"}]
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append(url)
+        request = httpx.Request("GET", url)
+        if "created_at" in url:
+            return httpx.Response(
+                400, json={"message": "column bug_reports.created_at does not exist",
+                          "code": "42703"},
+                request=request)
+        return httpx.Response(200, json=rows, request=request)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    src = SourceRef(name="sb", type="supabase", team="dev",
+                    config={"project": "demo", "url": "https://example.supabase.co"},
+                    secret="key")
+
+    data = SupabaseConnector().fetch(src, {})
+
+    assert data == rows
+    assert len(calls) == 2
+    assert "created_at" in calls[0]
+    assert "created_at" not in calls[1]
