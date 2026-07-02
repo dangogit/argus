@@ -143,6 +143,18 @@ def test_build_prompt_orders_rules_before_skills():
     assert out.index("SYS") < out.index("OWNER RULES") < out.index("BODY") < out.index("do it")
 
 
+def test_build_prompt_appends_checkpoint_guidance_after_skills():
+    job = SimpleNamespace(
+        exec_snapshot={
+            "prompt": "SYS",
+            "skills": "SKILLS (apply when relevant):\n\nBODY",
+            "checkpoints": "CHECKPOINTS:\n- report progress",
+        },
+        payload={"text": "do it"})
+    out = job_exec.build_prompt(job, context="CTX")
+    assert out.index("BODY") < out.index("CHECKPOINTS") < out.index("do it")
+
+
 def test_build_prompt_without_skills_key_is_unchanged():
     job = SimpleNamespace(exec_snapshot={"prompt": "SYS"}, payload={"text": "t"})
     assert job_exec.build_prompt(job) == "SYS\n\nTASK:\nt"

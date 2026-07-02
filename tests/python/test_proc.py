@@ -69,3 +69,33 @@ def test_env_overlay_does_not_leak_into_parent(tmp_path):
     bin_ = _fake_bin(tmp_path, "noop", "exit 0\n")
     run_with_retries([bin_], cwd=str(tmp_path), env={"ARGUS_PROC_TEST_LEAK": "1"})
     assert os.environ.get("ARGUS_PROC_TEST_LEAK") is None
+
+
+def test_idle_timeout_kills_silent_process(tmp_path, monkeypatch):
+    bin_ = _fake_bin(tmp_path, "sleepy", "sleep 1\n")
+    monkeypatch.setenv("ARGUS_ENGINE_IDLE_TIMEOUT", "0.1")
+    monkeypatch.setenv("ARGUS_ENGINE_PROGRESS_POLL_INTERVAL", "0.02")
+
+    assert run_with_retries([bin_], cwd=str(tmp_path)) is None
+    assert "process idle timed out after 0.1s" in last_stderr()
+
+
+def test_progress_heartbeat_extends_past_idle_timeout(tmp_path, monkeypatch):
+    bin_ = _fake_bin(tmp_path, "active", "sleep 0.25\necho done\n")
+    monkeypatch.setenv("ARGUS_ENGINE_IDLE_TIMEOUT", "0.1")
+    monkeypatch.setenv("ARGUS_ENGINE_PROGRESS_POLL_INTERVAL", "0.02")
+
+    out = run_with_retries([bin_], cwd=str(tmp_path), progress_heartbeat=lambda: object())
+
+    assert out == "done\n"
+
+
+def test_max_runtime_caps_even_with_progress(tmp_path, monkeypatch):
+    bin_ = _fake_bin(tmp_path, "too-long", "sleep 1\n")
+    monkeypatch.setenv("ARGUS_ENGINE_IDLE_TIMEOUT", "5")
+    monkeypatch.setenv("ARGUS_ENGINE_MAX_RUNTIME", "0.1")
+    monkeypatch.setenv("ARGUS_ENGINE_PROGRESS_POLL_INTERVAL", "0.02")
+
+    assert run_with_retries([bin_], cwd=str(tmp_path),
+                            progress_heartbeat=lambda: object()) is None
+    assert "process runtime exceeded after 0.1s" in last_stderr()
