@@ -261,11 +261,29 @@ class RetroConfig(BaseModel):
     company_change_team: Optional[str] = None
 
 
+class HermesConfig(BaseModel):
+    """Settings for the hermes worker engine (src/argus/hermes/, engine/adapters/hermes.py).
+
+    Optional: a project with no hermes section keeps the legacy
+    argus.config.yaml `hermes:` block as a fallback (see
+    argus.hermes.settings.hermes_setting).
+    """
+    toolset: Optional[str] = None
+    pm_toolset: Optional[str] = None
+    pm_readonly_toolset: Optional[str] = None
+    model: Optional[str] = None
+    max_turns: Optional[str] = None
+    skills_dir: Optional[str] = None
+    provider: Optional[str] = None
+    home_root: Optional[str] = None
+
+
 class Config(BaseModel):
     company: Company
     teams: List[Team]
     retro: RetroConfig = Field(default_factory=RetroConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    hermes: Optional[HermesConfig] = None
 
     def team(self, name: str) -> Team:
         for t in self.teams:

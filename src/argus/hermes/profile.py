@@ -9,7 +9,8 @@ import os
 import re
 from pathlib import Path
 
-from argus.config import config_get, run_root
+from argus.config import run_root
+from argus.hermes.settings import hermes_setting
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -67,7 +68,7 @@ def home_root() -> Path:
     env = os.environ.get("ARGUS_HERMES_HOME_ROOT")
     if env:
         return Path(env)
-    cfg = config_get("hermes.home_root")
+    cfg = hermes_setting("home_root", "hermes.home_root")
     if cfg:
         return Path(cfg).expanduser()
     return run_root() / "hermes"
@@ -84,15 +85,15 @@ def ensure_profile(project: str) -> Path:
     if not cfg_file.exists():
         cfg_file.write_text(
             _CONFIG_TEMPLATE.format(
-                model=config_get("hermes.model") or "claude-sonnet-4-6",
-                max_turns=config_get("hermes.max_turns") or "30",
-                toolsets=config_get("hermes.toolset") or "file,web,memory",
+                model=hermes_setting("model", "hermes.model") or "claude-sonnet-4-6",
+                max_turns=hermes_setting("max_turns", "hermes.max_turns") or "30",
+                toolsets=hermes_setting("toolset", "hermes.toolset") or "file,web,memory",
                 skills_dir=(
-                    config_get("hermes.skills_dir")
+                    hermes_setting("skills_dir", "hermes.skills_dir")
                     or str(Path("~/agent-skills").expanduser())
                 ).replace('"', "").replace("\n", " "),
                 provider=(
-                    config_get("hermes.provider") or "anthropic"
+                    hermes_setting("provider", "hermes.provider") or "anthropic"
                 ).replace('"', "").replace("\n", " "),
             ),
             encoding="utf-8",
