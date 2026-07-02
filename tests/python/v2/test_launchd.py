@@ -1,4 +1,5 @@
 import plistlib
+import stat
 from pathlib import Path
 
 from argus.v2 import launchd
@@ -123,6 +124,18 @@ def test_write_units_macos_still_plists(tmp_path):
     written = launchd.write_units(units, tmp_path, os_name="macos")
     assert all(p.suffix == ".plist" for p in written)
     assert len(written) == 9
+
+
+def test_write_units_macos_plists_are_owner_only(tmp_path):
+    """Plist EnvironmentVariables can carry ARGUS_DB_DSN with a password, so
+    plists must be 0600 like the systemd services."""
+    units = launchd.default_units(
+        python="/venv/bin/python", config="/run/argus.yaml",
+        db_dsn="host=127.0.0.1 dbname=argus password=hunter2", run_root="/run",
+        env_files=[], log_dir="/logs")
+    written = launchd.write_units(units, tmp_path, os_name="macos")
+    for p in written:
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
 
 
 def test_default_units_expands_codex_home(monkeypatch):

@@ -30,6 +30,7 @@ from argus.v2.workspace import repo as workspace
 log = logging.getLogger("argus.worker")
 
 _TEST_OUTPUT_LIMIT = 12000
+_HEARTBEAT_INTERVAL = 30  # seconds; module-level so tests can shrink it
 
 
 def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> bool:
@@ -242,13 +243,27 @@ def _start_heartbeat(job_id: str, claim_token: str | None, stop: Event) -> Threa
         return None
 
     def beat() -> None:
-        while not stop.wait(30):
-            conn = pool.connect()
+        conn = pool.connect()
+        while not stop.wait(_HEARTBEAT_INTERVAL):
             try:
                 jobs.heartbeat(conn, job_id, claim_token)
                 conn.commit()
-            finally:
-                conn.close()
+            except Exception as exc:
+                # The heartbeat connection can be poisoned by a server restart
+                # or network blip. Silently giving up here would let the lease
+                # expire and the job get reclaimed and re-run by another worker
+                # while this one is still working it. Reconnect and keep trying
+                # so renewal survives a transient outage.
+                log.warning("job %s heartbeat failed, reconnecting: %s", job_id, exc)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                try:
+                    conn = pool.connect()
+                except Exception as reconnect_exc:
+                    log.warning("job %s heartbeat reconnect failed: %s", job_id, reconnect_exc)
+        conn.close()
 
     thread = Thread(target=beat, name=f"argus-job-heartbeat-{job_id}", daemon=True)
     thread.start()
