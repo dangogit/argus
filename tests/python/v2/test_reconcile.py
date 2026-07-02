@@ -1,3 +1,5 @@
+import logging
+
 from argus.v2.config import loader
 from argus.v2.orchestrator import reconcile
 from argus.v2.ingress import events
@@ -289,3 +291,26 @@ def test_sweep_dead_job_notify_is_idempotent_across_double_sweep(conn, tmp_path)
         cur.execute("SELECT count(*) FROM actions WHERE idempotency_key=%s",
                     (f"dead-job:{job.id}",))
         assert cur.fetchone()[0] == 1
+
+
+def test_sweep_returns_counts_and_logs_summary_when_work_happened(conn, cfg, caplog):
+    events.ingest_message(conn, cfg, team="dev", source="cli",
+                          dedup_key="sweep-counts", text="t"); conn.commit()
+    with caplog.at_level(logging.INFO, logger="argus.orchestrator"):
+        counts = reconcile.sweep_once(conn, cfg); conn.commit()
+    assert counts["events_routed"] == 1
+    assert isinstance(counts["duration_ms"], int)
+    summaries = [r for r in caplog.records if "sweep did work" in r.getMessage()]
+    assert len(summaries) == 1
+    assert "events_routed=1" in summaries[0].getMessage()
+    assert summaries[0].sweep == counts  # extra= carries the full dict for JSON logs
+
+
+def test_sweep_idle_logs_debug_not_info(conn, cfg, caplog):
+    with caplog.at_level(logging.DEBUG, logger="argus.orchestrator"):
+        counts = reconcile.sweep_once(conn, cfg); conn.commit()
+    assert not any(v for k, v in counts.items() if k != "duration_ms")
+    assert not any("sweep did work" in r.getMessage() for r in caplog.records)
+    idle = [r for r in caplog.records if "sweep idle" in r.getMessage()]
+    assert len(idle) == 1
+    assert idle[0].levelno == logging.DEBUG

@@ -111,7 +111,10 @@ def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120,
         if not row:
             return None
         job = _row_to_job(row)
-        log.info("claimed job %s (kind=%s role=%s) by %s", job.id, job.kind, job.role, worker_id)
+        log.info("claimed job %s (kind=%s role=%s team=%s request=%s) by %s",
+                 job.id, job.kind, job.role, job.team_id, job.request_id, worker_id,
+                 extra={"job_id": job.id, "team_id": job.team_id,
+                        "request_id": job.request_id})
         return job
 
 
@@ -149,10 +152,10 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
         )
         row = cur.fetchone()
         if not row:
-            log.warning("finalize fenced out for job %s (stale token or reclaimed)", job_id)
+            log.warning("finalize fenced out for job %s (stale token or reclaimed)", job_id,
+                        extra={"job_id": job_id})
             return False  # fenced out: stale token or already reclaimed
         attempt = row[0]
-        log.info("finalized job %s status=%s attempt=%s", job_id, status, attempt)
         cur.execute(
             """
             INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
@@ -164,6 +167,11 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
         )
         cur.execute("SELECT request_id, team_id FROM jobs WHERE id=%s", (job_id,))
         request_id, team_id = cur.fetchone()
+        request_id = _s(request_id)
+        log.info("finalized job %s status=%s attempt=%s team=%s request=%s",
+                 job_id, status, attempt, team_id, request_id,
+                 extra={"job_id": str(job_id), "team_id": team_id,
+                        "request_id": request_id})
         for a in actions:
             cur.execute(
                 """
@@ -254,9 +262,18 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
                 run_after = now(),
                 updated_at = now()
             WHERE status IN ('claimed','running') AND lease_expires_at < now()
+            RETURNING id, request_id, team_id, status
             """,
         )
-        n = cur.rowcount
+        rows = cur.fetchall()
+        n = len(rows)
         if n:
             log.warning("reclaimed %d expired job(s) (worker crash or lease timeout)", n)
+            for job_id, request_id, team_id, status in rows:
+                if status == "dead":
+                    log.warning(
+                        "job %s went dead (max attempts exhausted) team=%s request=%s",
+                        job_id, team_id, request_id,
+                        extra={"job_id": str(job_id), "team_id": team_id,
+                               "request_id": _s(request_id)})
         return n

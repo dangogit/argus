@@ -129,7 +129,10 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             result["liveness"] = liveness.classify(run.output or "",
                                                     has_diff=result.get("has_diff"))
             if result["liveness"] in liveness.STUCK:
-                log.info("job %s liveness=%s (no forward progress)", job.id, result["liveness"])
+                log.info("job %s liveness=%s (no forward progress) team=%s request=%s",
+                         job.id, result["liveness"], job.team_id, job.request_id,
+                         extra={"job_id": job.id, "team_id": job.team_id,
+                                "request_id": job.request_id})
 
             status = "done" if run.status == "ok" else "failed"
             jobs.finalize(conn, job.id, job.claim_token, status=status,
@@ -138,7 +141,10 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             return True
         except Exception as exc:
             message = f"Worker failed before completion: {type(exc).__name__}: {exc}"
-            log.warning("job %s failed: %s", job.id, message, exc_info=True)
+            log.warning("job %s failed: %s team=%s request=%s",
+                        job.id, message, job.team_id, job.request_id, exc_info=True,
+                        extra={"job_id": job.id, "team_id": job.team_id,
+                               "request_id": job.request_id})
             result = {
                 "error": str(exc),
                 "error_type": type(exc).__name__,
