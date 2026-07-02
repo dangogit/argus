@@ -158,6 +158,7 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
             INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
                               prompt, output, cost_source, cost_usd, status, ended_at)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+            ON CONFLICT (job_id, attempt) DO NOTHING
             """,
             (job_id, attempt, claim_token, run.role, run.engine, run.model,
              run.prompt, run.output, run.cost_source, run.cost_usd, run.status),
