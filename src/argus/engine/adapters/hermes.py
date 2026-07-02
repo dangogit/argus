@@ -27,6 +27,7 @@ from argus.config import config_get
 from argus.engine import EngineOutageError, EngineResult, write_meta
 from argus.engine.adapters._proc import last_stderr, run_with_retries
 from argus.hermes import profile, stats
+from argus.hermes.settings import hermes_setting
 
 
 # PM roles that edit or execute and therefore need a terminal-capable toolset.
@@ -49,14 +50,16 @@ def _toolsets_for_call() -> str:
     role = (os.environ.get("ARGUS_PM_ROLE") or "").strip().lower()
     if role:
         norm = role.replace("-", "_")
+        # Per-role toolset (e.g. hermes.pm_qa_toolset) has no v2 field: it is a
+        # narrow per-role escape hatch, kept on the legacy reader only.
         configured = config_get("hermes.pm_" + norm + "_toolset")
         if configured:
             return configured
         if norm in _TERMINAL_PM_ROLES:
-            return config_get("hermes.pm_toolset") or "file,web,memory,terminal"
-        return config_get("hermes.pm_readonly_toolset") or "file,web,memory"
+            return hermes_setting("pm_toolset", "hermes.pm_toolset") or "file,web,memory,terminal"
+        return hermes_setting("pm_readonly_toolset", "hermes.pm_readonly_toolset") or "file,web,memory"
 
-    return config_get("hermes.toolset") or "file,web,memory"
+    return hermes_setting("toolset", "hermes.toolset") or "file,web,memory"
 
 
 def run(prompt: str) -> EngineResult:

@@ -4,13 +4,18 @@ engine:
   default: claude-code
   # Engine to try if the default has an outage. Use null for none.
   fallback: codex
+# Deprecated: hermes settings now live on the v2 config (argus.yaml's top-level
+# `hermes:`, see argus.v2.example.yaml). This block is kept as a fallback for
+# installs that have not migrated; argus.hermes.settings.hermes_setting()
+# checks env, then v2 argus.yaml, then this file, in that order.
 hermes:
   # Default non-PM Hermes calls stay read-only by omitting terminal.
   toolset: file,web,memory
   # Terminal-capable PM roles (Developer, QA) need terminal to run project
   # checks. Researcher and Senior-review stay read-only by default
   # (pm_readonly_toolset, default file,web,memory). Per-role keys override
-  # either default, e.g. pm_qa_toolset or pm_senior_review_toolset.
+  # either default, e.g. pm_qa_toolset or pm_senior_review_toolset (per-role
+  # keys have no v2 equivalent; they stay on this legacy reader only).
   pm_toolset: file,web,memory,terminal
 overlay:
   # Path to a private overlay repo (projects/, gatherers/, notifiers/, jobs/),
