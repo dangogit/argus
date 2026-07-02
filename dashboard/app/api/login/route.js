@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { constantTimeEqual } from "../../lib/auth.js";
+import {
+  constantTimeEqual,
+  clientIp,
+  isLoginRateLimited,
+  recordFailedLogin,
+  clearLoginAttempts,
+} from "../../lib/auth.js";
 
 export async function POST(req) {
   const expected = process.env.ARGUS_DASHBOARD_TOKEN;
@@ -10,9 +16,16 @@ export async function POST(req) {
     });
   }
 
+  const ip = clientIp(req);
+  if (isLoginRateLimited(ip)) {
+    return new NextResponse(null, { status: 303, headers: { Location: "/login?error=1" } });
+  }
+
   const form = await req.formData();
   const token = String(form.get("token") || "");
   const ok = constantTimeEqual(token, expected);
+  if (ok) clearLoginAttempts(ip);
+  else recordFailedLogin(ip);
   // Relative Location: the browser resolves it against the external (tailnet)
   // address-bar URL, not Next's internal localhost:3001 bind behind the
   // Tailscale Serve proxy. An absolute URL built from req.url would point at
