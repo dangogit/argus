@@ -159,20 +159,22 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
         cur.execute(
             """
             INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
-                              prompt, output, cost_source, cost_usd, status, ended_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+                              prompt, output, cost_source, cost_usd, status,
+                              prompt_hash, ended_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
             ON CONFLICT (job_id, attempt) DO NOTHING
             """,
             (job_id, attempt, claim_token, run.role, run.engine, run.model,
-             run.prompt, run.output, run.cost_source, run.cost_usd, run.status),
+             run.prompt, run.output, run.cost_source, run.cost_usd, run.status,
+             run.prompt_hash),
         )
         cur.execute("SELECT request_id, team_id FROM jobs WHERE id=%s", (job_id,))
         request_id, team_id = cur.fetchone()
         request_id = _s(request_id)
-        log.info("finalized job %s status=%s attempt=%s team=%s request=%s",
-                 job_id, status, attempt, team_id, request_id,
+        log.info("finalized job %s status=%s attempt=%s team=%s request=%s prompt_hash=%s",
+                 job_id, status, attempt, team_id, request_id, run.prompt_hash,
                  extra={"job_id": str(job_id), "team_id": team_id,
-                        "request_id": request_id})
+                        "request_id": request_id, "prompt_hash": run.prompt_hash})
         for a in actions:
             cur.execute(
                 """

@@ -39,6 +39,53 @@ def test_enqueue_stage_sets_project_in_snapshot(conn, cfg):
     assert snap.get("project") == "dev"
 
 
+def test_enqueue_stage_sets_prompt_hash_in_snapshot(conn, cfg):
+    """Enqueue must freeze a deterministic prompt_hash into exec_snapshot so a
+    later output regression can be correlated with a prompt/rules/skills edit."""
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT exec_snapshot FROM jobs WHERE request_id=%s AND stage=0", (rid,))
+        snap = cur.fetchone()[0]
+    assert isinstance(snap.get("prompt_hash"), str)
+    assert len(snap["prompt_hash"]) == 12
+
+
+def test_add_prompt_hash_is_deterministic():
+    a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    pipeline._add_prompt_hash(a)
+    pipeline._add_prompt_hash(b)
+    assert a["prompt_hash"] == b["prompt_hash"]
+    assert len(a["prompt_hash"]) == 12
+
+
+def test_add_prompt_hash_changes_with_prompt():
+    base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    edited = {"prompt": "do a different thing", "rules": "rule block", "skills": "skill block"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
+def test_add_prompt_hash_changes_with_rules():
+    base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    edited = {"prompt": "do the thing", "rules": "different rule block", "skills": "skill block"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
+def test_add_prompt_hash_changes_with_skills():
+    base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    edited = {"prompt": "do the thing", "rules": "rule block", "skills": "different skill block"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
 def test_no_fix_close_routes_to_conversation_channel(conn, cfg):
     """The no-fix/blocked close must address the conversation's real channel
     (whatsapp:<jid>), not a bare 'conv:<uuid>' that deliver() drops. Regression:

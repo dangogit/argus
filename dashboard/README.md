@@ -16,6 +16,24 @@ or `DATABASE_URL`. It also summarizes `events`, `jobs`, and `runs` when the
 full v2 schema is present. DB read failures render as dashboard errors instead
 of crashing the page.
 
+The dashboard only ever runs `SELECT`. Do not point `ARGUS_DB_DSN` at the
+full-privilege operator DSN used by the orchestrator; a compromised dashboard
+process would then have full read/write access to the database. Instead,
+point it at a read-only login user:
+
+1. Migration `0023_dashboard_readonly_role.sql` creates a `NOLOGIN` role
+   `argus_dashboard` with `SELECT` on all current and future tables in the
+   `public` schema.
+2. As a one-time operator step (not in a migration, since passwords do not
+   belong in migrations), create a login user in that role:
+
+   ```sql
+   CREATE ROLE dashboard_login LOGIN PASSWORD '<generated-secret>' IN ROLE argus_dashboard;
+   ```
+
+3. Set the dashboard's `ARGUS_DB_DSN` to that user's connection string, e.g.
+   `postgresql://dashboard_login:<generated-secret>@host:port/dbname`.
+
 ## Develop
 
 ```bash

@@ -28,6 +28,21 @@ def test_worker_runs_echo_job_to_done(conn, cfg, monkeypatch):
         assert cur.fetchone() == ("echo", "ok")
 
 
+def test_worker_run_carries_prompt_hash_from_snapshot(conn, cfg):
+    """The prompt_hash frozen into exec_snapshot at enqueue must end up on the
+    runs row so a regression can be correlated back to the prompt version."""
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer", stage=0,
+                 idempotency_key="k-hash",
+                 exec_snapshot={"engine": "echo", "prompt": "do it", "prompt_hash": "abc123def456"},
+                 payload={"text": "fix login"})
+    conn.commit()
+    assert worker.run_once(cfg, "w1") is True
+    with conn.cursor() as cur:
+        cur.execute("SELECT prompt_hash FROM runs WHERE job_id="
+                    "(SELECT id FROM jobs WHERE idempotency_key='k-hash')")
+        assert cur.fetchone() == ("abc123def456",)
+
+
 def test_worker_returns_false_when_idle(conn, cfg):
     assert worker.run_once(cfg, "w1") is False
 

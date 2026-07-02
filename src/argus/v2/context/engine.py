@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
@@ -11,6 +10,8 @@ from typing import Callable
 from argus.engine import EngineOutageError, UnknownEngineError, run_agent
 from argus.v2 import contracts
 from argus.v2.context.sanitize import neutralize_fence
+from argus.v2.engine_runner import run_with_fallback
+from argus.v2.engine_runner import tool_less_env as base_tool_less_env
 
 EngineRunner = Callable[[str], str]
 _SHELL_DEFAULT = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]+)\}$")
@@ -56,12 +57,19 @@ def call(kind: str, clean_text: str, *, engine_runner: EngineRunner | None = Non
 def _run_engine(prompt: str) -> str:
     engine = _env_value("ARGUS_CONTEXT_ENGINE") or _env_value("ARGUS_FALLBACK_ENGINE") or "codex"
     fallback = _env_value("ARGUS_FALLBACK_ENGINE", "codex")
+    # run_with_fallback only retries on EngineOutageError, but context calls
+    # must also fall back on an unknown primary engine name, so normalize
+    # UnknownEngineError to EngineOutageError before delegating.
+    def run_agent_normalized(name: str, text: str):
+        try:
+            return run_agent(name, text)
+        except UnknownEngineError as exc:
+            raise EngineOutageError(str(exc)) from exc
+
     with _tool_less_env():
         try:
-            return run_agent(engine, prompt).text
-        except (EngineOutageError, UnknownEngineError):
-            if fallback and fallback != engine:
-                return run_agent(fallback, prompt).text
+            return run_with_fallback(run_agent_normalized, engine, fallback, prompt)
+        except EngineOutageError:
             raise EngineOutageError(f"context engine unavailable: {engine}")
 
 
@@ -81,21 +89,16 @@ def _env_value(name: str, default: str | None = None) -> str | None:
 
 @contextmanager
 def _tool_less_env():
-    keys = [
-        "ARGUS_CLAUDE_TOOLS",
-        "ARGUS_CODEX_SANDBOX",
-        "ARGUS_AGENT_CWD",
-        "ARGUS_CODEX_STDIN",
-        "ARGUS_ENGINE_IGNORE_USER_CONFIG",
-        "ARGUS_ENGINE_TIMEOUT",
-    ]
-    previous = {key: os.environ.get(key) for key in keys}
-    with tempfile.TemporaryDirectory(prefix="argus-context-engine-") as cwd:
-        os.environ["ARGUS_CLAUDE_TOOLS"] = ""
-        os.environ["ARGUS_CODEX_SANDBOX"] = "read-only"
-        os.environ["ARGUS_AGENT_CWD"] = cwd
+    # These two extras and the hard timeout override are context-engine-only
+    # (codex stdin mode + hermetic config), so they stay local rather than
+    # growing shared tool_less_env with context-specific knobs.
+    extra_keys = ["ARGUS_CODEX_STDIN", "ARGUS_ENGINE_IGNORE_USER_CONFIG", "ARGUS_ENGINE_TIMEOUT"]
+    previous = {key: os.environ.get(key) for key in extra_keys}
+    with base_tool_less_env(prefix="argus-context-engine-"):
         os.environ["ARGUS_CODEX_STDIN"] = os.environ.get("ARGUS_CONTEXT_STDIN_ENGINE", "1")
         os.environ["ARGUS_ENGINE_IGNORE_USER_CONFIG"] = "1"
+        # Hard override, unlike tool_less_env's timeout= which only fills an
+        # unset value: context calls must always use their own timeout.
         os.environ["ARGUS_ENGINE_TIMEOUT"] = os.environ.get("ARGUS_CONTEXT_ENGINE_TIMEOUT", "30")
         try:
             yield
