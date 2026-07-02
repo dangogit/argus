@@ -53,6 +53,18 @@ def test_enqueue_stage_sets_prompt_hash_in_snapshot(conn, cfg):
     assert len(snap["prompt_hash"]) == 12
 
 
+def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT exec_snapshot FROM jobs WHERE request_id=%s AND stage=0", (rid,))
+        snap = cur.fetchone()[0]
+    assert "CHECKPOINTS:" in snap.get("checkpoints", "")
+    assert "external side effects" in snap["checkpoints"]
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
@@ -81,6 +93,14 @@ def test_add_prompt_hash_changes_with_rules():
 def test_add_prompt_hash_changes_with_skills():
     base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     edited = {"prompt": "do the thing", "rules": "rule block", "skills": "different skill block"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
+def test_add_prompt_hash_changes_with_checkpoints():
+    base = {"prompt": "do the thing", "checkpoints": "CHECKPOINTS:\n- start"}
+    edited = {"prompt": "do the thing", "checkpoints": "CHECKPOINTS:\n- different"}
     pipeline._add_prompt_hash(base)
     pipeline._add_prompt_hash(edited)
     assert base["prompt_hash"] != edited["prompt_hash"]
@@ -536,6 +556,27 @@ def test_dev_ready_advances_to_qa(conn, cfg_project):
     with conn.cursor() as cur:
         cur.execute("SELECT role, stage FROM jobs WHERE request_id=%s AND role='qa'", (rid,))
         assert cur.fetchone() == ("qa", 1)
+
+
+def test_failure_text_warns_timeout_may_have_side_effects(conn, cfg_project):
+    """A Codex timeout can happen after external work landed, so the owner
+    should inspect live state before blindly rerunning."""
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="timeout-alert", text="ship prod fix")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs SET status='failed', result=%s "
+            "WHERE request_id=%s AND role='developer'",
+            (Json({"error": "codex: process timed out after 900s"}), rid),
+        )
+    text = pipeline._failure_text(conn, rid, "Pipeline job failed before completion.")
+    assert "stopped before normal completion" in text
+    assert "without opening a PR" not in text
+    assert "inspect live state" in text
+    assert "developer: codex: process timed out after 900s" in text
 
 
 def test_critical_diff_scan_blocks_open_pr(conn, cfg_project, monkeypatch, tmp_path):

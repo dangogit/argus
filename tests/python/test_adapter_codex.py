@@ -1,5 +1,8 @@
+import json
+import os
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -40,6 +43,108 @@ def test_hard_failure_includes_stderr_detail(tmp_path, monkeypatch, capsys):
         run_agent("codex", "hi")
     assert "bad auth" in str(exc.value)
     assert "bad auth" in capsys.readouterr().err
+
+
+def test_timeout_failure_includes_recent_codex_checkpoints(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "repo"
+    home = tmp_path / "codex-home"
+    session = home / "sessions" / "2026" / "07" / "02" / "rollout-timeout.jsonl"
+    work.mkdir()
+
+    rows = [
+        {"type": "session_meta", "payload": {"id": "s1", "cwd": str(work)}},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message",
+            "message": "investigated: found failed deploy",
+        }},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message",
+            "message": "verified: health check passed TOKEN=abc123",
+        }},
+    ]
+    session.parent.mkdir(parents=True)
+    session.write_text("\n".join(json.dumps(row) for row in rows) + "\n",
+                       encoding="utf-8")
+    fresh = time.time() + 5
+    os.utime(session, (fresh, fresh))
+    _fake_codex(tmp_path, monkeypatch, "sleep 2\n")
+    monkeypatch.setenv("ARGUS_AGENT_CWD", str(work))
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("ARGUS_ENGINE_TIMEOUT", "0.2")
+
+    with pytest.raises(EngineOutageError) as exc:
+        run_agent("codex", "repair production")
+
+    text = str(exc.value)
+    assert "process idle timed out after 0.2s" in text
+    assert "Codex session:" in text
+    assert "Recent checkpoints:" in text
+    assert "investigated: found failed deploy" in text
+    assert "verified: health check passed TOKEN=[REDACTED]" in text
+    assert "abc123" not in text
+    assert "Recent checkpoints:" in capsys.readouterr().err
+
+
+def test_codex_transcript_heartbeat_changes_when_session_changes(tmp_path, monkeypatch):
+    from argus.engine.adapters import codex
+
+    work = tmp_path / "repo"
+    home = tmp_path / "codex-home"
+    session = home / "sessions" / "2026" / "07" / "02" / "rollout-active.jsonl"
+    work.mkdir()
+    session.parent.mkdir(parents=True)
+    meta = {"type": "session_meta", "payload": {"id": "s1", "cwd": str(work)}}
+    session.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+    investigated = {
+        "type": "event_msg",
+        "payload": {"type": "agent_message", "message": "investigated"},
+    }
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("ARGUS_CODEX_TRANSCRIPT_POLL_INTERVAL", "0.05")
+
+    heartbeat = codex._codex_progress_heartbeat(str(work), time.time() - 1)
+    first = heartbeat()
+    time.sleep(0.06)
+    with session.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(investigated) + "\n")
+    second = heartbeat()
+
+    assert first is not None
+    assert second is not None
+    assert second != first
+
+
+def test_timeout_progress_ignores_other_workdirs(tmp_path, monkeypatch):
+    from argus.engine.adapters import codex
+
+    wanted = tmp_path / "wanted"
+    other = tmp_path / "other"
+    home = tmp_path / "codex-home"
+    wanted.mkdir()
+    other.mkdir()
+
+    def write_session(name, cwd, message):
+        path = home / "sessions" / "2026" / "07" / "02" / f"rollout-{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"type": "session_meta", "payload": {"id": name, "cwd": str(cwd)}},
+            {"type": "event_msg", "payload": {
+                "type": "agent_message",
+                "message": message,
+            }},
+        ]
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n",
+                        encoding="utf-8")
+        return path
+
+    write_session("other", other, "wrong checkpoint")
+    write_session("wanted", wanted, "right checkpoint")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+
+    progress = codex._latest_progress_snapshot(str(wanted), time.time() - 1)
+
+    assert progress is not None
+    assert progress.checkpoints == ("right checkpoint",)
 
 
 def test_argv_prompt_and_sandbox_default(tmp_path, monkeypatch):

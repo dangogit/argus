@@ -19,6 +19,8 @@ from argus.v2.worker import liveness as lv
     # Blocker language -> BLOCKED.
     ("I am unable to proceed without the schema definition.", False, lv.BLOCKED),
     ("This requires manual intervention; I'm stuck on the migration.", None, lv.BLOCKED),
+    ("codex: process timed out after 900s", False, lv.BLOCKED),
+    ("deadline_exceeded: machine failed to reach desired state", None, lv.BLOCKED),
     # Approval language -> APPROVAL_REQUIRED.
     ("The change is ready. Please approve before I open the PR.", None, lv.APPROVAL_REQUIRED),
     ("Awaiting your approval to continue.", None, lv.APPROVAL_REQUIRED),

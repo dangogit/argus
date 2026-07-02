@@ -23,10 +23,13 @@ def build_prompt(job: Job, context: str = "") -> str:
     system = snap.get("prompt", "")
     rules = snap.get("rules", "")
     skills = snap.get("skills", "")  # frozen at enqueue; "" when nothing matched
+    checkpoints = snap.get("checkpoints", "")
     if rules:
         system = f"{system}\n\n{rules}" if system else rules
     if skills:
         system = f"{system}\n\n{skills}" if system else skills
+    if checkpoints:
+        system = f"{system}\n\n{checkpoints}" if system else checkpoints
     text = (job.payload or {}).get("text", "")
     head = f"{context}\n\n" if context else ""
     return f"{head}{system}\n\nTASK:\n{text}".strip()

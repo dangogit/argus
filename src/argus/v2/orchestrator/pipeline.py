@@ -32,6 +32,17 @@ log = logging.getLogger("argus.pipeline")
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
 
+_PIPELINE_CHECKPOINTS = (
+    "CHECKPOINTS:\n"
+    "- Send a short progress update when you start, after each risky external "
+    "side effect, and before the final response.\n"
+    "- For merge, deploy, repair, or live ops work, name completed milestones "
+    "when applicable: investigated, changed, deployed, repaired-live-state, "
+    "verified, summary-ready.\n"
+    "- If interrupted, the transcript must show completed external side effects "
+    "and remaining work."
+)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -199,6 +210,7 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
                 "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
+    _add_pipeline_checkpoints(snapshot)
     _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
@@ -955,16 +967,31 @@ def _bullet_list(items: list[str]) -> str:
 
 def _failure_text(conn: psycopg.Connection, request_id: str, reason: str) -> str:
     request = _request_text_for_request(conn, request_id)
+    detail = _last_failure_detail(conn, request_id)
+    next_line = "Next: fix failing stage and rerun request."
+    if _may_have_partial_side_effects(f"{reason}\n{detail}"):
+        next_line = ("Next: inspect live state and job transcript before rerun; "
+                     "timeout or outage may have left external side effects.")
     lines = [
-        "Argus pipeline stopped without opening a PR.",
+        "Argus pipeline stopped before normal completion.",
         f"Request: {request or request_id}",
         f"Reason: {reason}",
-        "Next: fix failing stage and rerun request.",
+        next_line,
     ]
-    detail = _last_failure_detail(conn, request_id)
     if detail:
         lines += ["", "Last failure:", detail]
     return "\n".join(lines)
+
+
+def _may_have_partial_side_effects(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in (
+        "process timed out",
+        "timed out after",
+        "timeout",
+        "deadline_exceeded",
+        "outage",
+    ))
 
 
 def _last_failure_detail(conn: psycopg.Connection, request_id: str) -> str:
@@ -1078,15 +1105,20 @@ def _config_hash(cfg) -> str:
 
 
 def _add_prompt_hash(snapshot: dict) -> None:
-    """Hash the fully-assembled prompt (prompt + rules + skills, exactly what
+    """Hash the fully-assembled prompt, exactly what
     build_prompt hands the worker) so a regression can be correlated with a
-    prompt/rules/skills edit later. Call after _add_rules/_add_skills so both
-    blocks are already frozen into the snapshot."""
+    prompt, rules, skills, or checkpoints edit later. Call after those blocks
+    are already frozen into the snapshot."""
     assembled = "\n\n".join(
         part for part in (snapshot.get("prompt", ""), snapshot.get("rules", ""),
-                          snapshot.get("skills", "")) if part
+                          snapshot.get("skills", ""), snapshot.get("checkpoints", ""))
+        if part
     )
     snapshot["prompt_hash"] = hashlib.sha256(assembled.encode()).hexdigest()[:12]
+
+
+def _add_pipeline_checkpoints(snapshot: dict) -> None:
+    snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
 
 
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:
