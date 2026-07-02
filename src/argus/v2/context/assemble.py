@@ -2,8 +2,15 @@
 daily summaries (memory of past days). `now` is passed in for testability."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+
+from argus.v2.context import budget as ctx_budget
+
+# Generous default so small/medium contexts are never trimmed; only
+# long-running teams that have actually accumulated a lot of history hit it.
+DEFAULT_TOKEN_BUDGET = 12000
 
 
 @dataclass
@@ -28,7 +35,7 @@ class ContextBundle:
 
 def assemble(conn, *, team_id, conversation_id, now: datetime,
              hours: int = 24, summary_days: int = 7, max_messages: int = 50,
-             cfg=None, query: str = "") -> ContextBundle:
+             cfg=None, query: str = "", token_budget: int | None = None) -> ContextBundle:
     since = now - timedelta(hours=hours)
     with conn.cursor() as cur:
         cur.execute(
@@ -51,5 +58,8 @@ def assemble(conn, *, team_id, conversation_id, now: datetime,
             know = kstore.search(conn, cfg, team_id=team_id, query=query, k=3)
         except Exception:
             know = []   # knowledge is optional; never break context assembly
-    return ContextBundle(recent_messages=msgs, summaries=list(reversed(summaries)),
-                         knowledge=know)
+    bundle = ContextBundle(recent_messages=msgs, summaries=list(reversed(summaries)),
+                           knowledge=know)
+    if token_budget is None:
+        token_budget = int(os.environ.get("ARGUS_CONTEXT_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET))
+    return ctx_budget.fit_to_budget(bundle, token_budget)
