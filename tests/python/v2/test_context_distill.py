@@ -2,7 +2,9 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
-from argus.engine import EngineOutageError
+import pytest
+
+from argus.engine import EngineOutageError, UnknownEngineError
 from argus.v2.context import distill, engine, source, state, vault
 
 
@@ -151,3 +153,52 @@ def test_context_engine_forces_context_timeout(monkeypatch):
 
     assert engine.call("distill", "body") == "ok"
     assert seen["timeout"] == "7"
+
+
+def test_context_engine_falls_back_on_unknown_engine(monkeypatch):
+    calls = []
+
+    def fake_run_agent(name, prompt):
+        calls.append(name)
+        if name == "bogus":
+            raise UnknownEngineError("no adapter")
+        return SimpleNamespace(text="rescued")
+
+    monkeypatch.setattr(engine, "run_agent", fake_run_agent)
+    monkeypatch.setenv("ARGUS_CONTEXT_ENGINE", "bogus")
+    monkeypatch.setenv("ARGUS_FALLBACK_ENGINE", "codex")
+
+    assert engine.call("distill", "body") == "rescued"
+    assert calls == ["bogus", "codex"]
+
+
+def test_context_engine_wraps_failure_when_fallback_also_fails(monkeypatch):
+    calls = []
+
+    def fake_run_agent(name, prompt):
+        calls.append(name)
+        raise UnknownEngineError("no adapter")
+
+    monkeypatch.setattr(engine, "run_agent", fake_run_agent)
+    monkeypatch.setenv("ARGUS_CONTEXT_ENGINE", "bogus")
+    monkeypatch.setenv("ARGUS_FALLBACK_ENGINE", "codex")
+
+    with pytest.raises(EngineOutageError, match="context engine unavailable: bogus"):
+        engine.call("distill", "body")
+    assert calls == ["bogus", "codex"]
+
+
+def test_context_engine_wraps_failure_without_fallback(monkeypatch):
+    calls = []
+
+    def fake_run_agent(name, prompt):
+        calls.append(name)
+        raise EngineOutageError("down")
+
+    monkeypatch.setattr(engine, "run_agent", fake_run_agent)
+    monkeypatch.setenv("ARGUS_CONTEXT_ENGINE", "bogus")
+    monkeypatch.setenv("ARGUS_FALLBACK_ENGINE", "bogus")
+
+    with pytest.raises(EngineOutageError, match="context engine unavailable: bogus"):
+        engine.call("distill", "body")
+    assert calls == ["bogus"]
