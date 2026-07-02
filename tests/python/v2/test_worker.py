@@ -1,4 +1,6 @@
 import subprocess
+import time
+from threading import Event
 
 from argus.v2.queue import jobs
 from argus.v2.ingress import events
@@ -272,3 +274,50 @@ def test_worker_injects_project_memory_into_builder(conn, tmp_path, monkeypatch)
         cur.execute("SELECT result FROM jobs WHERE idempotency_key='builder-memory'")
         result = cur.fetchone()[0]
     assert result["memory_fingerprints"] == ["prior"]
+
+
+def test_heartbeat_reconnects_after_poisoned_connection(conn, cfg, pg_dsn, monkeypatch):
+    """A heartbeat connection poisoned mid-run (server restart, network blip)
+    must not stop lease renewal silently: the beat loop should close it,
+    reconnect, and keep renewing so the job is never reclaimed out from under
+    a still-running worker."""
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="developer", stage=0,
+                 idempotency_key="hb1", exec_snapshot={"engine": "echo"},
+                 payload={"text": "x"})
+    conn.commit()
+    job = jobs.claim(conn, "w1")
+    conn.commit()
+    assert job is not None
+
+    real_connect = worker.pool.connect
+    calls = {"n": 0}
+
+    def flaky_connect():
+        calls["n"] += 1
+        c = real_connect()
+        if calls["n"] == 1:
+            # Poison this connection: it looks alive but every heartbeat on it
+            # will raise, simulating a server restart/network blip.
+            c.close()
+        return c
+
+    monkeypatch.setattr(worker.pool, "connect", flaky_connect)
+    monkeypatch.setattr(worker, "_HEARTBEAT_INTERVAL", 0.05, raising=False)
+
+    stop = Event()
+    thread = worker._start_heartbeat(job.id, job.claim_token, stop)
+    try:
+        deadline = time.time() + 5
+        renewed = False
+        while time.time() < deadline:
+            with real_connect() as c, c.cursor() as cur:
+                cur.execute("SELECT heartbeat_at, status FROM jobs WHERE id=%s", (job.id,))
+                heartbeat_at, status = cur.fetchone()
+            if heartbeat_at is not None and status == "running":
+                renewed = True
+                break
+            time.sleep(0.1)
+        assert renewed, "heartbeat never renewed after the first connection was poisoned"
+        assert calls["n"] >= 2, "heartbeat did not reconnect after the failure"
+    finally:
+        worker._stop_heartbeat(stop, thread)
