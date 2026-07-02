@@ -15,6 +15,7 @@ from psycopg.types.json import Json
 
 from argus.engine import EngineOutageError, run_agent
 from argus.v2.config import loader
+from argus.v2.engine_runner import run_with_fallback
 from argus.v2.rules import context as rules_context
 from argus.v2.skills import registry as skills
 from argus.v2.support.apps_script import (
@@ -324,7 +325,9 @@ def draft_decision(conn, cfg, team_id: str, *, thread: str, sender: str, subject
         os.environ["ARGUS_AGENT_CWD"] = repo
     os.environ["ARGUS_PROJECT"] = team_id
     try:
-        output = run_agent(engine, prompt).text
+        # Support runs with no fallback engine: an outage becomes a guidance
+        # request to the owner instead of a retry on another engine.
+        output = run_with_fallback(run_agent, engine, None, prompt)
     except EngineOutageError:
         _set_failure(failure_out, "engine_outage")
         return None
