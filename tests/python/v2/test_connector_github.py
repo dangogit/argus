@@ -80,3 +80,36 @@ def test_parse_still_filters_prs_and_closed():
     ]
     sigs, _ = GitHubConnector.parse(raw, {}, project="p")
     assert [s.payload["number"] for s in sigs] == [1]
+
+
+def test_fetch_uses_shared_client_and_still_parses(monkeypatch):
+    """Smoke test: fetch() now goes through connectors.client.fetch_json instead
+    of a hand-rolled httpx.get call, but the request shape and the parsed result
+    must be unchanged."""
+    import httpx
+
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append({"url": url, "headers": headers, "params": params, "timeout": timeout})
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json=RAW, request=request)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    source = _src({"repo": "example/app", "labels": ["argus"], "project": "courses-clubs"})
+
+    data = GitHubConnector().fetch(source, {})
+
+    assert data == RAW
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["url"] == "https://api.github.com/repos/example/app/issues"
+    assert call["params"] == {"state": "open", "per_page": 20, "labels": "argus"}
+    assert call["headers"]["Authorization"] == "Bearer tok"
+    assert call["timeout"] == 15.0
+
+    signals, _ = GitHubConnector.parse(data, {}, project="courses-clubs")
+    assert {s.fingerprint for s in signals} == {
+        "github-courses-clubs-12",
+        "github-courses-clubs-15",
+    }

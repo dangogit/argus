@@ -131,6 +131,7 @@ class SupabaseConnector:
 
     def fetch(self, source, state: dict):  # pragma: no cover
         import httpx
+        from argus.v2.connectors.client import fetch_json
         cfg = source.config or {}
         base = (cfg.get("url") or "").rstrip("/")
         key = source.secret
@@ -145,19 +146,16 @@ class SupabaseConnector:
         url = _build_url(base, table, query, limit,
                          cursor_column=col, watermark=state.get("watermark"))
         try:
-            r = httpx.get(url, headers=headers, timeout=timeout)
-            r.raise_for_status()
+            data = fetch_json(url, headers=headers, timeout=timeout)
         except httpx.HTTPStatusError as exc:
             # Table has no cursor_column (PostgREST 42703): fall back to the
             # un-ordered, un-cursored fetch so the source keeps working on the
             # seen-set guard alone.
             if col and _missing_column(exc):
-                r = httpx.get(_build_url(base, table, query, limit),
-                              headers=headers, timeout=timeout)
-                r.raise_for_status()
+                data = fetch_json(_build_url(base, table, query, limit),
+                                  headers=headers, timeout=timeout)
             else:
                 raise
-        data = r.json()
         return data if isinstance(data, list) else []
 
     def poll(self, source, state: dict):

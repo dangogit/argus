@@ -12,6 +12,7 @@ from psycopg.types.json import Json
 
 import argus.v2.connectors  # noqa: F401  (registers connectors)
 from argus.v2.connectors.base import REGISTRY
+from argus.v2.connectors.client import classify
 from argus.v2.ingress import events
 
 log = logging.getLogger("argus.connectors")
@@ -23,10 +24,15 @@ _BACKOFF_BASE = 30.0
 _BACKOFF_MAX = 3600.0
 
 
-def _backoff_seconds(error_count: int) -> float:
-    """Seconds to wait before the next poll after N consecutive failures."""
+def _backoff_seconds(error_count: int, *, category: str = "transient") -> float:
+    """Seconds to wait before the next poll after N consecutive failures.
+    An auth failure (bad/expired key) will not fix itself on a retry, so it
+    jumps straight to the max backoff instead of climbing the usual ladder -
+    no point hammering a dead key every 30s for an hour before reaching it."""
     if error_count <= 0:
         return 0.0
+    if category == "auth":
+        return _BACKOFF_MAX
     return min(_BACKOFF_BASE * (2 ** (error_count - 1)), _BACKOFF_MAX)
 
 
@@ -57,7 +63,8 @@ def _error_label(exc: Exception) -> str:
             except ValueError:
                 message = ""
             suffix = f" {message}" if message else ""
-            return f"HTTPStatusError HTTP {status}{suffix}"
+            prefix = "AUTH " if status in (401, 403) else ""
+            return f"{prefix}HTTPStatusError HTTP {status}{suffix}"
     except Exception:
         pass
     return type(exc).__name__
@@ -94,21 +101,26 @@ def _load_state(conn, source_name: str) -> dict:
 
 def _record_failure(conn, source_name: str, exc: Exception, error_count: int) -> None:
     """Persist a connector failure and schedule the next poll after a backoff.
-    Runs after the failed poll's transaction was rolled back, on a fresh write."""
-    delay = _backoff_seconds(error_count)
+    Runs after the failed poll's transaction was rolled back, on a fresh write.
+    An 'auth' category (bad/expired key) gets a distinct label and jumps straight
+    to the max backoff; error_category persists so the orchestrator sweep can
+    find it and alert without re-parsing the label text."""
+    category = classify(exc)
+    delay = _backoff_seconds(error_count, category=category)
     label = _error_label(exc)
-    log.warning("connector %s failed (%d in a row): %s; backing off %.0fs",
-                source_name, error_count, label, delay)
+    log.warning("connector %s failed (%d in a row, category=%s): %s; backing off %.0fs",
+                source_name, error_count, category, label, delay)
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO connector_state
-                   (source_name, error_count, last_error, last_error_at, poll_after, updated_at)
-               VALUES (%s,%s,%s, now(), now() + make_interval(secs => %s), now())
+                   (source_name, error_count, last_error, last_error_at, error_category,
+                    poll_after, updated_at)
+               VALUES (%s,%s,%s, now(), %s, now() + make_interval(secs => %s), now())
                ON CONFLICT (source_name) DO UPDATE SET
                    error_count=EXCLUDED.error_count, last_error=EXCLUDED.last_error,
-                   last_error_at=EXCLUDED.last_error_at, poll_after=EXCLUDED.poll_after,
-                   updated_at=now()""",
-            (source_name, error_count, label, delay))
+                   last_error_at=EXCLUDED.last_error_at, error_category=EXCLUDED.error_category,
+                   poll_after=EXCLUDED.poll_after, updated_at=now()""",
+            (source_name, error_count, label, category, delay))
 
 
 def _clear_failure(conn, source_name: str) -> None:
@@ -116,7 +128,8 @@ def _clear_failure(conn, source_name: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE connector_state
-               SET error_count=0, last_error=NULL, poll_after=NULL, updated_at=now()
+               SET error_count=0, last_error=NULL, error_category=NULL, poll_after=NULL,
+                   updated_at=now()
                WHERE source_name=%s""",
             (source_name,))
 
