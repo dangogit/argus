@@ -15,6 +15,7 @@ from psycopg.types.json import Json
 
 from argus.v2 import alerts
 from argus.v2.config import loader
+from argus.v2.orchestrator import bug_dedup
 from argus.v2.orchestrator import status
 from argus.v2.pm import memory as pm_memory
 from argus.v2.pm import scan as pm_scan
@@ -91,17 +92,36 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
             )
             if cur.fetchone():
                 return None
+        # Off by default (checked first: cheaper than the payload lookup below,
+        # and keeps the common case a no-op with zero extra queries).
+        dedup_on = bug_dedup.dedup_enabled(cfg, team_id)
+        bug_ref = _bug_ref_for_event(conn, event_id) if dedup_on else None
+        if bug_ref:
+            # Company-wide duplicate-work guard: this choke point is shared by
+            # every dispatch path (converse dispatch, triage dispatch, research
+            # recommend-fix, PM autofix), so checking here covers signal-driven
+            # and chat-driven dispatches alike. Real incident (2026-07-01): the
+            # same bug id opened tadam PR #324 and tadam-agents PR #302.
+            dup = bug_dedup.find_duplicate(conn, bug_ref)
+            if dup:
+                dup_request_id, dup_team_id = dup
+                _notify_duplicate_skipped(conn, cfg, team_id=team_id,
+                                          conversation_id=conversation_id,
+                                          bug_ref=bug_ref,
+                                          dup_request_id=dup_request_id,
+                                          dup_team_id=dup_team_id)
+                return None
         cur.execute(
             """
-            INSERT INTO requests (event_id, team_id, conversation_id, fingerprint)
-            VALUES (%s,%s,%s,%s)
+            INSERT INTO requests (event_id, team_id, conversation_id, fingerprint, bug_ref)
+            VALUES (%s,%s,%s,%s,%s)
             ON CONFLICT (team_id, fingerprint)
               WHERE fingerprint IS NOT NULL
                 AND status IN ('open','awaiting_approval')
             DO NOTHING
             RETURNING id
             """,
-            (event_id, team_id, conversation_id, fingerprint),
+            (event_id, team_id, conversation_id, fingerprint, bug_ref),
         )
         row = cur.fetchone()
         if not row:
@@ -109,6 +129,43 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         request_id = str(row[0])
     enqueue_stage(conn, cfg, request_id=request_id, stage_index=0)
     return request_id
+
+
+def _bug_ref_for_event(conn: psycopg.Connection, event_id) -> Optional[str]:
+    if not event_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM events WHERE id=%s", (event_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    payload = row[0] or {}
+    return bug_dedup.extract_bug_ref(payload=payload, text=payload.get("text"))
+
+
+def _notify_duplicate_skipped(conn: psycopg.Connection, cfg, *, team_id: str,
+                              conversation_id: Optional[str], bug_ref: str,
+                              dup_request_id: str, dup_team_id: str) -> None:
+    """Surface the skip instead of silently dropping the dispatch: log an alert
+    for signal-origin work, or reply in the conversation for chat-origin work,
+    same channel each path already uses for a 'no fix needed' / failure note."""
+    text = (f"skipped duplicate: bug {bug_ref} already being handled by "
+            f"team {dup_team_id} (request {dup_request_id})")
+    if not conversation_id:
+        alerts.record(conn, severity="info", project=str(team_id),
+                      fingerprint=f"dup-bug-dispatch:{bug_ref}:{dup_request_id}",
+                      message=text, channel="log",
+                      payload={"bug_ref": bug_ref, "duplicate_request_id": dup_request_id,
+                               "duplicate_team_id": dup_team_id})
+        return
+    dest = _control_destination(conn, cfg, team_id, conversation_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO actions (team_id, type, risk, destination_ref, "
+            "idempotency_key, payload) VALUES (%s,'notify','reversible_internal',%s,%s,%s) "
+            "ON CONFLICT (idempotency_key) DO NOTHING",
+            (team_id, dest, f"dup_bug_dispatch:{bug_ref}:{dup_request_id}",
+             Json({"text": text})))
 
 
 def _branch_iter(conn: psycopg.Connection, request_id: str, stage_index: int) -> int:
