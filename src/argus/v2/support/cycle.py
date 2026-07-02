@@ -212,8 +212,10 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
             question, "", thread)
         _register_support_context(conn, project, scfg, guidance.id, email, thread,
                                   question, "")
+        dispatched = _dispatch_investigation(conn, cfg, project, scfg, email, thread)
         _notify(conn, team.name, scfg,
-                _guidance_text(project, guidance.id, email, thread, question))
+                _guidance_text(project, guidance.id, email, thread, question,
+                               investigation_dispatched=dispatched))
         return _bump(result, "escalated")
 
     thread = transport.read(email.thread_id)
@@ -430,7 +432,8 @@ def _parse_guidance_reply(text: str) -> tuple[str, str] | None:
 
 
 def _guidance_text(project: str, guidance_id: str, email: EmailSummary,
-                   thread: str, question: str, proposed_reply: str = "") -> str:
+                   thread: str, question: str, proposed_reply: str = "",
+                   investigation_dispatched: bool = False) -> str:
     preview = thread.strip().replace("\r", " ")
     if len(preview) > 1200:
         preview = preview[:1200] + "..."
@@ -441,6 +444,15 @@ def _guidance_text(project: str, guidance_id: str, email: EmailSummary,
         f"Subject: {email.subject}",
         "",
         question,
+    ]
+    if investigation_dispatched:
+        lines += [
+            "",
+            "An investigation was auto-dispatched to the team pipeline "
+            "(logs, database state, recent deploys). You will hear back "
+            "with findings, separately from this guidance request.",
+        ]
+    lines += [
         "",
         "Thread:",
         preview,
@@ -485,6 +497,46 @@ def _register_support_context(conn: psycopg.Connection, project: str, scfg: dict
         payload=payload,
         ttl_hours=int(scfg.get("guidance_context_ttl_hours", 72)),
     )
+
+
+_INVESTIGATION_THREAD_LIMIT = 4000
+
+
+def _dispatch_investigation(conn: psycopg.Connection | None, cfg, project: str,
+                            scfg: dict, email: EmailSummary, thread: str) -> bool:
+    """Auto-dispatch a team-pipeline investigation for a high-risk escalated
+    email, opt-in via scfg escalate_dispatch (default off, unchanged behavior).
+    Reuses the same signal-ingest + open_request path as PM auto-fix dispatch
+    (see argus.v2.pm.autofix.dispatch) instead of inventing a parallel enqueue.
+    Idempotent per thread_id: ingest_signal dedupes on (source, dedup_key) and
+    open_request dedupes on (team_id, fingerprint) including terminal requests,
+    so a rerun of the same thread never opens a second investigation."""
+    if conn is None or not scfg.get("escalate_dispatch"):
+        return False
+    from argus.v2.ingress import events
+    from argus.v2.orchestrator import pipeline
+
+    truncated = thread.strip()
+    if len(truncated) > _INVESTIGATION_THREAD_LIMIT:
+        truncated = truncated[:_INVESTIGATION_THREAD_LIMIT] + "..."
+    text = (
+        "Investigate this customer complaint: check logs, database state, and "
+        "recent deploys relevant to the report; produce findings and, if a code "
+        "fix is clear, a fix.\n\n"
+        f"Subject: {email.subject}\n"
+        f"From: {email.sender}\n\n"
+        f"Thread:\n{truncated}"
+    )
+    fingerprint = f"support-escalate:{project}:{email.thread_id}"
+    event_id = events.ingest_signal(
+        conn, cfg, team=project, source="support-escalate",
+        fingerprint=fingerprint, payload={"text": text, "thread_id": email.thread_id},
+    )
+    request_id = pipeline.open_request(
+        conn, cfg, event_id=event_id, team_id=project,
+        conversation_id=None, fingerprint=fingerprint, dedup_terminal=True,
+    )
+    return request_id is not None
 
 
 def _request_from_context(team_id: str, context: dict) -> dict | None:

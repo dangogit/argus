@@ -25,6 +25,33 @@ def _support_cfg(tmp_path):
     return loader.load(cfg_path)
 
 
+def _support_cfg_with_dev_pipeline(tmp_path):
+    """A support team that also has a build pipeline (developer/qa/senior), so
+    an escalate-dispatched investigation has a real stage-0 role to enqueue
+    into (mirrors how a real product team is configured)."""
+    from argus.v2.config import loader
+    os.environ.setdefault("SUPPORT_KEY", "k")
+    cfg_path = tmp_path / "argus.yaml"
+    cfg_path.write_text(
+        "company:\n"
+        "  name: c\n"
+        "  defaults: { engine: { engine: echo } }\n"
+        "  sources:\n"
+        "    - { type: support_apps_script, name: luma-mail, team: luma, "
+        "secret_ref: '${env:SUPPORT_KEY}', config: { url: 'https://support.test', "
+        "notify_destination: 'cli:local', escalate_dispatch: true } }\n"
+        "teams:\n"
+        "  - name: luma\n"
+        "    roles: [ { name: support, kind: worker, prompt: p },\n"
+        "             { name: developer, kind: builder, prompt: p },\n"
+        "             { name: qa, kind: judge, prompt: p },\n"
+        "             { name: senior, kind: judge, prompt: p } ]\n"
+        "    pipeline: { stages: [developer, qa, senior] }\n",
+        encoding="utf-8",
+    )
+    return loader.load(cfg_path)
+
+
 class ExplodingTransport:
     def archive(self, _thread_id):
         raise AssertionError("archive should not run")
@@ -509,3 +536,122 @@ def test_invalid_support_json_records_failure_reason(tmp_path, monkeypatch, conn
         cur.execute("SELECT question FROM support_guidance WHERE project='luma' "
                     "AND thread_id='T-json'")
         assert "Draft failed (invalid_json)" in cur.fetchone()[0]
+
+
+def test_escalate_dispatch_off_does_not_enqueue_investigation(tmp_path, monkeypatch, conn):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    cfg = _support_cfg(tmp_path)  # escalate_dispatch not set -> default False
+    team = cfg.team("luma")
+    source = type("Source", (), {"type": "support_apps_script"})()
+    scfg = {"notify_destination": "cli:local"}
+    email = EmailSummary("T-esc-off", "u@example.com", "Refund",
+                         "please refund me, this is broken")
+    transport = FakeTransport("From: u@example.com\nPlease refund me, this is broken.")
+
+    result = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                 cycle.SupportResult())
+    conn.commit()
+
+    assert result.escalated == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE team_id='luma'")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM events WHERE source='support-escalate'")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT payload->>'text' FROM actions WHERE type='notify'")
+        text = cur.fetchone()[0]
+    assert "auto-dispatched" not in text
+
+
+def test_escalate_dispatch_on_enqueues_investigation_once(tmp_path, monkeypatch, conn):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    cfg = _support_cfg_with_dev_pipeline(tmp_path)
+    team = cfg.team("luma")
+    source = type("Source", (), {"type": "support_apps_script"})()
+    scfg = {
+        "notify_destination": "cli:local",
+        "escalate_dispatch": True,
+    }
+    email = EmailSummary("T-esc-on", "u@example.com", "My instance setup is broken",
+                         "please refund me, my instance setup is broken")
+    transport = FakeTransport(
+        "From: u@example.com\nMy instance setup is broken, please refund me."
+    )
+
+    result = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                 cycle.SupportResult())
+    conn.commit()
+
+    assert result.escalated == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE team_id='luma'")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM events WHERE source='support-escalate'")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT payload->>'text' FROM events WHERE source='support-escalate'")
+        task_text = cur.fetchone()[0]
+        cur.execute("SELECT payload->>'text' FROM actions WHERE type='notify'")
+        notify_text = cur.fetchone()[0]
+
+    assert "Investigate this customer complaint" in task_text
+    assert "My instance setup is broken" in task_text
+    assert "u@example.com" in task_text
+    assert "auto-dispatched" in notify_text
+    assert "team pipeline" in notify_text
+
+
+def test_escalate_dispatch_rerun_same_thread_does_not_reenqueue(tmp_path, monkeypatch, conn):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    cfg = _support_cfg_with_dev_pipeline(tmp_path)
+    team = cfg.team("luma")
+    source = type("Source", (), {"type": "support_apps_script"})()
+    scfg = {"notify_destination": "cli:local", "escalate_dispatch": True}
+    email = EmailSummary("T-esc-rerun", "u@example.com", "Broken setup",
+                         "please refund me, broken setup")
+    transport = FakeTransport("From: u@example.com\nBroken setup, please refund me.")
+
+    first = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                cycle.SupportResult())
+    conn.commit()
+    assert first.escalated == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE team_id='luma'")
+        assert cur.fetchone()[0] == 1
+
+    # Later cycle sees the same thread again (e.g. rerun / redelivery). The
+    # existing skip-on-terminal-action check in _handle_email keeps this from
+    # re-entering the escalate branch at all.
+    second = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                 cycle.SupportResult())
+    conn.commit()
+
+    assert second.skipped == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE team_id='luma'")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM events WHERE source='support-escalate'")
+        assert cur.fetchone()[0] == 1
+
+
+def test_escalate_dispatch_direct_call_is_idempotent_per_thread(tmp_path, monkeypatch, conn):
+    """Belt-and-suspenders: even bypassing the _handle_email skip guard (e.g. a
+    future caller or a race), _dispatch_investigation itself must not open a
+    second pipeline request for the same thread_id."""
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    cfg = _support_cfg_with_dev_pipeline(tmp_path)
+    scfg = {"escalate_dispatch": True}
+    email = EmailSummary("T-esc-direct", "u@example.com", "Broken",
+                         "please help, broken")
+    thread = "From: u@example.com\nSomething is broken, please help."
+
+    first = cycle._dispatch_investigation(conn, cfg, "luma", scfg, email, thread)
+    conn.commit()
+    second = cycle._dispatch_investigation(conn, cfg, "luma", scfg, email, thread)
+    conn.commit()
+
+    assert first is True
+    assert second is False
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE team_id='luma'")
+        assert cur.fetchone()[0] == 1

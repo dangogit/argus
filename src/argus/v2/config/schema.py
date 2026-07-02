@@ -143,6 +143,13 @@ class Defaults(BaseModel):
     # orchestrator stops opening new work until spend drops; in-flight jobs
     # still finish. None disables the cap (default).
     max_daily_cost_usd: Optional[float] = None
+    # Company-wide duplicate-work guard: when a dispatch references a bug id
+    # (supabase bug_reports row id, or "bug report <uuid>" in task text) that
+    # already has a non-terminal request anywhere in the company, skip the new
+    # dispatch instead of opening a second pipeline for the same bug. Off by
+    # default so existing installs are unaffected (real incident: the same bug
+    # id opened tadam PR #324 and tadam-agents PR #302 on 2026-07-01).
+    dedup_bug_dispatch: bool = False
 
 
 class Company(BaseModel):
@@ -255,6 +262,9 @@ class Team(BaseModel):
     # Per-team rolling 24h spend cap (USD). Overrides nothing else; when this
     # team is over it, only this team's new work pauses. None = no team cap.
     max_daily_cost_usd: Optional[float] = None
+    # Per-team override of company.defaults.dedup_bug_dispatch. None = inherit
+    # the company setting; explicit true/false wins over it either way.
+    dedup_bug_dispatch: Optional[bool] = None
 
     def role(self, name: str) -> Role:
         for r in self.roles:
