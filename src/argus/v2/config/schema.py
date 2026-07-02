@@ -28,6 +28,13 @@ class SourceRef(BaseModel):
     secret: Optional[str] = None  # filled by the loader
     team: Optional[str] = None    # which team a company-scoped source routes to
     config: dict = Field(default_factory=dict)  # connector-specific params
+    # supabase source connector-specific knobs of note (see connectors/supabase.py):
+    #   writeback: bool, default False. Append Argus's verdict to the bug row's
+    #     notes column after the request goes terminal.
+    #   batch: bool, default False. Collapse every open bug row found in one poll
+    #     into a single consolidated signal (one PM dispatch, one pipeline run,
+    #     one PR) instead of one per bug row. Opt-in, current per-bug behavior
+    #     unchanged when unset.
 
 
 class ChannelBinding(BaseModel):
