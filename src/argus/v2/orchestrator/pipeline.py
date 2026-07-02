@@ -5,6 +5,7 @@ delivery or two orchestrators."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import subprocess
 from typing import Optional
@@ -22,6 +23,8 @@ from argus.v2.queue.models import Job
 from argus.v2.rules import context as rules_context
 from argus.v2.roles import contracts
 from argus.v2.skills import registry as skills
+
+log = logging.getLogger("argus.pipeline")
 
 # Signal payloads whose only content is one of these is housekeeping noise, not
 # work. Without this gate an internal "no findings" alert opened a build request,
@@ -151,13 +154,16 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
         snapshot["network"] = True
     snapshot.update(_role_snapshot_extra(role_name))
     branch_iter = _branch_iter(conn, request_id, stage_index)
-    jobs.enqueue(
+    job_id = jobs.enqueue(
         conn, team_id=team_id, kind="pipeline", role=role_name, stage=stage_index,
         idempotency_key=_stage_key(request_id, stage_index, branch_iter),
         exec_snapshot=snapshot, payload={"text": text},
         request_id=request_id, event_id=str(event_id),
         conversation_id=str(conversation_id) if conversation_id else None,
     )
+    log.info("request %s advanced to stage %d (%s) team=%s job=%s",
+             request_id, stage_index, role_name, team_id, job_id,
+             extra={"job_id": job_id, "team_id": team_id, "request_id": request_id})
     with conn.cursor() as cur:
         cur.execute("UPDATE requests SET current_stage=%s, updated_at=now() WHERE id=%s",
                     (stage_index, request_id))
@@ -411,6 +417,8 @@ def _next(conn: psycopg.Connection, cfg, request_id: str, stage_index: int) -> N
         with conn.cursor() as cur:
             cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                         (request_id,))
+        log.info("request %s done team=%s", request_id, team_id,
+                 extra={"team_id": team_id, "request_id": request_id})
     else:
         enqueue_stage(conn, cfg, request_id=request_id, stage_index=stage_index)
 
@@ -543,6 +551,8 @@ def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:
         team_id, conv_id, origin_kind = row
         cur.execute("UPDATE requests SET status='failed', updated_at=now() WHERE id=%s",
                     (request_id,))
+        log.info("request %s failed team=%s reason=%s", request_id, team_id, reason,
+                 extra={"team_id": team_id, "request_id": str(request_id)})
         # Cancel sibling jobs in the same transaction. on_job_done early-returns
         # once the request is not 'open', and jobs.claim filters only on
         # status='pending' (never parent-request status), so any non-terminal
@@ -625,6 +635,10 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
             )
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                     (job.request_id,))
+    log.info("request %s done (senior approved) team=%s job=%s",
+             job.request_id, job.team_id, job.id,
+             extra={"job_id": job.id, "team_id": job.team_id,
+                    "request_id": job.request_id})
     status.set_status(conn, job.event_id, status.DONE)
 
 

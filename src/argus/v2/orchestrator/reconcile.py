@@ -349,14 +349,14 @@ def _dead_job_error_detail(conn: psycopg.Connection, job_id: str, result) -> str
     return detail[-1200:] if detail else ""
 
 
-def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
+def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> int:
     """Surface every job that exhausted max_attempts (status='dead') to its
     team's control channel. Idempotent via 'dead-job:<job_id>' so a repeat
     sweep (or reclaim_expired flipping the same row again, which it cannot
     since dead is terminal) never double-alerts. Scoped to jobs created in the
     last 7 days and capped per sweep: on a database that predates this alert,
     an unbounded scan would flood every control channel with alerts for jobs
-    that died long ago."""
+    that died long ago. Returns the number of alerts actually inserted."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, team_id, kind, attempts, max_attempts, result "
@@ -367,6 +367,7 @@ def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
             "ORDER BY created_at DESC LIMIT 50"
         )
         rows = cur.fetchall()
+    alerted = 0
     for job_id, team_id, kind, attempts, max_attempts, result in rows:
         job_id = str(job_id)
         detail = _dead_job_error_detail(conn, job_id, result)
@@ -384,20 +385,28 @@ def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
                 "idempotency_key, payload) VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
                 "ON CONFLICT (idempotency_key) DO NOTHING",
                 (job_id, team_id, dest, f"dead-job:{job_id}", Json({"text": text})))
+            if cur.rowcount:
+                alerted += 1
+    return alerted
 
 
-def sweep_once(conn: psycopg.Connection, cfg) -> None:
+def sweep_once(conn: psycopg.Connection, cfg) -> dict:
+    """Run one reconciliation pass. Returns a counts dict of what happened
+    (plus duration_ms) and logs a one-line summary: INFO when any work was
+    done, DEBUG when the sweep was idle."""
+    started = time.monotonic()
+    counts: dict[str, int] = {}
     # 0. Route unprocessed events (front decision: reply vs dispatch).
-    route_events(conn, cfg)
+    counts["events_routed"] = route_events(conn, cfg)
     # 1. Reclaim crashed jobs.
-    jobs.reclaim_expired(conn)
+    counts["jobs_reclaimed"] = jobs.reclaim_expired(conn)
     # 1b. Alert on jobs that just went dead (exhausted max_attempts). Kind-
     # agnostic: on_job_done/_sweep_converse only react to dead status for
     # kinds they know how to advance, so without this a dead job outside those
     # paths (or one whose downstream handling swallows it) would never surface
     # to a human. Runs before the pipeline-advance step below so the alert
     # exists even if that step also fails the request.
-    _notify_dead_jobs(conn, cfg)
+    counts["dead_jobs_alerted"] = _notify_dead_jobs(conn, cfg)
     # 2. Advance pipelines for terminal jobs not yet advanced.
     with conn.cursor() as cur:
         cur.execute(
@@ -423,17 +432,34 @@ def sweep_once(conn: psycopg.Connection, cfg) -> None:
         pipeline.on_job_done(conn, cfg, _load_job(conn, jid))
         with conn.cursor() as cur:
             cur.execute("UPDATE jobs SET advanced_at=now() WHERE id=%s", (jid,))
+    counts["pipeline_advanced"] = len(rows)
     # 2b. Handle done converse jobs not yet processed (no marker action yet).
-    _sweep_converse(conn, cfg)
+    counts["async_jobs_handled"] = _sweep_converse(conn, cfg)
     # 2c. Close the loop on supabase bug sources: write Argus's verdict back to
     # the bug row so terminal requests stop looking ignored.
-    writeback_terminal_bugs(conn, cfg)
+    counts["bug_writebacks"] = writeback_terminal_bugs(conn, cfg)
     # 3. Drain the action outbox.
-    executor.process_proposed(conn, cfg)
+    counts["actions_drained"] = executor.process_proposed(conn, cfg)
     # 4. Expire stale approvals.
-    approvals.expire_due(conn)
+    counts["approvals_expired"] = approvals.expire_due(conn)
     # 5. Prune worktree dirs for terminal requests.
     _prune_worktrees(conn, cfg)
+    counts["duration_ms"] = int((time.monotonic() - started) * 1000)
+    _log_sweep(counts)
+    return counts
+
+
+def _log_sweep(counts: dict) -> None:
+    """One line per sweep: INFO with the nonzero counts when anything happened,
+    DEBUG when idle so a healthy quiet loop does not fill the log."""
+    busy = {k: v for k, v in counts.items() if v and k != "duration_ms"}
+    if busy:
+        summary = " ".join(f"{k}={v}" for k, v in busy.items())
+        log.info("sweep did work: %s duration_ms=%d", summary,
+                 counts["duration_ms"], extra={"sweep": counts})
+    else:
+        log.debug("sweep idle duration_ms=%d", counts["duration_ms"],
+                  extra={"sweep": counts})
 
 
 def writeback_terminal_bugs(conn: psycopg.Connection, cfg) -> int:
@@ -498,10 +524,10 @@ def _bug_outcome_note(conn: psycopg.Connection, request_id: str, status: str) ->
     return "Argus investigated; no automated code fix was warranted."
 
 
-def _sweep_converse(conn: psycopg.Connection, cfg) -> None:
+def _sweep_converse(conn: psycopg.Connection, cfg) -> int:
     """Find terminal converse/triage/research jobs with no decision marker action
     (key '<kind>:<id>') and call pipeline.on_job_done for each. Idempotent: once
-    the marker exists, the job is skipped on re-sweep."""
+    the marker exists, the job is skipped on re-sweep. Returns jobs handled."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -520,6 +546,7 @@ def _sweep_converse(conn: psycopg.Connection, cfg) -> None:
             _mark_async_job_skipped(conn, job, "missing_team")
             continue
         pipeline.on_job_done(conn, cfg, job)
+    return len(ids)
 
 
 def _mark_async_job_skipped(conn: psycopg.Connection, job: Job, reason: str) -> None:

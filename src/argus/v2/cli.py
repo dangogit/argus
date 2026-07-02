@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from argus.v2 import alerts
 from argus.v2 import envfile
+from argus.v2 import logsetup
 from argus.v2.actions import approvals
 from argus.v2.config import loader
 from argus.v2.db import migrate, pool
@@ -436,6 +437,7 @@ def cmd_signal(args) -> int:
 
 
 def cmd_up(args) -> int:
+    logsetup.configure()
     cfg = _cfg()
     # Orchestrator loop. By default a single-process dev driver: sweep + drain all
     # jobs. In production pass --sweep-only so the orchestrator ONLY sweeps (route
@@ -474,6 +476,7 @@ def cmd_worker(args) -> int:
     """Standalone job worker for one lane (production runs chat + pipeline lanes
     as separate processes alongside `up --sweep-only`). Drains its lane, then
     sleeps; never sweeps."""
+    logsetup.configure()
     cfg = _cfg()
     lane = _WORKER_LANES[args.lane]
     worker_id = lane["worker_id"]
@@ -1210,6 +1213,7 @@ def cmd_know(args) -> int:
 
 def cmd_serve(args) -> int:  # pragma: no cover
     from argus.v2.channels import receiver
+    logsetup.configure()
     cfg = _cfg()
     if args.host not in ("127.0.0.1", "localhost", "::1") and not receiver.has_inbound_auth(cfg):
         print("argus serve: refusing non-loopback host without inbound auth", file=sys.stderr)
