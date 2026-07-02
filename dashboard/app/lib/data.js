@@ -93,7 +93,7 @@ async function queryAlertRows({ limit, project, severity, dbDsn }) {
     ORDER BY ts DESC
     LIMIT $${params.length}
   `;
-  const result = await pgPool(dsn).query(sql, params);
+  const result = await runQuery("alerts", dsn, sql, params);
   return result.rows;
 }
 
@@ -104,6 +104,21 @@ function pgPool(dsn) {
     globalThis[key].set(dsn, new Pool(pgPoolConfig(dsn)));
   }
   return globalThis[key].get(dsn);
+}
+
+// runQuery: thin audit-trail wrapper around every DB read. Logs the query
+// name and duration only, never params or rows, since params may carry
+// tokens (e.g. project/severity filters echoing user input).
+async function runQuery(name, dsn, sql, params) {
+  const startedAt = Date.now();
+  try {
+    const result = await pgPool(dsn).query(sql, params);
+    console.log(JSON.stringify({ dashboardQuery: name, ms: Date.now() - startedAt, rows: result.rowCount }));
+    return result;
+  } catch (err) {
+    console.log(JSON.stringify({ dashboardQuery: name, ms: Date.now() - startedAt, error: true }));
+    throw err;
+  }
 }
 
 export function pgPoolConfig(dsn) {
@@ -175,7 +190,7 @@ async function queryOpsRows({ dbDsn }) {
     SELECT 'actions' AS section, status, count(*)::int AS count FROM actions GROUP BY status
     ORDER BY section, status
   `;
-  const result = await pgPool(dsn).query(sql);
+  const result = await runQuery("ops", dsn, sql);
   return result.rows;
 }
 
@@ -231,7 +246,7 @@ async function queryAgentRows({ dbDsn }) {
     LEFT JOIN jobs j ON j.id = a.job_id
     GROUP BY a.team_id, coalesce(j.role, 'outbox'), a.status
   `;
-  const result = await pgPool(dsn).query(sql);
+  const result = await runQuery("agents", dsn, sql);
   return result.rows;
 }
 
@@ -352,7 +367,7 @@ async function queryAgentDetails({ dbDsn, team, role, limit }) {
     ORDER BY at DESC
     LIMIT $3
   `;
-  const result = await pgPool(dsn).query(sql, [team, role, max]);
+  const result = await runQuery("agent_details", dsn, sql, [team, role, max]);
   return result.rows;
 }
 
@@ -455,7 +470,7 @@ async function queryProposalRows({ limit, dbDsn }) {
     ORDER BY a.created_at DESC
     LIMIT $1
   `;
-  const result = await pgPool(dsn).query(sql, [max]);
+  const result = await runQuery("proposals", dsn, sql, [max]);
   return result.rows;
 }
 
