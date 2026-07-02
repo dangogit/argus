@@ -12,9 +12,17 @@ is the primary dedup guard: a standing-match table (e.g.
 already-old rows are excluded server-side even if the in-memory ``seen`` set is
 lost (restart / state reset). ``seen`` stays as a secondary client-side guard.
 Tables without ``cursor_column`` fall back to the old seen-only behavior.
+
+Batch mode: ``config.batch: true`` (default false, opt-in, current per-bug
+behavior unchanged) collapses every open row found in one poll into a SINGLE
+signal (payload key ``rows``), so one PM dispatch and one pipeline run produce
+ONE consolidated PR instead of one PR per bug row. The dedup key is a hash of
+the sorted per-bug fingerprints, so re-polling the same open backlog does not
+re-dispatch the same batch (a changed backlog naturally gets a new key).
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from urllib.parse import quote, urlencode
 
@@ -23,6 +31,7 @@ from argus.v2.connectors.base import Signal, register
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SEEN_CAP = 1000
 _DEFAULT_CURSOR_COLUMN = "created_at"
+_SEVERITY_RANK = {"info": 0, "warn": 1, "error": 2, "critical": 3}
 
 
 def _name(value: str) -> str:
@@ -54,6 +63,36 @@ def _severity(value) -> str:
     return "warn"
 
 
+def _batch_fingerprint(project: str, table: str, ids: list[str]) -> str:
+    """Stable dedup key for a batched signal: a hash of the sorted bug ids, so
+    the SAME set of open bugs never re-dispatches a second batch on a re-poll
+    (order-independent, deterministic). A different set of open ids (one bug
+    closed, a new one opened) naturally produces a new fingerprint, which is
+    the desired behavior: a fresh batch for a changed backlog."""
+    digest = hashlib.sha256(",".join(sorted(ids)).encode()).hexdigest()[:16]
+    return f"supabase-{project}-{table}-batch-{digest}"
+
+
+def _batch_signal(project: str, table: str, findings: list[dict]) -> Signal:
+    """Build the single consolidated Signal for a batch poll. The payload keeps
+    the per-bug findings under 'rows' (each with its own 'row' for writeback) so
+    downstream code (PR prompt text, writeback) can walk the list; 'row' stays
+    absent at the top level since there is no single row for a batch."""
+    fingerprint = _batch_fingerprint(project, table, [f["fingerprint"] for f in findings])
+    worst = max((f["severity"] for f in findings), key=lambda s: _SEVERITY_RANK.get(s, 1))
+    payload = {
+        "source": "supabase",
+        "severity": worst,
+        "fingerprint": fingerprint,
+        "message": f"{len(findings)} open bug reports",
+        "kind": "bug_batch",
+        "bug_count": len(findings),
+        "rows": findings,
+        "last_seen": max((f.get("last_seen") or "" for f in findings), default=""),
+    }
+    return Signal(fingerprint=fingerprint, payload=payload)
+
+
 def _build_url(base: str, table: str, query: str, limit: int, *,
                cursor_column: str | None = None, watermark=None) -> str:
     """Compose the PostgREST URL. With a cursor column, order ascending and (when
@@ -77,11 +116,18 @@ class SupabaseConnector:
     def parse(raw, state: dict, *, project: str, table: str = "bug_reports",
               id_column: str = "id", title_column: str = "title",
               severity_column: str | None = None,
-              cursor_column: str | None = _DEFAULT_CURSOR_COLUMN):
+              cursor_column: str | None = _DEFAULT_CURSOR_COLUMN,
+              batch: bool = False):
+        """Parse rows into signals. Default (batch=False): one Signal per row,
+        unchanged from the original per-bug behavior. batch=True: every open row
+        found in this poll collapses into ONE Signal whose payload lists all of
+        them (see _batch_fingerprint for the dedup key), so downstream produces a
+        single pipeline run and a single PR instead of one per bug row."""
         seen = set(state.get("seen", []))
         next_seen = list(state.get("seen", []))
         watermark = state.get("watermark")
         signals: list[Signal] = []
+        findings: list[dict] = []
         rows = raw if isinstance(raw, list) else []
         for row in rows:
             if not isinstance(row, dict):
@@ -118,12 +164,16 @@ class SupabaseConnector:
                 "last_seen": row.get("created_at") or row.get("updated_at") or row.get("inserted_at") or "",
                 "row": row,
             }
-            signals.append(Signal(fingerprint=fingerprint, payload=finding))
+            findings.append(finding)
+            if not batch:
+                signals.append(Signal(fingerprint=fingerprint, payload=finding))
             seen.add(fingerprint)
             next_seen.append(fingerprint)
             # Advance the durable watermark to the newest cursor value emitted.
             if cur_val is not None and (watermark is None or str(cur_val) > str(watermark)):
                 watermark = cur_val
+        if batch and findings:
+            signals.append(_batch_signal(project, table, findings))
         new_state = {"seen": next_seen[-_SEEN_CAP:]}
         if watermark is not None:
             new_state["watermark"] = watermark
@@ -170,6 +220,7 @@ class SupabaseConnector:
             title_column=cfg.get("title_column", "title"),
             severity_column=cfg.get("severity_column"),
             cursor_column=_cursor_column(cfg),
+            batch=bool(cfg.get("batch", False)),
         )
 
 

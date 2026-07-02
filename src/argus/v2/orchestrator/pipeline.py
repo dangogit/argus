@@ -748,7 +748,9 @@ def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
     request = _request_text_for_request(conn, request_id)
     files = _changed_files(cwd)
     checks = _checks_summary(conn, request_id)
-    title = _title(request, request_id)
+    batch_count = _batch_bug_count(conn, request_id)
+    title = (f"Argus: Investigate {batch_count} open bug reports" if batch_count
+             else _title(request, request_id))
     summary = _builder_summary(conn, request_id) or _summary_short(request)
     risk = risk_summary or "low: QA passed and senior approved"
     body = "\n".join([
@@ -790,6 +792,27 @@ def _request_text_for_request(conn: psycopg.Connection, request_id: str) -> str:
         cur.execute("SELECT event_id FROM requests WHERE id=%s", (request_id,))
         row = cur.fetchone()
     return _request_text(conn, row[0]) if row else ""
+
+
+def _batch_bug_count(conn: psycopg.Connection, request_id: str) -> int:
+    """Number of bugs in this request's originating batch signal, or 0 if the
+    request did not originate from a batched supabase bug_batch signal. Drives
+    the fixed 'Argus: Investigate N open bug reports' PR title (see _pr_info)
+    instead of the generic first-72-chars title, which would otherwise
+    truncate mid-sentence for a long combined bug list."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT e.payload FROM requests r JOIN events e ON e.id = r.event_id "
+            "WHERE r.id=%s AND e.kind='signal'",
+            (request_id,))
+        row = cur.fetchone()
+    if not row or not isinstance(row[0], dict):
+        return 0
+    payload = row[0]
+    if payload.get("kind") != "bug_batch":
+        return 0
+    rows = payload.get("rows")
+    return len(rows) if isinstance(rows, list) else 0
 
 
 def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
@@ -960,11 +983,37 @@ def _request_text(conn: psycopg.Connection, event_id) -> str:
     if payload.get("text"):
         return payload["text"]
     if kind == "signal":
+        if payload.get("kind") == "bug_batch" and payload.get("rows"):
+            return _batch_signal_text(source, payload)
         import json
         return (f"An automated signal arrived from source '{source}'. Investigate it "
                 f"and make a minimal, focused fix if one is warranted.\n\nSignal details:\n"
                 f"{json.dumps(payload, indent=2, default=str)}")
     return ""
+
+
+def _batch_signal_text(source: str, payload: dict) -> str:
+    """Request text for a consolidated bug_batch signal (see the supabase
+    connector's batch mode). Starts with 'Investigate N open bug reports' so
+    _title() (first 72 chars, 'Argus: ' prefix) turns it into exactly the PR
+    title the owner asked for, with the full bug list in the body below."""
+    rows = payload.get("rows") or []
+    lines = [
+        f"Investigate {len(rows)} open bug reports",
+        "",
+        f"Source: '{source}'. For each bug below, find the root cause and make a "
+        "minimal, focused fix if one is warranted. Land all fixes as ONE combined "
+        "PR, not one PR per bug.",
+        "",
+        "Bugs:",
+    ]
+    for finding in rows:
+        row = finding.get("row") or {}
+        bug_id = row.get("id", "?")
+        title = finding.get("message") or "(no title)"
+        severity = finding.get("severity") or "warn"
+        lines.append(f"- id={bug_id} severity={severity}: {title}")
+    return "\n".join(lines)
 
 
 def _config_hash(cfg) -> str:

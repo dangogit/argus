@@ -4,11 +4,16 @@ The actual git/gh/deploy processes are NOT run in the gate."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Callable
+
+from argus.v2.actions import mergeability
+
+log = logging.getLogger(__name__)
 
 
 def _default_runner(argv, cwd=None) -> str:  # pragma: no cover
@@ -16,6 +21,9 @@ def _default_runner(argv, cwd=None) -> str:  # pragma: no cover
     if r.returncode != 0:
         raise RuntimeError(f"{' '.join(argv)} failed: {r.stderr.strip()}")
     return r.stdout
+
+
+_CONFLICT_TITLE_PREFIX = "[conflicts] "
 
 
 def build_open_pr(*, branch, base, remote, title, body, draft=False):
@@ -31,14 +39,46 @@ def build_open_pr(*, branch, base, remote, title, body, draft=False):
     ]
 
 
+def _apply_conflict_prefix(title: str, body: str, check: mergeability.MergeCheck) -> tuple[str, str]:
+    """Prefix the title and note the conflict in the body so the owner is not
+    surprised on GitHub; used only when the mergeability check still finds
+    conflicts after the one rebase attempt."""
+    if title.startswith(_CONFLICT_TITLE_PREFIX):
+        prefixed_title = title
+    else:
+        prefixed_title = f"{_CONFLICT_TITLE_PREFIX}{title}"
+    note = (
+        "## Merge conflict warning\n"
+        f"This branch does not merge cleanly into the current base ({check.detail}). "
+        "A rebase was attempted and did not resolve it automatically. Manual "
+        "conflict resolution is needed before merging."
+    )
+    conflict_body = f"{note}\n\n{body}" if body else note
+    return prefixed_title, conflict_body
+
+
 def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
         cfg=None, team_id: str | None = None) -> str:
     """Execute an action; return its provider_ref (e.g. the PR URL)."""
     if action_type == "open_pr":
         cwd = payload.get("cwd")
-        for cmd in build_open_pr(branch=payload["branch"], base=payload["base"],
-                                 remote=payload["remote"], title=payload["title"],
-                                 body=payload.get("body", ""),
+        title = payload["title"]
+        body = payload.get("body", "")
+        base = payload["base"]
+        remote = payload["remote"]
+        if cwd:
+            # Pre-propose mergeability check: fetch the current remote base and
+            # see if the work branch merges cleanly, rebasing once if not. Never
+            # blocks the PR: a conflict just gets flagged in the title/body so
+            # the owner isn't surprised by a CONFLICTING PR on GitHub later.
+            check = mergeability.check(cwd, base=base, remote=remote)
+            log.info("mergeability check for %s onto %s/%s: mergeable=%s rebased=%s "
+                     "conflict=%s (%s)", payload.get("branch"), remote, base,
+                     check.mergeable, check.rebased, check.conflict, check.detail)
+            if check.conflict:
+                title, body = _apply_conflict_prefix(title, body, check)
+        for cmd in build_open_pr(branch=payload["branch"], base=base,
+                                 remote=remote, title=title, body=body,
                                  draft=bool(payload.get("draft"))):
             out = runner(cmd, cwd=cwd)
         return (out or "").strip()

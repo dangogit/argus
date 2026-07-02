@@ -151,3 +151,99 @@ def test_handler_skips_when_writeback_disabled(tmp_path, monkeypatch):
 def test_bug_writeback_is_registered_reversible():
     assert "bug_writeback" in executor._REAL
     assert executor.risk_for("bug_writeback") == "reversible_internal"
+
+
+# ---------------------------------------------------------------------------
+# Batch mode: one signal for N bugs -> one dispatch/request -> N writebacks.
+# ---------------------------------------------------------------------------
+
+def _terminal_batch_request(conn, cfg, *, status, dedup, row_ids, with_pr=False):
+    rows = [{"row": {"id": rid}, "message": f"bug {rid}", "severity": "warn"}
+            for rid in row_ids]
+    payload = {"kind": "bug_batch", "bug_count": len(row_ids), "rows": rows}
+    eid = events.ingest_signal(conn, cfg, team="dev", source="sb-bugs",
+                               fingerprint=dedup, payload=payload)
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None, fingerprint=dedup)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET status=%s WHERE id=%s", (status, rid))
+        if with_pr:
+            cur.execute(
+                "INSERT INTO actions (request_id, team_id, type, risk, "
+                " idempotency_key, provider_ref, status) "
+                "VALUES (%s,'dev','open_pr','reversible_internal',%s,%s,'done')",
+                (rid, f"open_pr:{rid}", "https://github.com/o/r/pull/42"))
+    conn.commit()
+    return rid
+
+
+def test_batch_signal_produces_a_single_dispatch_from_n_bugs(conn, tmp_path):
+    """A batch payload with 3 bugs goes through open_request exactly once (one
+    request/pipeline run), unlike the pre-batch world where 3 separate signals
+    would each open their own request."""
+    cfg = _cfg(tmp_path)
+    rid = _terminal_batch_request(conn, cfg, status="done", dedup="batch-1",
+                                  row_ids=["b1", "b2", "b3"], with_pr=True)
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT id FROM requests")
+        assert str(cur.fetchone()[0]) == str(rid)
+
+
+def test_batch_writeback_proposes_one_action_per_bug(conn, tmp_path):
+    cfg = _cfg(tmp_path)
+    _terminal_batch_request(conn, cfg, status="done", dedup="batch-2",
+                            row_ids=["b1", "b2", "b3"], with_pr=True)
+    n = reconcile.writeback_terminal_bugs(conn, cfg); conn.commit()
+    assert n == 3
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload->>'row_id', payload->>'note' FROM actions "
+                    "WHERE type='bug_writeback' ORDER BY payload->>'row_id'")
+        rows = cur.fetchall()
+    assert [r[0] for r in rows] == ["b1", "b2", "b3"]
+    for _, note in rows:
+        assert "pull/42" in note  # same PR verdict note fans out to every bug
+
+
+def test_batch_writeback_idempotent_across_resweep(conn, tmp_path):
+    cfg = _cfg(tmp_path)
+    _terminal_batch_request(conn, cfg, status="done", dedup="batch-3",
+                            row_ids=["b1", "b2"], with_pr=True)
+    n1 = reconcile.writeback_terminal_bugs(conn, cfg); conn.commit()
+    n2 = reconcile.writeback_terminal_bugs(conn, cfg); conn.commit()
+    assert n1 == 2
+    assert n2 == 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE type='bug_writeback'")
+        assert cur.fetchone()[0] == 2
+
+
+def test_batch_writeback_skips_rows_without_id(conn, tmp_path):
+    cfg = _cfg(tmp_path)
+    payload = {"kind": "bug_batch", "bug_count": 2, "rows": [
+        {"row": {"id": "b1"}, "message": "ok"},
+        {"row": {}, "message": "missing id"},
+    ]}
+    eid = events.ingest_signal(conn, cfg, team="dev", source="sb-bugs",
+                               fingerprint="batch-4", payload=payload)
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None, fingerprint="batch-4")
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET status='done' WHERE id=%s", (rid,))
+    conn.commit()
+    n = reconcile.writeback_terminal_bugs(conn, cfg); conn.commit()
+    assert n == 1  # only the row with an id gets a writeback proposed
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload->>'row_id' FROM actions WHERE type='bug_writeback'")
+        assert cur.fetchone()[0] == "b1"
+
+
+def test_pr_title_for_batch_signal_names_the_bug_count(conn, tmp_path):
+    """The PR opened from a batch signal is titled 'Argus: Investigate N open
+    bug reports', not a truncated echo of the first bug's text."""
+    cfg = _cfg(tmp_path)
+    rid = _terminal_batch_request(conn, cfg, status="done", dedup="batch-title",
+                                  row_ids=["b1", "b2", "b3", "b4"])
+    info = pipeline._pr_info(conn, cfg, rid, cwd=str(tmp_path))
+    assert info["title"] == "Argus: Investigate 4 open bug reports"
