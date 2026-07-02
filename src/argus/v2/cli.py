@@ -517,11 +517,12 @@ def cmd_runs(args) -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT r.role, r.engine, r.status, left(coalesce(r.output,''),60) "
+                "SELECT r.role, r.engine, r.status, r.prompt_hash, "
+                "left(coalesce(r.output,''),60) "
                 "FROM runs r JOIN jobs j ON j.id=r.job_id WHERE j.request_id=%s "
                 "ORDER BY r.started_at", (args.request_id,))
-            for role, engine, status, out in cur.fetchall():
-                print(f"{role:10} {engine:12} {status:6} {out}")
+            for role, engine, status, prompt_hash, out in cur.fetchall():
+                print(f"{role:10} {engine:12} {status:6} {prompt_hash or '':12} {out}")
         return 0
     finally:
         conn.close()
