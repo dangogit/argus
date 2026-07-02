@@ -33,6 +33,7 @@ class RunRecord:
     output: Optional[str] = None
     cost_source: Optional[str] = None
     cost_usd: Optional[str] = None
+    prompt_hash: Optional[str] = None
 
 
 @dataclass

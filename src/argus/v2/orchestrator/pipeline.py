@@ -142,6 +142,7 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
                 "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
+    _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
             and role.kind in ("builder", "worker"):
@@ -970,6 +971,18 @@ def _config_hash(cfg) -> str:
     return hashlib.sha256(cfg.model_dump_json().encode()).hexdigest()[:16]
 
 
+def _add_prompt_hash(snapshot: dict) -> None:
+    """Hash the fully-assembled prompt (prompt + rules + skills, exactly what
+    build_prompt hands the worker) so a regression can be correlated with a
+    prompt/rules/skills edit later. Call after _add_rules/_add_skills so both
+    blocks are already frozen into the snapshot."""
+    assembled = "\n\n".join(
+        part for part in (snapshot.get("prompt", ""), snapshot.get("rules", ""),
+                          snapshot.get("skills", "")) if part
+    )
+    snapshot["prompt_hash"] = hashlib.sha256(assembled.encode()).hexdigest()[:12]
+
+
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:
     """Freeze the rendered load-on-relevance skills block into the snapshot so
     the job replays deterministically. No-op (no key added) when nothing matches,
@@ -1006,6 +1019,7 @@ def enqueue_converse(conn: psycopg.Connection, cfg, *, event_id: str,
     text = _request_text(conn, event_id)
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_prompt_hash(snapshot)
     return jobs.enqueue(
         conn,
         team_id=team_id,
@@ -1035,6 +1049,7 @@ def enqueue_triage(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("manager"))
     key = f"triage:{team_id}:{fingerprint or event_id}"
     return jobs.enqueue(conn, team_id=team_id, kind="triage", role="manager", stage=0,
@@ -1063,6 +1078,7 @@ def enqueue_research(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "researcher", role.skills, text)
+    _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("researcher"))
     key = f"research:{team_id}:{fingerprint or event_id}"
     # request_id stays NULL (FK -> requests); the worker creates a read-only
