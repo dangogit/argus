@@ -159,6 +159,7 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                 prompt=snap.get("prompt"),
                 output=message,
                 status="failed",
+                prompt_hash=snap.get("prompt_hash"),
             )
             jobs.finalize(conn, job.id, job.claim_token, status="failed",
                           result=result, run=run, actions=[])
