@@ -13,6 +13,15 @@ def _event(conn, cfg):
                                  dedup_key="m1", text="fix login")
 
 
+def test_pipeline_checkpoints_group_recurring_same_theme_findings():
+    checkpoints = pipeline._PIPELINE_CHECKPOINTS
+
+    assert "group recurring same-theme findings" in checkpoints
+    assert "one owner, one flow, and one smallest fix recommendation" in checkpoints
+    assert "tadam-agents gender-classification" in checkpoints
+    assert "low-disk alerts" in checkpoints
+
+
 def test_open_request_creates_first_stage_job(conn, cfg):
     eid = _event(conn, cfg); conn.commit()
     rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
@@ -63,6 +72,10 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
         snap = cur.fetchone()[0]
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
     assert "external side effects" in snap["checkpoints"]
+    assert "group recurring same-theme findings" in snap["checkpoints"]
+    assert "one owner, one flow, and one smallest fix recommendation" in snap["checkpoints"]
+    assert "tadam-agents gender-classification" in snap["checkpoints"]
+    assert "low-disk alerts" in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():
