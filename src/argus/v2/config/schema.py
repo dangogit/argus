@@ -120,6 +120,7 @@ class ProjectDefaults(BaseModel):
     base_branch: Optional[str] = None
     work_branch_prefix: Optional[str] = None
     setup_cmd: Optional[str] = None
+    setup_timeout_seconds: Optional[int] = None
     test_cmd: Optional[str] = None
     test_timeout_seconds: Optional[int] = None
     remote: Optional[str] = None
@@ -163,6 +164,7 @@ class Project(BaseModel):
     base_branch: str = "main"
     work_branch_prefix: str = "argus"
     setup_cmd: Optional[str] = None
+    setup_timeout_seconds: int = 900
     test_cmd: Optional[str] = None
     test_timeout_seconds: int = 900
     remote: str = "origin"

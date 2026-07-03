@@ -466,10 +466,18 @@ def _commands(repo: Path) -> tuple[str | None, str | None]:
             data = {}
         scripts = data.get("scripts") if isinstance(data, dict) else {}
         if isinstance(scripts, dict):
+            if (repo / "pnpm-lock.yaml").exists():
+                runner, install = "pnpm", "pnpm install --frozen-lockfile"
+            elif (repo / "yarn.lock").exists():
+                runner, install = "yarn", "yarn install --frozen-lockfile"
+            elif (repo / "package-lock.json").exists():
+                runner, install = "npm", "npm ci"
+            else:
+                runner, install = "npm", "npm install"
             if "test" in scripts:
-                return "npm test", "npm install"
+                return f"{runner} test", install
             if "lint" in scripts:
-                return "npm run lint", "npm install"
+                return f"{runner} run lint", install
     if (repo / "pyproject.toml").exists() or (repo / "pytest.ini").exists():
         return "pytest -q", "python -m pip install -e ."
     if (repo / "go.mod").exists():

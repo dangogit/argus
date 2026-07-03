@@ -6,6 +6,7 @@ import yaml
 
 from argus.v2 import cli, opscheck
 from argus.v2.config import loader
+from argus.v2.onboarding import _commands
 
 
 def _sample_repo(tmp_path: Path) -> Path:
@@ -1207,3 +1208,41 @@ def test_go_live_pm_mode_passes_with_recent_pr_smoke(
     assert data["status"] == "operational"
     assert any(item["area"] == "pm" and item["name"] == "pr_smoke"
                and item["status"] == "ok" for item in data["checks"])
+
+
+# _commands must pick the package manager from the lockfile: pnpm and yarn
+# repos break under npm, and a lockfile-backed repo should install
+# reproducibly (npm ci / frozen lockfile) rather than mutating the lock.
+
+def _js_repo(tmp_path, lockfile=None, scripts=None):
+    (tmp_path / "package.json").write_text(json.dumps(
+        {"scripts": scripts if scripts is not None else {"test": "vitest"}}),
+        encoding="utf-8")
+    if lockfile:
+        (tmp_path / lockfile).write_text("")
+    return tmp_path
+
+
+def test_pnpm_lockfile_gives_pnpm_commands(tmp_path):
+    repo = _js_repo(tmp_path, "pnpm-lock.yaml")
+    assert _commands(repo) == ("pnpm test", "pnpm install --frozen-lockfile")
+
+
+def test_yarn_lockfile_gives_yarn_commands(tmp_path):
+    repo = _js_repo(tmp_path, "yarn.lock")
+    assert _commands(repo) == ("yarn test", "yarn install --frozen-lockfile")
+
+
+def test_npm_lockfile_gives_npm_ci(tmp_path):
+    repo = _js_repo(tmp_path, "package-lock.json")
+    assert _commands(repo) == ("npm test", "npm ci")
+
+
+def test_no_lockfile_falls_back_to_npm_install(tmp_path):
+    repo = _js_repo(tmp_path)
+    assert _commands(repo) == ("npm test", "npm install")
+
+
+def test_lint_only_scripts_keep_runner(tmp_path):
+    repo = _js_repo(tmp_path, "pnpm-lock.yaml", scripts={"lint": "eslint ."})
+    assert _commands(repo) == ("pnpm run lint", "pnpm install --frozen-lockfile")
