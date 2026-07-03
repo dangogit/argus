@@ -501,17 +501,31 @@ def test_ok_run_resets_breaker_by_run_engine_not_snapshot_engine(conn, cfg_proje
     but the job itself always runs on "browser-use" per _bv_result. If the
     ok-path reset used the snapshot engine_name instead of run.engine, a
     browser_verify job finishing ok would delete a legitimately open breaker
-    for an engine it never called. The reset must key off run.engine."""
+    for an engine it never called. The reset must key off run.engine.
+
+    The breaker for codex must be CLOSED at claim time, otherwise worker.py's
+    top-of-function short-circuit (breaker open -> release, never call
+    run_job) fires before run_job is ever invoked, and the ok-path reset line
+    this test targets would never execute. So we trip the codex breaker
+    mid-run instead: inside the fake run_job, using the test's own `conn`
+    (committed immediately, visible to run_once's separate pool connection),
+    right before returning the ok RunRecord whose engine is "browser-use".
+    This proves two things: the job actually ran (not short-circuited), and
+    the ok-path reset keys off run.engine rather than the snapshot engine --
+    resetting "browser-use" must be a no-op for the codex breaker tripped here."""
     from argus.v2.queue import breaker
 
     _, rid = _open_request(conn, cfg_project, key="breaker-wrong-engine-1")
     _snap_engine(conn, rid, engine="codex")
-    breaker.trip(conn, "codex", "usage limit")
-    conn.commit()
-    # codex's breaker is open, but this job's snapshot happens to be codex
-    # while the RunRecord it gets back says a different engine ran.
+    # codex breaker is closed/healthy at claim time so run_once proceeds past
+    # the top-of-function short-circuit and actually calls run_job.
 
     def mismatched_ok_run_job(cfg, job, context, workdir):
+        # Trip the codex breaker mid-run, after claim but before the ok-path
+        # reset runs. Committed on the test's own connection so it is visible
+        # to run_once's separate connection.
+        breaker.trip(conn, "codex", "usage limit")
+        conn.commit()
         run = RunRecord(role=job.role, engine="browser-use", status="ok",
                         output="verified in browser")
         return run, {"output": "verified in browser"}, []
@@ -523,7 +537,10 @@ def test_ok_run_resets_breaker_by_run_engine_not_snapshot_engine(conn, cfg_proje
     monkeypatch.setattr(worker.job_exec, "run_job", mismatched_ok_run_job)
 
     assert worker.run_once(cfg_project, "w1") is True
-    # The codex breaker must still be open: this job never called codex.
+    status, _, _ = _job_row(conn, rid)
+    assert status == "done"  # proves the run path actually executed
+    # The codex breaker must still be open: resetting "browser-use" (run.engine)
+    # is a no-op for codex, since this job never called codex.
     assert breaker.open_until(conn, "codex") is not None
 
 
