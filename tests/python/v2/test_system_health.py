@@ -1,6 +1,10 @@
 import subprocess
 
+from psycopg.types.json import Json
+
 from argus.v2 import system_health
+from argus.v2.actions import executor
+from argus.v2.channels import send
 from argus.v2.config import loader
 from argus.v2.ingress import events
 from argus.v2.orchestrator import reconcile
@@ -249,6 +253,98 @@ def test_notify_findings_creates_general_action_with_cooldown(conn, tmp_path, mo
     assert row[1] == "fake:general"
     assert "Argus health: system issue detected" in row[2]
     assert "ARGUS_TEST_SUPPORT_TOKEN" in row[2]
+
+
+def test_repeated_same_day_disk_low_escalates_on_third_occurrence(conn, tmp_path):
+    path = _cfg_path(tmp_path)
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:abc123",
+        message="low disk space under /tmp: 4.0 GB free",
+        payload={"path": "/tmp", "free_gb": 4.0, "min_free_gb": 5.0},
+    )
+
+    assert system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0) == 1
+    assert system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0) == 1
+    assert system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0) == 1
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT severity, message, payload->>'same_day_occurrences' "
+            "FROM alerts WHERE fingerprint='disk:low:abc123' ORDER BY ts"
+        )
+        rows = cur.fetchall()
+
+    assert [row[0] for row in rows] == ["warn", "warn", "error"]
+    assert "3 same-day alerts" in rows[2][1]
+    assert rows[2][2] == "3"
+
+
+def test_low_disk_whatsapp_duplicate_with_same_evidence_is_suppressed(
+    conn, tmp_path, monkeypatch
+):
+    path = tmp_path / "argus.yaml"
+    path.write_text(
+        "company:\n"
+        "  name: c\n"
+        "  defaults:\n"
+        "    engine: { engine: echo }\n"
+        "    notifications: { quiet_hours: false }\n"
+        "teams:\n"
+        "  - name: general\n"
+        "    roles: [ { name: manager, kind: front, prompt: p } ]\n"
+        "    pipeline: { stages: [manager] }\n"
+        "    channels: [ { type: whatsapp, role: control, channel_id: general } ]\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(path)
+    payload = {
+        "text": "Argus health: system issue detected\n- low disk space",
+        "system_health_fingerprints": ["disk:low:abc123"],
+        "system_health_evidence_updated_at": "2026-07-03T10:00:00Z",
+    }
+    sent = []
+    monkeypatch.setattr(
+        send,
+        "deliver",
+        lambda _cfg, destination_ref, text: sent.append((destination_ref, text))
+        or f"wa-{len(sent)}",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO actions (team_id, type, risk, destination_ref,
+                                 idempotency_key, payload)
+            VALUES ('general','notify','reversible_internal','whatsapp:general',
+                    'disk-low-1', %s),
+                   ('general','notify','reversible_internal','whatsapp:general',
+                    'disk-low-2', %s)
+            """,
+            (Json(payload), Json(payload)),
+        )
+
+    executor.process_proposed(conn, cfg)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT provider_ref, payload->>'suppression_reason' "
+            "FROM actions ORDER BY idempotency_key"
+        )
+        rows = cur.fetchall()
+        cur.execute(
+            "SELECT count(*) FROM alerts "
+            "WHERE fingerprint='low-disk-notify-suppressed:disk:low:abc123'"
+        )
+        suppression_logs = cur.fetchone()[0]
+
+    assert sent == [("whatsapp:general", payload["text"])]
+    assert rows[0][0] == "wa-1"
+    assert rows[1][0] == "suppressed:low-disk:disk:low:abc123"
+    assert rows[1][1] == "duplicate low-disk notification"
+    assert suppression_logs == 1
 
 
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):

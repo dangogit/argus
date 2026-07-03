@@ -25,6 +25,7 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_DISK_LOW_ESCALATE_COUNT = 3
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -380,6 +381,7 @@ def notify_findings(
     new_findings: list[Finding] = []
     alert_ids: list[str] = []
     for finding in findings:
+        finding = _escalate_repeated_disk_finding(conn, finding)
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -398,6 +400,22 @@ def notify_findings(
 
     text = _format_notification(new_findings)
     idem = f"system_health:{alert_ids[0]}"
+    payload = {
+        "text": text,
+        "system_health_fingerprints": [
+            finding.fingerprint for finding in new_findings
+        ],
+        "system_health_evidence_updated_at": _evidence_updated_at(new_findings),
+        "system_health_findings": [
+            {
+                "severity": finding.severity,
+                "fingerprint": finding.fingerprint,
+                "message": finding.message,
+                "payload": finding.payload,
+            }
+            for finding in new_findings
+        ],
+    }
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -406,7 +424,7 @@ def notify_findings(
             VALUES ('general','notify','reversible_internal',%s,%s,%s)
             ON CONFLICT (idempotency_key) DO NOTHING
             """,
-            (destination, idem, Json({"text": text})),
+            (destination, idem, Json(payload)),
         )
         inserted = int(cur.rowcount)
     if inserted:
@@ -431,6 +449,45 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _escalate_repeated_disk_finding(
+    conn: psycopg.Connection,
+    finding: Finding,
+) -> Finding:
+    if finding.severity != "warn" or not finding.fingerprint.startswith("disk:low:"):
+        return finding
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM alerts
+            WHERE project='general'
+              AND fingerprint=%s
+              AND (ts AT TIME ZONE 'utc')::date = (now() AT TIME ZONE 'utc')::date
+            """,
+            (finding.fingerprint,),
+        )
+        prior_today = int(cur.fetchone()[0])
+    occurrence = prior_today + 1
+    if occurrence < _DISK_LOW_ESCALATE_COUNT:
+        return finding
+    payload = {**finding.payload, "same_day_occurrences": occurrence}
+    return Finding(
+        severity="error",
+        fingerprint=finding.fingerprint,
+        message=f"{finding.message} ({occurrence} same-day alerts)",
+        payload=payload,
+    )
+
+
+def _evidence_updated_at(findings: list[Finding]) -> str:
+    values = [
+        str(finding.payload.get("updated_at") or "")
+        for finding in findings
+        if finding.fingerprint.startswith("disk:low:")
+    ]
+    return next((value for value in values if value), "")
 
 
 def check_and_notify(

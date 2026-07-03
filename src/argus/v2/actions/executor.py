@@ -76,6 +76,7 @@ _CONVERSE_TEAM_EMAIL_ALLOWLIST = frozenset({
 # PR ops whose target repo + number must be set server-side (never trust the
 # model's repo/number: it could otherwise target any repo the gh token reaches).
 _PR_NUMBER_OPS = frozenset({"close_pr", "comment_pr", "reopen_pr"})
+_LOW_DISK_NOTIFY_DEDUPE_SECONDS = 600
 
 
 def _team_autonomy(cfg, team_id: str) -> Autonomy:
@@ -327,9 +328,17 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 return
         elif atype in ("reply", "notify") and cfg is not None and destination_ref:
             from argus.v2.channels import send as _send
-            text = (payload or {}).get("text", "")
-            channel_ref = _send.deliver(cfg, destination_ref, text)
-            provider_ref = channel_ref if channel_ref is not None else f"local:{action_id}"
+            payload = payload or {}
+            text = payload.get("text", "")
+            provider_ref = _suppress_duplicate_low_disk_whatsapp(
+                cur,
+                action_id=action_id,
+                destination_ref=destination_ref,
+                payload=payload,
+            )
+            if provider_ref is None:
+                channel_ref = _send.deliver(cfg, destination_ref, text)
+                provider_ref = channel_ref if channel_ref is not None else f"local:{action_id}"
         else:
             provider_ref = f"local:{action_id}"
         cur.execute(
@@ -345,6 +354,96 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 cur, action_id=action_id, team_id=team_id,
                 destination_ref=destination_ref, action_type=atype,
                 payload=payload or {}, provider_ref=provider_ref)
+
+
+def _suppress_duplicate_low_disk_whatsapp(
+    cur,
+    *,
+    action_id: str,
+    destination_ref: Optional[str],
+    payload: dict,
+) -> str | None:
+    if not str(destination_ref or "").startswith("whatsapp:"):
+        return None
+    fingerprint = _low_disk_fingerprint(payload)
+    if not fingerprint:
+        return None
+    evidence_updated_at = str(payload.get("system_health_evidence_updated_at") or "")
+    cur.execute(
+        """
+        SELECT id
+        FROM actions
+        WHERE id <> %s
+          AND type='notify'
+          AND destination_ref=%s
+          AND status='done'
+          AND provider_ref IS NOT NULL
+          AND provider_ref NOT LIKE 'suppressed:%%'
+          AND updated_at > now() - make_interval(secs => %s)
+          AND payload->'system_health_fingerprints' ? %s
+          AND COALESCE(payload->>'system_health_evidence_updated_at', '') = %s
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (
+            action_id,
+            destination_ref,
+            _LOW_DISK_NOTIFY_DEDUPE_SECONDS,
+            fingerprint,
+            evidence_updated_at,
+        ),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    provider_ref = f"suppressed:low-disk:{fingerprint}"
+    cur.execute(
+        """
+        UPDATE actions
+        SET payload=payload||%s::jsonb
+        WHERE id=%s
+        """,
+        (Json({
+            "suppressed": True,
+            "suppression_reason": "duplicate low-disk notification",
+            "suppressed_duplicate_of": str(row[0]),
+        }), action_id),
+    )
+    cur.execute(
+        """
+        INSERT INTO alerts (severity, project, fingerprint, message, channel, payload)
+        VALUES ('info','general',%s,%s,'log',%s)
+        """,
+        (
+            f"low-disk-notify-suppressed:{fingerprint}",
+            f"suppressed duplicate low-disk WhatsApp notification for {fingerprint}",
+            Json({
+                "action_id": action_id,
+                "duplicate_of": str(row[0]),
+                "destination_ref": destination_ref,
+                "evidence_updated_at": evidence_updated_at,
+            }),
+        ),
+    )
+    return provider_ref
+
+
+def _low_disk_fingerprint(payload: dict) -> str:
+    fingerprints = payload.get("system_health_fingerprints") or []
+    if isinstance(fingerprints, list):
+        for fingerprint in fingerprints:
+            value = str(fingerprint)
+            if value.startswith("disk:low:"):
+                return value
+    findings = payload.get("system_health_findings") or []
+    if isinstance(findings, list):
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            value = str(finding.get("fingerprint") or "")
+            if value.startswith("disk:low:"):
+                return value
+    return ""
 
 
 def _execute_status(cur, action_id: str, cfg, payload: dict, existing,
