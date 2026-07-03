@@ -176,11 +176,25 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             status = "done" if run.status == "ok" else "failed"
             jobs.finalize(conn, job.id, job.claim_token, status=status,
                           result=result, run=run, actions=actions)
-            if run.status == "ok" and engine_name:
-                breaker.reset(conn, engine_name)
+            if run.status == "ok" and run.engine:
+                # Reset by the engine that actually ran, not the snapshot
+                # engine: a browser_verify job's snapshot carries the real
+                # engine, but the job itself runs on "browser-use", so
+                # resetting by engine_name would clear a legitimately open
+                # breaker for an engine this job never called.
+                breaker.reset(conn, run.engine)
             conn.commit()
             return True
         except Exception as exc:
+            # A partial write before the raise can leave this non-autocommit
+            # connection's transaction aborted; clear it before the finalize
+            # below issues its own statements, or that finalize itself raises
+            # InFailedSqlTransaction and this exception propagates out,
+            # crash-looping the worker lane.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             message = f"Worker failed before completion: {type(exc).__name__}: {exc}"
             log.warning("job %s failed: %s team=%s request=%s",
                         job.id, message, job.team_id, job.request_id, exc_info=True,

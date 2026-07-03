@@ -1,7 +1,9 @@
 """setup_cmd in create_worktree must be bounded by a timeout. A hung install
-(stalled npm registry) otherwise blocks the worker thread until lease expiry,
-burning a job attempt per hang. On timeout the half-built worktree is removed
-so a retry re-runs setup from scratch (same contract as a non-zero exit)."""
+(stalled npm registry) otherwise hangs the worker thread indefinitely: with
+heartbeat renewal keeping the lease alive, the job never reaches lease expiry
+on its own, so nothing reclaims it. On timeout the half-built worktree is
+removed so a retry re-runs setup from scratch (same contract as a non-zero
+exit)."""
 from __future__ import annotations
 
 import subprocess

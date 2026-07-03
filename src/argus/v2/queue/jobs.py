@@ -156,13 +156,32 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
                         extra={"job_id": job_id})
             return False  # fenced out: stale token or already reclaimed
         attempt = row[0]
+        # DO UPDATE (not DO NOTHING): an outage release for this same attempt
+        # may have already inserted a placeholder run row (jobs.release does
+        # not bump attempts, so the eventual finalize reuses that attempt
+        # number). Without overwriting it here, the REAL final run -- output,
+        # cost_usd, status -- would be silently dropped behind the outage
+        # marker, corrupting cost accounting and retro learning. This is safe
+        # because we only reach this insert after the CAS UPDATE above
+        # succeeded, i.e. this call is the current lease holder.
         cur.execute(
             """
             INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
                               prompt, output, cost_source, cost_usd, status,
                               prompt_hash, ended_at)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
-            ON CONFLICT (job_id, attempt) DO NOTHING
+            ON CONFLICT (job_id, attempt) DO UPDATE SET
+                claim_token = EXCLUDED.claim_token,
+                role = EXCLUDED.role,
+                engine = EXCLUDED.engine,
+                model = EXCLUDED.model,
+                prompt = EXCLUDED.prompt,
+                output = EXCLUDED.output,
+                cost_source = EXCLUDED.cost_source,
+                cost_usd = EXCLUDED.cost_usd,
+                status = EXCLUDED.status,
+                prompt_hash = EXCLUDED.prompt_hash,
+                ended_at = now()
             """,
             (job_id, attempt, claim_token, run.role, run.engine, run.model,
              run.prompt, run.output, run.cost_source, run.cost_usd, run.status,

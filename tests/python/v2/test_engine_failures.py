@@ -437,6 +437,37 @@ def test_outage_release_cap_finalizes_failed(conn, cfg_project, monkeypatch):
     assert status == "failed"
 
 
+def test_open_breaker_past_cap_finalizes_failed_without_engine_call(conn, cfg_project,
+                                                                     monkeypatch):
+    """The skip-path cap branch: breaker open AND outage_releases already at
+    OUTAGE_RELEASE_CAP must finalize failed via _finalize_outage_exhausted
+    WITHOUT ever building a worktree or calling the engine (mirrors
+    test_open_breaker_short_circuits_without_engine_call, but for the
+    cap-exhausted branch instead of the still-releasing branch)."""
+    from argus.v2.queue import breaker
+
+    _, rid = _open_request(conn, cfg_project, key="breaker-cap-skip-1")
+    _snap_engine(conn, rid)
+    breaker.trip(conn, "codex", "usage limit")
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE jobs SET payload = jsonb_set(payload, '{outage_releases}',
+                   to_jsonb(%s::int)) WHERE request_id=%s""",
+            (worker.OUTAGE_RELEASE_CAP, rid))
+    conn.commit()
+
+    def explode(*a, **kw):
+        raise AssertionError("engine must not be called past the outage release cap")
+
+    monkeypatch.setattr(worker.job_exec, "run_job", explode)
+    monkeypatch.setattr(worker.workspace, "create_worktree", explode)
+
+    assert worker.run_once(cfg_project, "w1") is True
+    status, attempts, result = _job_row(conn, rid)
+    assert status == "failed"
+    assert "outage" in result["error"].lower()
+
+
 def test_successful_run_resets_breaker(conn, cfg_project, monkeypatch):
     from argus.v2.queue import breaker
 
@@ -462,3 +493,98 @@ def test_successful_run_resets_breaker(conn, cfg_project, monkeypatch):
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM engine_breaker WHERE engine='codex'")
         assert cur.fetchone()[0] == 0
+
+
+def test_ok_run_resets_breaker_by_run_engine_not_snapshot_engine(conn, cfg_project,
+                                                                  monkeypatch):
+    """A browser_verify job's exec_snapshot carries a real engine (e.g. codex),
+    but the job itself always runs on "browser-use" per _bv_result. If the
+    ok-path reset used the snapshot engine_name instead of run.engine, a
+    browser_verify job finishing ok would delete a legitimately open breaker
+    for an engine it never called. The reset must key off run.engine."""
+    from argus.v2.queue import breaker
+
+    _, rid = _open_request(conn, cfg_project, key="breaker-wrong-engine-1")
+    _snap_engine(conn, rid, engine="codex")
+    breaker.trip(conn, "codex", "usage limit")
+    conn.commit()
+    # codex's breaker is open, but this job's snapshot happens to be codex
+    # while the RunRecord it gets back says a different engine ran.
+
+    def mismatched_ok_run_job(cfg, job, context, workdir):
+        run = RunRecord(role=job.role, engine="browser-use", status="ok",
+                        output="verified in browser")
+        return run, {"output": "verified in browser"}, []
+
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree("/tmp", "b", "/tmp"))
+    monkeypatch.setattr(worker.workspace, "commit_all", lambda path, message: True)
+    monkeypatch.setattr(worker.workspace, "diff", lambda project, path: "some diff")
+    monkeypatch.setattr(worker.job_exec, "run_job", mismatched_ok_run_job)
+
+    assert worker.run_once(cfg_project, "w1") is True
+    # The codex breaker must still be open: this job never called codex.
+    assert breaker.open_until(conn, "codex") is not None
+
+
+def test_run_once_rolls_back_poisoned_transaction_before_finalize(conn, cfg_project,
+                                                                   monkeypatch):
+    """If run_job poisons the connection's transaction (e.g. a failing SQL
+    statement) and then raises, the except block's jobs.finalize must not
+    itself blow up with InFailedSqlTransaction. run_once must roll back the
+    aborted transaction before attempting to finalize, and still return True
+    with the job finalized failed.
+
+    run_once opens its OWN connection via pool.connect() (a separate
+    connection from this test's `conn` fixture), so poisoning must happen on
+    THAT connection, not the test's. We wrap pool.connect to capture the
+    connection run_once actually holds into `held`, so the monkeypatched
+    run_job can issue a deliberately failing statement on it (aborting its
+    transaction) before raising. This proves: (1) run_once's own connection
+    really does end up in an aborted transaction state from the bad
+    statement, and (2) run_once still recovers and finalizes the job failed
+    (via the FINDING 3 rollback) instead of propagating
+    InFailedSqlTransaction out of run_once. Verification reads back through
+    the test's own separate `conn`, which was never touched."""
+    import psycopg
+
+    from argus.v2.db import pool as pool_module
+
+    _, rid = _open_request(conn, cfg_project, key="poison1")
+
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree("/tmp", "b", "/tmp"))
+
+    # run_once calls pool.connect() for its own main connection AND spawns a
+    # heartbeat thread that calls pool.connect() again for its separate
+    # connection. Only the FIRST call is run_once's own connection (the one
+    # whose transaction state matters for finalize); capture that one only.
+    held: dict = {}
+    real_connect = pool_module.connect
+
+    def capturing_connect():
+        c = real_connect()
+        held.setdefault("conn", c)
+        return c
+
+    monkeypatch.setattr(worker.pool, "connect", capturing_connect)
+
+    def poison_then_raise(cfg, job, context, workdir):
+        # Issue a deliberately failing statement on run_once's OWN connection,
+        # aborting its transaction, then raise as if the engine call itself
+        # failed afterward.
+        held_conn = held["conn"]
+        try:
+            with held_conn.cursor() as cur:
+                cur.execute("SELECT 1/0")
+        except psycopg.Error:
+            pass  # transaction on held_conn is now aborted
+        raise RuntimeError("engine call failed after poisoning the transaction")
+
+    monkeypatch.setattr(worker.job_exec, "run_job", poison_then_raise)
+
+    assert worker.run_once(cfg_project, "w1") is True
+    status, attempts, result = _job_row(conn, rid)
+    assert status == "failed"
+    assert result["error_type"] == "RuntimeError"
+    assert "poisoning the transaction" in result["error"]

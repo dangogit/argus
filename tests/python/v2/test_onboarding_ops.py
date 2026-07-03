@@ -1216,7 +1216,8 @@ def test_go_live_pm_mode_passes_with_recent_pr_smoke(
 
 def _js_repo(tmp_path, lockfile=None, scripts=None):
     (tmp_path / "package.json").write_text(json.dumps(
-        {"scripts": scripts if scripts is not None else {"test": "vitest"}}))
+        {"scripts": scripts if scripts is not None else {"test": "vitest"}}),
+        encoding="utf-8")
     if lockfile:
         (tmp_path / lockfile).write_text("")
     return tmp_path
