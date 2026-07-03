@@ -189,6 +189,57 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
     return True
 
 
+def release(conn: psycopg.Connection, job_id: str, claim_token: str, *,
+            delay_seconds: int, run: RunRecord, reason: str) -> bool:
+    """Put a claimed/running job back to pending with a delay, WITHOUT
+    incrementing attempts. For engine outages: the failure belongs to the
+    engine, not the job, so the job's attempt budget must survive the outage
+    (2026-07-02: a codex usage limit permanently failed 14 requests in
+    minutes). Bumps payload.outage_releases so callers can cap total releases
+    for a job whose "outage" never heals (engine binary gone). CAS-fenced by
+    claim_token like finalize; records the run row for observability (the
+    (job_id, attempt) unique index keeps the first outage row per attempt)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs SET
+                status='pending',
+                claim_token=NULL, claimed_by=NULL, claimed_at=NULL,
+                lease_expires_at=NULL, heartbeat_at=NULL,
+                run_after=now() + make_interval(secs => %s),
+                payload = jsonb_set(COALESCE(payload, '{}'::jsonb),
+                                    '{outage_releases}',
+                                    to_jsonb(COALESCE((payload->>'outage_releases')::int, 0) + 1)),
+                updated_at=now()
+            WHERE id=%s AND claim_token=%s AND status IN ('claimed','running')
+            RETURNING attempts, (payload->>'outage_releases')::int
+            """,
+            (delay_seconds, job_id, claim_token),
+        )
+        row = cur.fetchone()
+        if not row:
+            log.warning("release fenced out for job %s (stale token or reclaimed)",
+                        job_id, extra={"job_id": str(job_id)})
+            return False
+        attempt, releases = row
+        cur.execute(
+            """
+            INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
+                              prompt, output, cost_source, cost_usd, status,
+                              prompt_hash, ended_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+            ON CONFLICT (job_id, attempt) DO NOTHING
+            """,
+            (job_id, attempt, claim_token, run.role, run.engine, run.model,
+             run.prompt, run.output, run.cost_source, run.cost_usd, run.status,
+             run.prompt_hash),
+        )
+    log.info("released job %s to pending (reason=%s delay=%ss releases=%s)",
+             job_id, reason, delay_seconds, releases,
+             extra={"job_id": str(job_id)})
+    return True
+
+
 def list_dead(conn: psycopg.Connection, *, limit: int = 50) -> list[dict]:
     """Dead jobs (exhausted max_attempts), newest first, with a best-effort
     last-error snippet pulled the same way the dead-job alert does: jobs.result
