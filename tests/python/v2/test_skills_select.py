@@ -119,10 +119,10 @@ def test_bundled_project_rules_tells_qa_to_classify_blockers():
         dirs=[BUNDLED_SKILLS],
         allow=["project-rules"],
     )
-    assert "environment blockers" in block
-    assert "auth blockers" in block
-    assert "access blockers" in block
-    assert "app-code regressions" in block
+    assert "environment blocker" in block
+    assert "auth blocker" in block
+    assert "access blocker" in block
+    assert "app-code regression" in block
 
 
 def test_bundled_support_email_triage_matches_vendor_notice():
