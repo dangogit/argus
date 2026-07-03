@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from threading import Event, Thread
 from urllib.parse import urlparse
 
+from argus.v2 import alerts
 from argus.v2.browser import (
     PreviewError,
     diff_touches_ui,
@@ -20,7 +21,7 @@ from argus.v2.context import assemble as ctx
 from argus.v2.db import pool
 from argus.v2.front import front
 from argus.v2.pm import memory as pm_memory
-from argus.v2.queue import jobs
+from argus.v2.queue import breaker, jobs
 from argus.v2.queue.models import RunRecord
 from argus.v2.roles import contracts
 from argus.v2.worker import exec as job_exec
@@ -31,6 +32,12 @@ log = logging.getLogger("argus.worker")
 
 _TEST_OUTPUT_LIMIT = 12000
 _HEARTBEAT_INTERVAL = 30  # seconds; module-level so tests can shrink it
+
+# A job may be outage-released this many times before it finalizes failed.
+# At >= 15 min per release this tolerates a 12h engine outage; past that the
+# "outage" is treated as permanent (binary gone, auth revoked) and the
+# request fails loudly like before.
+OUTAGE_RELEASE_CAP = 48
 
 
 def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> bool:
@@ -50,6 +57,22 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
         try:
             team = cfg.team(job.team_id) if job.team_id else None
             project = getattr(team, "project", None) if team else None
+
+            # Engine breaker: while the engine is known-down, do not build a
+            # worktree or call it; push the job past the breaker expiry. The
+            # release cap turns a never-healing "outage" into a real failure.
+            engine_name = str((job.exec_snapshot or {}).get("engine") or "")
+            outage_releases = int((job.payload or {}).get("outage_releases") or 0)
+            if engine_name:
+                until = breaker.open_until(conn, engine_name)
+                if until is not None:
+                    if outage_releases >= OUTAGE_RELEASE_CAP:
+                        _finalize_outage_exhausted(conn, job, engine_name)
+                    else:
+                        _release_for_outage(conn, job, engine_name, until,
+                                            "breaker open")
+                    conn.commit()
+                    return True
 
             # Research jobs have no request_id (read-only); give them a worktree
             # keyed by the event id so the researcher can read the repo.
@@ -135,9 +158,26 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                          extra={"job_id": job.id, "team_id": job.team_id,
                                 "request_id": job.request_id})
 
+            if run.status == "outage":
+                detail = str((result or {}).get("error") or "engine outage")
+                until = breaker.trip(conn, run.engine, detail[:500])
+                alerts.record(
+                    conn, severity="critical", project="engine",
+                    fingerprint=f"engine-outage-{run.engine}",
+                    message=(f"Engine {run.engine} outage; breaker open until "
+                             f"{until:%Y-%m-%d %H:%M %Z}. Jobs are queued, not "
+                             f"failed. Detail: {detail[:300]}"),
+                    cooldown_seconds=3600)
+                if outage_releases < OUTAGE_RELEASE_CAP:
+                    _release_for_outage(conn, job, run.engine, until, detail)
+                    conn.commit()
+                    return True
+                # Cap exhausted: permanent failure, fall through as before.
             status = "done" if run.status == "ok" else "failed"
             jobs.finalize(conn, job.id, job.claim_token, status=status,
                           result=result, run=run, actions=actions)
+            if run.status == "ok" and engine_name:
+                breaker.reset(conn, engine_name)
             conn.commit()
             return True
         except Exception as exc:
@@ -225,6 +265,39 @@ def _has_team_email_source(cfg, team_id: str | None) -> bool:
         if source.type in email_types and (source.scope == "team" or source.team in (None, team_id)):
             return True
     return False
+
+
+def _outage_delay_seconds(until) -> int:
+    """Sleep the job until the breaker expiry (never less than 60s so a clock
+    skew cannot busy-loop the queue)."""
+    remaining = (until - datetime.now(timezone.utc)).total_seconds()
+    return max(60, int(remaining) + 30)
+
+
+def _release_for_outage(conn, job, engine_name: str, until, detail: str) -> None:
+    snap = job.exec_snapshot or {}
+    run = RunRecord(role=job.role, engine=engine_name, model=snap.get("model"),
+                    prompt=None, output=f"engine outage, released until {until}: {detail}"[:2000],
+                    status="outage", prompt_hash=snap.get("prompt_hash"))
+    jobs.release(conn, job.id, job.claim_token,
+                 delay_seconds=_outage_delay_seconds(until), run=run,
+                 reason=f"engine outage: {engine_name}")
+
+
+def _finalize_outage_exhausted(conn, job, engine_name: str) -> None:
+    """Past the release cap the outage is treated as permanent: finalize
+    failed so pipeline.on_job_done fails the request loudly (pre-breaker
+    behavior)."""
+    snap = job.exec_snapshot or {}
+    message = (f"engine {engine_name} outage persisted past "
+               f"{OUTAGE_RELEASE_CAP} releases; giving up")
+    run = RunRecord(role=job.role, engine=engine_name, model=snap.get("model"),
+                    prompt=None, output=message, status="outage",
+                    prompt_hash=snap.get("prompt_hash"))
+    result = {"error": message,
+              "parsed": {"ready": False, "analysis": message}}
+    jobs.finalize(conn, job.id, job.claim_token, status="failed",
+                  result=result, run=run, actions=[])
 
 
 def _format_test_context(command: str, exit_code: int, stdout: str, stderr: str) -> str:

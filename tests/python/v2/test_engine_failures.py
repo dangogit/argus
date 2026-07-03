@@ -17,11 +17,16 @@ Two distinct failure paths exist in this codebase and must not be conflated:
 
 2. EngineOutageError is caught INSIDE exec.run_job itself and converted into
    a normal (non-raising) return: RunRecord(status="outage") with an "error"
-   key in the result dict. worker.run_once then finalizes the job with
-   status="failed" (run.status != "ok"; see run_once:
-   `status = "done" if run.status == "ok" else "failed"`).
-   So an outage also ends up 'failed', but via the normal finalize path
-   (with a job result attached), not the exception handler.
+   key in the result dict. worker.run_once now treats this as a recoverable
+   engine-level failure, not a job-level one: it trips the engine circuit
+   breaker, emits one deduplicated critical alert, and releases the job back
+   to pending with a delay instead of finalizing it as "failed" (the job's
+   attempt budget is preserved via jobs.release, not burned). While the
+   breaker is open for an engine, any claimed job on that engine is released
+   immediately, before a worktree is built or the engine is called. Past
+   worker.OUTAGE_RELEASE_CAP releases the outage is treated as permanent and
+   the job finalizes "failed" as before. A successful run on a previously
+   tripped engine closes the breaker via breaker.reset.
 
 Tests inject a fake engine by monkeypatching worker.job_exec.run_job (or, for
 the EngineOutageError case, exec.run_agent), the same seam already used by
@@ -254,10 +259,11 @@ def test_engine_outage_error_finalizes_as_failed_with_outage_run_status(conn, cf
                                                                         monkeypatch):
     """EngineOutageError is caught inside exec.run_job (not worker.run_once) and
     turned into a normal (non-raising) return: RunRecord(status='outage') plus
-    an 'error' key in the result. worker.run_once then finalizes the JOB as
-    'failed' (run.status != 'ok'), and the run row itself records status
-    'outage' as designed -- distinct from the 'failed' run status used by the
-    in-process exception handler."""
+    an 'error' key in the result. worker.run_once now treats this as a
+    recoverable engine-level failure: the job is released back to 'pending'
+    (not finalized 'failed'), and the run row recorded by jobs.release still
+    carries status 'outage' -- distinct from the 'failed' run status used by
+    the in-process exception handler."""
     _, rid = _open_request(conn, cfg_project, key="outage1")
 
     def fake_run_agent(engine, prompt):
@@ -271,8 +277,8 @@ def test_engine_outage_error_finalizes_as_failed_with_outage_run_status(conn, cf
 
     assert worker.run_once(cfg_project, "w1") is True
     status, attempts, result = _job_row(conn, rid)
-    assert status == "failed"
-    assert result["error"] == "claude-code CLI not found on PATH"
+    assert status == "pending"
+    assert attempts == 0
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM runs WHERE job_id=(SELECT id FROM jobs "
                     "WHERE request_id=%s)", (rid,))
@@ -344,3 +350,115 @@ def test_no_actions_written_on_failed_attempt_then_exactly_once_on_success(conn,
                  result={}, run=run, actions=actions)
     conn.commit()
     assert _action_count(conn, rid) == 1  # still exactly once
+
+
+def _snap_engine(conn, rid, engine="codex"):
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE jobs SET exec_snapshot =
+                   jsonb_set(COALESCE(exec_snapshot,'{}'::jsonb), '{engine}', to_jsonb(%s::text))
+               WHERE request_id=%s""",
+            (engine, rid))
+    conn.commit()
+
+
+def _outage_run_job(cfg, job, context, workdir):
+    run = RunRecord(role=job.role, engine="codex", status="outage",
+                    prompt="p", output="You've hit your usage limit.")
+    return run, {"error": "You've hit your usage limit."}, []
+
+
+def test_engine_outage_releases_job_and_trips_breaker(conn, cfg_project, monkeypatch):
+    """An EngineOutageError run must NOT permanently fail the request: the job
+    is released back to pending with a delay, attempts stay at 0, the breaker
+    opens for the engine, and the request stays open."""
+    from argus.v2.queue import breaker
+
+    _, rid = _open_request(conn, cfg_project, key="outage-release-1")
+    _snap_engine(conn, rid)
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree("/tmp", "b", "/tmp"))
+    monkeypatch.setattr(worker.workspace, "commit_all", lambda path, message: False)
+    monkeypatch.setattr(worker.workspace, "diff", lambda project, path: "")
+    monkeypatch.setattr(worker.job_exec, "run_job", _outage_run_job)
+
+    assert worker.run_once(cfg_project, "w1") is True
+    status, attempts, result = _job_row(conn, rid)
+    assert status == "pending"
+    assert attempts == 0
+    assert breaker.open_until(conn, "codex") is not None
+
+    reconcile.sweep_once(conn, cfg_project)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] != "failed"
+
+
+def test_open_breaker_short_circuits_without_engine_call(conn, cfg_project, monkeypatch):
+    """While the breaker is open the worker must not call the engine (or build
+    a worktree): the job is released until the breaker expiry."""
+    from argus.v2.queue import breaker
+
+    _, rid = _open_request(conn, cfg_project, key="breaker-skip-1")
+    _snap_engine(conn, rid)
+    breaker.trip(conn, "codex", "usage limit")
+    conn.commit()
+
+    def explode(*a, **kw):
+        raise AssertionError("engine must not be called while breaker is open")
+
+    monkeypatch.setattr(worker.job_exec, "run_job", explode)
+    monkeypatch.setattr(worker.workspace, "create_worktree", explode)
+
+    assert worker.run_once(cfg_project, "w1") is True
+    status, attempts, _ = _job_row(conn, rid)
+    assert status == "pending"
+    assert attempts == 0
+
+
+def test_outage_release_cap_finalizes_failed(conn, cfg_project, monkeypatch):
+    """A job whose outage never heals (engine binary gone) must not loop
+    forever: past OUTAGE_RELEASE_CAP it finalizes failed like before."""
+    _, rid = _open_request(conn, cfg_project, key="outage-cap-1")
+    _snap_engine(conn, rid)
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE jobs SET payload = jsonb_set(payload, '{outage_releases}',
+                   to_jsonb(%s::int)) WHERE request_id=%s""",
+            (worker.OUTAGE_RELEASE_CAP, rid))
+    conn.commit()
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree("/tmp", "b", "/tmp"))
+    monkeypatch.setattr(worker.job_exec, "run_job", _outage_run_job)
+
+    assert worker.run_once(cfg_project, "w1") is True
+    status, _, _ = _job_row(conn, rid)
+    assert status == "failed"
+
+
+def test_successful_run_resets_breaker(conn, cfg_project, monkeypatch):
+    from argus.v2.queue import breaker
+
+    _, rid = _open_request(conn, cfg_project, key="breaker-reset-1")
+    _snap_engine(conn, rid)
+    breaker.trip(conn, "codex", "usage limit")
+    with conn.cursor() as cur:  # expire the cooldown so the job runs now
+        cur.execute("UPDATE engine_breaker SET open_until = now() - interval '1 second'")
+    conn.commit()
+
+    def ok_run_job(cfg, job, context, workdir):
+        run = RunRecord(role=job.role, engine="codex", status="ok",
+                        output="ANALYSIS: fine")
+        return run, {"output": "ANALYSIS: fine"}, []
+
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree("/tmp", "b", "/tmp"))
+    monkeypatch.setattr(worker.workspace, "commit_all", lambda path, message: True)
+    monkeypatch.setattr(worker.workspace, "diff", lambda project, path: "some diff")
+    monkeypatch.setattr(worker.job_exec, "run_job", ok_run_job)
+
+    assert worker.run_once(cfg_project, "w1") is True
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM engine_breaker WHERE engine='codex'")
+        assert cur.fetchone()[0] == 0
