@@ -25,6 +25,7 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_DISK_LOW_NOTIFY_DEDUPE_SECONDS = 300
 _DISK_LOW_ESCALATE_COUNT = 3
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
@@ -409,6 +410,10 @@ def notify_findings(
         }
         for finding in new_findings
     ]
+    if _suppress_duplicate_disk_low_notify(
+        conn, destination, new_findings, finding_payload, _DISK_LOW_NOTIFY_DEDUPE_SECONDS
+    ):
+        return 0
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -434,6 +439,69 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _suppress_duplicate_disk_low_notify(
+    conn: psycopg.Connection,
+    destination: str,
+    findings: list[Finding],
+    finding_payload: list[dict[str, Any]],
+    window_seconds: int,
+) -> bool:
+    disk_findings = [
+        finding for finding in findings
+        if finding.fingerprint.startswith("disk:low:")
+    ]
+    if not disk_findings:
+        return False
+    fingerprints = {finding.fingerprint for finding in disk_findings}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT payload
+            FROM actions
+            WHERE team_id='general'
+              AND type='notify'
+              AND destination_ref=%s
+              AND created_at > now() - make_interval(secs => %s)
+            ORDER BY created_at DESC
+            """,
+            (destination, int(window_seconds)),
+        )
+        recent_payloads = [row[0] or {} for row in cur.fetchall()]
+    for payload in recent_payloads:
+        for item in payload.get("findings") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("fingerprint") or "") in fingerprints:
+                _record_disk_low_notify_suppression(
+                    conn, destination, disk_findings, finding_payload
+                )
+                return True
+    return False
+
+
+def _record_disk_low_notify_suppression(
+    conn: psycopg.Connection,
+    destination: str,
+    findings: list[Finding],
+    finding_payload: list[dict[str, Any]],
+) -> None:
+    fingerprints = sorted({finding.fingerprint for finding in findings})
+    alerts.record(
+        conn,
+        severity="info",
+        project="general",
+        fingerprint=f"disk:low:notify-suppressed:{_digest('|'.join(fingerprints))}",
+        message="suppressed duplicate low disk notification",
+        channel="log",
+        payload={
+            "destination": destination,
+            "fingerprints": fingerprints,
+            "findings": finding_payload,
+        },
+        cooldown_seconds=0,
+    )
 
 
 def _maybe_escalate_disk_low(conn: psycopg.Connection, finding: Finding) -> Finding:
