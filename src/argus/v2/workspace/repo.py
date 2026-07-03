@@ -105,8 +105,14 @@ def create_worktree(project, request_id: str) -> Worktree:
     wt = Worktree(path=str(path), branch=branch, repo=project.repo)
     if getattr(project, "setup_cmd", None):
         # operator-authored config (single-tenant trusted instance), like test_cmd
-        r = subprocess.run(project.setup_cmd, shell=True, cwd=str(path),
-                           capture_output=True, text=True)
+        timeout = getattr(project, "setup_timeout_seconds", None) or 900
+        try:
+            r = subprocess.run(project.setup_cmd, shell=True, cwd=str(path),
+                               capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            remove(wt)
+            raise RuntimeError(
+                f"setup_cmd timed out after {timeout}s: {project.setup_cmd}")
         if r.returncode != 0:
             # Setup failed: tear down the half-built worktree so a retry runs
             # setup again from scratch, and fail loudly. A silently-unsetup
