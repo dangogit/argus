@@ -22,6 +22,9 @@ Candidate rules:
 - confidence: 0.0 to 1.0
 - impact: 1 to 10
 - theme: kebab-case root-cause slug shared with team retros
+- recurring process-edit candidates must group the same-theme evidence under
+  one owner, one affected flow, and one smallest fix recommendation before
+  repair work starts
 - company_eligible: true only when the same theme appears in at least 2 teams
   or the candidate has at least 4 evidence ids
 

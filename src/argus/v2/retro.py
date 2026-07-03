@@ -771,6 +771,8 @@ def _auto_change_text(*, team_id: str, typ: str, statement: str,
         f"Change: {statement}",
         f"Trigger: {trigger}",
         f"Evidence: {evidence}",
+        "Before repair work: group same-theme evidence under one owner, one "
+        "affected flow, and the smallest fix recommendation.",
         "Implement minimal internal change. Do not merge, deploy, send messages, "
         "or change secrets.",
     ])

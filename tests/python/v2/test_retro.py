@@ -184,6 +184,28 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_auto_change_text_requires_grouping_before_repair():
+    text = retro._auto_change_text(
+        team_id=retro.COMPANY_TEAM_ID,
+        typ="process-edit",
+        statement="Group recurring same-theme findings before repair work",
+        trigger="duplicate bug reports and repeated low-disk alerts",
+        payload={
+            "evidence_run_ids": [
+                "disk:low:2a969bc5353e",
+                "supabase-tadam-agents-bug_reports-c664a210-dd41-459e-aa4e-9489b05f135f",
+                "7e457f84-8f4d-496a-b0f2-ef30d64f667f",
+                "supabase-tadam-agents-bug_reports-284b2295-9309-410f-b167-8fc3a16736d6",
+            ],
+        },
+    )
+
+    assert "Before repair work" in text
+    assert "one owner, one affected flow" in text
+    assert "smallest fix recommendation" in text
+    assert "disk:low:2a969bc5353e" in text
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
