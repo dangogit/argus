@@ -397,7 +397,7 @@ def notify_findings(
         return 0
 
     text = _format_notification(new_findings)
-    idem = f"system_health:{alert_ids[0]}"
+    idem = _notification_idempotency_key(new_findings[0], alert_ids[0])
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -431,6 +431,13 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _notification_idempotency_key(finding: Finding, alert_id: str) -> str:
+    updated_at = finding.payload.get("updated_at")
+    if updated_at:
+        return f"system_health:{finding.fingerprint}:{updated_at}"
+    return f"system_health:{alert_id}"
 
 
 def check_and_notify(

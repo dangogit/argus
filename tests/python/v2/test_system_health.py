@@ -251,6 +251,48 @@ def test_notify_findings_creates_general_action_with_cooldown(conn, tmp_path, mo
     assert "ARGUS_TEST_SUPPORT_TOKEN" in row[2]
 
 
+def test_notify_findings_dedups_same_low_disk_evidence_updated_at(conn, tmp_path, monkeypatch):
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:argus-run",
+        message="low disk space under /Users/danielmini/argus-run: 3.4 GB free",
+        payload={
+            "path": "/Users/danielmini/argus-run",
+            "free_gb": 3.4,
+            "min_free_gb": 5.0,
+            "updated_at": "2026-07-02T22:18:45Z",
+        },
+    )
+
+    inserted = system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0)
+    repeated = system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0)
+    conn.commit()
+
+    assert inserted == 1
+    assert repeated == 0
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM actions WHERE idempotency_key LIKE 'system_health:%'"
+        )
+        assert cur.fetchone()[0] == 1
+
+
+def test_notification_idempotency_key_uses_fingerprint_and_updated_at():
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:argus-run",
+        message="low disk space under /Users/danielmini/argus-run: 3.4 GB free",
+        payload={"updated_at": "2026-07-02T22:18:45Z"},
+    )
+
+    assert system_health._notification_idempotency_key(finding, "alert-1") == (
+        "system_health:disk:low:argus-run:2026-07-02T22:18:45Z"
+    )
+
+
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
     path = tmp_path / "argus.yaml"
     path.write_text(
