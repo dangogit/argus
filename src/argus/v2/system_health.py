@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import ctypes
+import logging
 import struct
 import os
 import plistlib
@@ -23,8 +24,11 @@ from argus.v2.config import loader
 from argus.v2.config.schema import Config
 from argus.v2.orchestrator import context_router
 
+log = logging.getLogger(__name__)
+
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_LOW_DISK_DEDUPE_SECONDS = 300
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -380,6 +384,8 @@ def notify_findings(
     new_findings: list[Finding] = []
     alert_ids: list[str] = []
     for finding in findings:
+        if _suppress_duplicate_low_disk(conn, finding):
+            continue
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -431,6 +437,66 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _suppress_duplicate_low_disk(
+    conn: psycopg.Connection,
+    finding: Finding,
+    *,
+    window_seconds: int = _LOW_DISK_DEDUPE_SECONDS,
+) -> bool:
+    if not finding.fingerprint.startswith("disk:low:"):
+        return False
+    evidence_key, evidence_value = _low_disk_evidence(finding.payload)
+    if evidence_key is None:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text FROM alerts
+            WHERE project='general'
+              AND fingerprint=%s
+              AND channel='whatsapp'
+              AND ts > now() - make_interval(secs => %s)
+              AND payload->>%s = %s
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (finding.fingerprint, int(window_seconds), evidence_key, evidence_value),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return False
+    alerts.record(
+        conn,
+        severity="info",
+        project="general",
+        fingerprint=f"dedupe:low-disk:{_digest(finding.fingerprint + ':' + evidence_value)}",
+        message=f"suppressed duplicate low disk notification: {finding.fingerprint}",
+        channel="log",
+        payload={
+            "suppressed_fingerprint": finding.fingerprint,
+            "matched_alert_id": row[0],
+            "evidence_key": evidence_key,
+            "evidence_value": evidence_value,
+            "window_seconds": window_seconds,
+        },
+    )
+    log.info(
+        "suppressed duplicate low disk notification fingerprint=%s evidence_key=%s evidence_value=%s",
+        finding.fingerprint,
+        evidence_key,
+        evidence_value,
+    )
+    return True
+
+
+def _low_disk_evidence(payload: dict[str, Any]) -> tuple[str | None, str]:
+    if "updated_at" in payload:
+        return "updated_at", str(payload["updated_at"])
+    if "free_gb" in payload:
+        return "free_gb", str(payload["free_gb"])
+    return None, ""
 
 
 def check_and_notify(

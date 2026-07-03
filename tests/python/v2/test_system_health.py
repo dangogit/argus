@@ -6,7 +6,7 @@ from argus.v2.ingress import events
 from argus.v2.orchestrator import reconcile
 
 
-def _cfg_path(tmp_path, *, secret_ref=""):
+def _cfg_path(tmp_path, *, secret_ref="", channel_type="fake"):
     secret = f", secret_ref: \"{secret_ref}\"" if secret_ref else ""
     path = tmp_path / "argus.yaml"
     path.write_text(
@@ -19,7 +19,7 @@ def _cfg_path(tmp_path, *, secret_ref=""):
         "  - name: general\n"
         "    roles: [ { name: manager, kind: front, prompt: p } ]\n"
         "    pipeline: { stages: [manager] }\n"
-        f"    channels: [ {{ type: fake, role: control, channel_id: general{secret} }} ]\n",
+        f"    channels: [ {{ type: {channel_type}, role: control, channel_id: general{secret} }} ]\n",
         encoding="utf-8",
     )
     return path
@@ -249,6 +249,45 @@ def test_notify_findings_creates_general_action_with_cooldown(conn, tmp_path, mo
     assert row[1] == "fake:general"
     assert "Argus health: system issue detected" in row[2]
     assert "ARGUS_TEST_SUPPORT_TOKEN" in row[2]
+
+
+def test_notify_findings_suppresses_duplicate_low_disk_with_same_updated_at(
+    conn, tmp_path, monkeypatch
+):
+    path = _cfg_path(tmp_path, channel_type="whatsapp")
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:abc123",
+        message="low disk space under /tmp: 1.0 GB free",
+        payload={
+            "path": "/tmp",
+            "free_gb": 1.0,
+            "min_free_gb": 5.0,
+            "updated_at": "2026-07-03T08:00:00Z",
+        },
+    )
+
+    inserted = system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0)
+    repeated = system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0)
+    conn.commit()
+
+    assert inserted == 1
+    assert repeated == 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE destination_ref='whatsapp:general'")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT message, payload->>'suppressed_fingerprint', payload->>'evidence_key' "
+            "FROM alerts WHERE channel='log' AND fingerprint LIKE 'dedupe:low-disk:%'"
+        )
+        row = cur.fetchone()
+    assert row == (
+        "suppressed duplicate low disk notification: disk:low:abc123",
+        "disk:low:abc123",
+        "updated_at",
+    )
 
 
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
