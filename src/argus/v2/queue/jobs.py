@@ -228,10 +228,18 @@ def release(conn: psycopg.Connection, job_id: str, claim_token: str, *,
                 run_after=now() + make_interval(secs => %s),
                 payload = jsonb_set(COALESCE(payload, '{}'::jsonb),
                                     '{outage_releases}',
-                                    to_jsonb(COALESCE((payload->>'outage_releases')::int, 0) + 1)),
+                                    to_jsonb(COALESCE(CASE
+                                        WHEN payload->>'outage_releases' ~ '^[0-9]+$'
+                                        THEN (payload->>'outage_releases')::int
+                                        ELSE NULL
+                                    END, 0) + 1)),
                 updated_at=now()
             WHERE id=%s AND claim_token=%s AND status IN ('claimed','running')
-            RETURNING attempts, (payload->>'outage_releases')::int
+            RETURNING attempts, CASE
+                WHEN payload->>'outage_releases' ~ '^[0-9]+$'
+                THEN (payload->>'outage_releases')::int
+                ELSE 0
+            END
             """,
             (delay_seconds, job_id, claim_token),
         )

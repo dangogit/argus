@@ -2,7 +2,9 @@
 lives under <run_root>/worktrees/<request_id> and is removed on terminal."""
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,21 +108,32 @@ def create_worktree(project, request_id: str) -> Worktree:
     if getattr(project, "setup_cmd", None):
         # operator-authored config (single-tenant trusted instance), like test_cmd
         timeout = getattr(project, "setup_timeout_seconds", None) or 900
+        # subprocess.run(timeout=...) only kills the shell wrapper; a spawner
+        # like `npm ci` leaves its children as orphans that keep running after
+        # "timeout", defeating the feature. Popen + start_new_session puts the
+        # whole tree in its own process group so we can kill it as a unit.
+        proc = subprocess.Popen(project.setup_cmd, shell=True, cwd=str(path),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
         try:
-            r = subprocess.run(project.setup_cmd, shell=True, cwd=str(path),
-                               capture_output=True, text=True, timeout=timeout)
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # process (and its group) already gone
+            proc.communicate()  # reap
             remove(wt)
             raise RuntimeError(
                 f"setup_cmd timed out after {timeout}s: {project.setup_cmd}")
-        if r.returncode != 0:
+        if proc.returncode != 0:
             # Setup failed: tear down the half-built worktree so a retry runs
             # setup again from scratch, and fail loudly. A silently-unsetup
             # worktree makes qa run against a broken tree with no signal.
             remove(wt)
             raise RuntimeError(
-                f"setup_cmd failed (exit {r.returncode}): "
-                f"{r.stderr.strip() or r.stdout.strip()}")
+                f"setup_cmd failed (exit {proc.returncode}): "
+                f"{stderr.strip() or stdout.strip()}")
     return wt
 
 

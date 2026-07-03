@@ -383,7 +383,7 @@ def test_engine_outage_releases_job_and_trips_breaker(conn, cfg_project, monkeyp
     monkeypatch.setattr(worker.job_exec, "run_job", _outage_run_job)
 
     assert worker.run_once(cfg_project, "w1") is True
-    status, attempts, result = _job_row(conn, rid)
+    status, attempts, _ = _job_row(conn, rid)
     assert status == "pending"
     assert attempts == 0
     assert breaker.open_until(conn, "codex") is not None

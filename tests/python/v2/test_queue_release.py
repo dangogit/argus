@@ -83,6 +83,34 @@ def test_release_is_fenced_by_claim_token(conn):
     assert status == "claimed"    # untouched by the stale caller
 
 
+def test_release_treats_garbage_outage_releases_payload_as_zero(conn):
+    """A pre-existing payload.outage_releases that is not numeric (e.g. hand-
+    edited or corrupted data) must not abort the release UPDATE. The garbage
+    value is treated as 0, so the release still succeeds and bumps the
+    counter to 1."""
+    jid = _enqueue(conn, key="rel-garbage-1")
+    job = jobs.claim(conn, "w1")
+    conn.commit()
+    assert job is not None
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE jobs SET payload = jsonb_set(payload, '{outage_releases}',
+                                                    '"garbage"'::jsonb)
+               WHERE id=%s""",
+            (jid,),
+        )
+    conn.commit()
+
+    ok = jobs.release(conn, job.id, job.claim_token, delay_seconds=60,
+                      run=_run(), reason="engine outage")
+    conn.commit()
+    assert ok is True
+    status, attempts, token, releases, delayed = _row(conn, jid)
+    assert status == "pending"
+    assert releases == 1
+
+
 def test_finalize_after_release_overwrites_outage_run_row_not_shadowed(conn):
     """jobs.release inserts a runs row at (job_id, attempt) with ON CONFLICT DO
     NOTHING, and attempts never increments between release and the eventual

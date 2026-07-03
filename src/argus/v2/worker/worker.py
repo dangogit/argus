@@ -62,7 +62,8 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             # worktree or call it; push the job past the breaker expiry. The
             # release cap turns a never-healing "outage" into a real failure.
             engine_name = str((job.exec_snapshot or {}).get("engine") or "")
-            outage_releases = int((job.payload or {}).get("outage_releases") or 0)
+            outage_releases = _safe_int(
+                (job.payload or {}).get("outage_releases"), default=0)
             if engine_name:
                 until = breaker.open_until(conn, engine_name)
                 if until is not None:
@@ -279,6 +280,18 @@ def _has_team_email_source(cfg, team_id: str | None) -> bool:
         if source.type in email_types and (source.scope == "team" or source.team in (None, team_id)):
             return True
     return False
+
+
+def _safe_int(value, *, default: int) -> int:
+    """Parse a possibly non-numeric payload value (e.g. a pre-existing
+    outage_releases key that isn't an int) without raising. A garbage value
+    is treated as the default rather than crashing the job."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _outage_delay_seconds(until) -> int:

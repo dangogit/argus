@@ -6,7 +6,9 @@ removed so a retry re-runs setup from scratch (same contract as a non-zero
 exit)."""
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,6 +42,40 @@ def test_setup_cmd_timeout_raises_and_removes_worktree(tmp_path):
     with pytest.raises(RuntimeError, match="setup_cmd timed out"):
         workspace_repo.create_worktree(project, "req-timeout-1")
     assert not (workspace_repo._wt_path("req-timeout-1")).exists()
+
+
+def test_setup_cmd_timeout_kills_grandchild_process(tmp_path):
+    """Proves the fix for the real bug: subprocess.run(timeout=...) only kills
+    the shell wrapper, leaving a grandchild (e.g. an npm-spawned install)
+    running as an orphan after "timeout". setup_cmd here backgrounds a
+    grandchild sleep and writes its pid to a file; after the RuntimeError we
+    poll briefly for that pid to be gone, proving the whole process group
+    (not just the shell) was killed."""
+    repo = _mk_repo(tmp_path)
+    pid_file = tmp_path / "grandchild.pid"
+    setup_cmd = (
+        f"sh -c 'sleep 30 & echo $! > {pid_file}; wait'"
+    )
+    project = _project(repo, setup_cmd=setup_cmd, setup_timeout_seconds=1)
+    with pytest.raises(RuntimeError, match="setup_cmd timed out"):
+        workspace_repo.create_worktree(project, "req-timeout-2")
+    assert not (workspace_repo._wt_path("req-timeout-2")).exists()
+
+    assert pid_file.exists()
+    grandchild_pid = int(pid_file.read_text().strip())
+
+    deadline = time.monotonic() + 3
+    gone = False
+    while time.monotonic() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            gone = True
+            break
+        time.sleep(0.1)
+    assert gone, (
+        f"grandchild pid {grandchild_pid} survived setup_cmd timeout; "
+        "only the shell wrapper was killed, not the process group")
 
 
 def test_setup_cmd_within_timeout_succeeds(tmp_path):
