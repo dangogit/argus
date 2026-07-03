@@ -25,6 +25,7 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_DISK_LOW_ESCALATE_OCCURRENCES = 3
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -380,6 +381,7 @@ def notify_findings(
     new_findings: list[Finding] = []
     alert_ids: list[str] = []
     for finding in findings:
+        finding = _escalate_repeated_disk_low(conn, finding)
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -431,6 +433,38 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _escalate_repeated_disk_low(conn: psycopg.Connection, finding: Finding) -> Finding:
+    if finding.severity != "warn" or not finding.fingerprint.startswith("disk:low:"):
+        return finding
+    occurrences = _same_day_alert_count(conn, "general", finding.fingerprint) + 1
+    if occurrences < _DISK_LOW_ESCALATE_OCCURRENCES:
+        return finding
+    return Finding(
+        severity="error",
+        fingerprint=finding.fingerprint,
+        message=(
+            f"{finding.message}; repeated {occurrences} times today, escalating"
+        ),
+        payload={**finding.payload, "same_day_occurrences": occurrences},
+    )
+
+
+def _same_day_alert_count(
+    conn: psycopg.Connection,
+    project: str,
+    fingerprint: str,
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) FROM alerts
+            WHERE project=%s AND fingerprint=%s AND ts::date = now()::date
+            """,
+            (project, fingerprint),
+        )
+        return int(cur.fetchone()[0])
 
 
 def check_and_notify(

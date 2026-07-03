@@ -251,6 +251,48 @@ def test_notify_findings_creates_general_action_with_cooldown(conn, tmp_path, mo
     assert "ARGUS_TEST_SUPPORT_TOKEN" in row[2]
 
 
+def test_notify_findings_escalates_disk_low_after_three_same_day_occurrences(
+    conn,
+    tmp_path,
+    monkeypatch,
+):
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:test-root",
+        message="low disk space under /tmp: 4.0 GB free",
+        payload={"path": "/tmp", "free_gb": 4.0, "min_free_gb": 5.0},
+    )
+
+    assert system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0) == 1
+    assert system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0) == 1
+    inserted = system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0)
+    conn.commit()
+
+    assert inserted == 1
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT severity, payload->>'same_day_occurrences', message "
+            "FROM alerts WHERE fingerprint='disk:low:test-root' "
+            "ORDER BY ts, severity"
+        )
+        rows = cur.fetchall()
+        cur.execute(
+            "SELECT count(*) FROM actions "
+            "WHERE idempotency_key LIKE 'system_health:%%' "
+            "AND payload->>'text' LIKE %s",
+            ("%repeated 3 times today, escalating%",),
+        )
+        escalated_actions = cur.fetchone()[0]
+
+    assert [row[0] for row in rows] == ["warn", "warn", "error"]
+    assert rows[-1][1] == "3"
+    assert "repeated 3 times today, escalating" in rows[-1][2]
+    assert escalated_actions == 1
+
+
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
     path = tmp_path / "argus.yaml"
     path.write_text(
