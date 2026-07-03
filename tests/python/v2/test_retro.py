@@ -184,6 +184,111 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_synthesize_groups_recurring_same_theme_before_repair(conn):
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="tadam-agents", retro_day=day, candidates=[
+        {
+            "type": "process-edit",
+            "statement": "Fix gender classification once at the shared parser.",
+            "trigger": "duplicate tadam-agents gender-classification bug report A",
+            "evidence_run_ids": ["gender-a"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "gender-classification",
+        },
+        {
+            "type": "process-edit",
+            "statement": "Patch the downstream caller for gender classification.",
+            "trigger": "duplicate tadam-agents gender-classification bug report B",
+            "evidence_run_ids": ["gender-b"],
+            "confidence": 0.8,
+            "impact": 7,
+            "theme": "gender-classification",
+        },
+        {
+            "type": "infra-flag",
+            "statement": "Raise one owner-visible disk cleanup recommendation.",
+            "trigger": "low-disk alert",
+            "evidence_run_ids": ["disk-a"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "low-disk",
+        },
+        {
+            "type": "infra-flag",
+            "statement": "Investigate repeated low disk space.",
+            "trigger": "low-disk alert repeated",
+            "evidence_run_ids": ["disk-b"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "low-disk",
+        },
+    ])
+
+    assert retro.synthesize(conn, retro_day=day) == 2
+
+    rows = retro.backlog(conn, team_id="tadam-agents")
+    triggers = {row.statement: row.trigger for row in rows}
+    assert triggers["Group recurring low-disk findings under one owner before repair."] == (
+        "low-disk alert; low-disk alert repeated"
+    )
+    assert triggers[
+        "Group recurring gender-classification findings under one owner before repair."
+    ] == (
+        "duplicate tadam-agents gender-classification bug report A; "
+        "duplicate tadam-agents gender-classification bug report B"
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT payload
+            FROM retro_backlog
+            WHERE team_id='tadam-agents' AND payload->>'theme'='gender-classification'
+            """
+        )
+        payload = cur.fetchone()[0]
+    assert payload["owner_team_id"] == "tadam-agents"
+    assert payload["flow"] == "retro-recurring-theme"
+    assert payload["smallest_fix_recommendation"] == (
+        "Fix gender classification once at the shared parser."
+    )
+    assert sorted(payload["evidence_run_ids"]) == ["gender-a", "gender-b"]
+
+
+def test_auto_change_text_carries_group_owner_flow_and_smallest_fix(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[
+        {
+            "type": "process-edit",
+            "statement": "Fix repeated low-disk alerts at the shared health threshold.",
+            "trigger": "low-disk alert A",
+            "evidence_run_ids": ["disk-a", "disk-b"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "low-disk",
+        },
+        {
+            "type": "process-edit",
+            "statement": "Start cleanup before rerunning repair workers.",
+            "trigger": "low-disk alert B",
+            "evidence_run_ids": ["disk-c"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "low-disk",
+        },
+    ])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload->>'text' FROM events WHERE source='retro'")
+        text = cur.fetchone()[0]
+    assert "Owner: dev" in text
+    assert "Flow: retro-recurring-theme" in text
+    assert "Smallest fix: Fix repeated low-disk alerts at the shared health threshold." in text
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

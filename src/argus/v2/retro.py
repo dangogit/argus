@@ -66,7 +66,8 @@ def synthesize(conn: psycopg.Connection, *, retro_day: date | None = None) -> in
         rows = cur.fetchall()
     count = 0
     for team_id, payload in rows:
-        for candidate in (payload or {}).get("candidates", []):
+        candidates = (payload or {}).get("candidates", [])
+        for candidate in _group_recurring_candidates(team_id, candidates):
             item = _normalize_candidate(team_id, candidate)
             if item is None:
                 continue
@@ -89,6 +90,47 @@ def synthesize(conn: psycopg.Connection, *, retro_day: date | None = None) -> in
                 )
                 count += 1
     return count
+
+
+def _group_recurring_candidates(team_id: str, candidates: list[dict]) -> list[dict]:
+    groups: dict[tuple[str, str], list[dict]] = {}
+    passthrough: list[dict] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        typ = str(candidate.get("type") or "")
+        theme = str(candidate.get("theme") or "").strip()
+        if typ in _TYPES and theme:
+            groups.setdefault((typ, theme), []).append(candidate)
+        else:
+            passthrough.append(candidate)
+    out = list(passthrough)
+    for (typ, theme), items in groups.items():
+        if len(items) < 2:
+            out.extend(items)
+            continue
+        first = items[0]
+        evidence = sorted(set().union(*(_evidence_ids(item) for item in items)))
+        statements = [str(item.get("statement") or "").strip() for item in items
+                      if str(item.get("statement") or "").strip()]
+        triggers = [str(item.get("trigger") or "").strip() for item in items
+                    if str(item.get("trigger") or "").strip()]
+        recommendation = statements[0] if statements else theme.replace("-", " ")
+        out.append({
+            **first,
+            "type": typ,
+            "statement": f"Group recurring {theme} findings under one owner before repair.",
+            "trigger": "; ".join(dict.fromkeys(triggers))[:500],
+            "evidence_run_ids": evidence,
+            "scope": first.get("scope") or f"project/{team_id}",
+            "confidence": max(_float(item.get("confidence")) for item in items),
+            "impact": max(int(_float(item.get("impact"))) for item in items),
+            "theme": theme,
+            "owner_team_id": team_id,
+            "flow": "retro-recurring-theme",
+            "smallest_fix_recommendation": recommendation,
+        })
+    return out
 
 
 def bridge_lessons(conn: psycopg.Connection, cfg=None) -> int:
@@ -765,15 +807,21 @@ def _auto_change_text(*, team_id: str, typ: str, statement: str,
                       trigger: str, payload: dict) -> str:
     scope = "company" if team_id == COMPANY_TEAM_ID else f"team {team_id}"
     evidence = ", ".join(_evidence_ids(payload)) or "none"
-    return "\n".join([
+    lines = [
         f"Retro auto-change request for {scope}.",
         f"Type: {typ}",
         f"Change: {statement}",
         f"Trigger: {trigger}",
         f"Evidence: {evidence}",
-        "Implement minimal internal change. Do not merge, deploy, send messages, "
-        "or change secrets.",
-    ])
+    ]
+    if payload.get("owner_team_id") or payload.get("flow"):
+        lines.append(f"Owner: {payload.get('owner_team_id') or team_id}")
+        lines.append(f"Flow: {payload.get('flow') or 'retro'}")
+    if payload.get("smallest_fix_recommendation"):
+        lines.append(f"Smallest fix: {payload['smallest_fix_recommendation']}")
+    lines.append("Implement minimal internal change. Do not merge, deploy, send messages, "
+                 "or change secrets.")
+    return "\n".join(lines)
 
 
 def _evidence_ids(candidate: dict) -> set[str]:
