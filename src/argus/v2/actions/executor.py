@@ -18,6 +18,7 @@ from argus.v2.actions import handlers as _handlers
 from argus.v2.config.schema import Autonomy
 
 log = logging.getLogger(__name__)
+_LOW_DISK_NOTIFY_DEDUPE_SECONDS = 300
 
 _REAL = {
     "open_pr", "merge_pr", "deploy", "close_pr", "comment_pr", "reopen_pr",
@@ -328,6 +329,28 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
         elif atype in ("reply", "notify") and cfg is not None and destination_ref:
             from argus.v2.channels import send as _send
             text = (payload or {}).get("text", "")
+            suppressed = _suppress_duplicate_low_disk_notify(
+                conn,
+                action_id=action_id,
+                team_id=team_id,
+                destination_ref=destination_ref,
+                payload=payload or {},
+            )
+            if suppressed:
+                provider_ref = suppressed
+                cur.execute(
+                    "UPDATE actions SET status='done', provider_ref=%s, "
+                    "payload=payload||%s::jsonb, updated_at=now() WHERE id=%s",
+                    (
+                        provider_ref,
+                        Json({
+                            "suppressed": True,
+                            "suppression_reason": "duplicate_low_disk_notification",
+                        }),
+                        action_id,
+                    ),
+                )
+                return
             channel_ref = _send.deliver(cfg, destination_ref, text)
             provider_ref = channel_ref if channel_ref is not None else f"local:{action_id}"
         else:
@@ -345,6 +368,68 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 cur, action_id=action_id, team_id=team_id,
                 destination_ref=destination_ref, action_type=atype,
                 payload=payload or {}, provider_ref=provider_ref)
+
+
+def _suppress_duplicate_low_disk_notify(
+    conn: psycopg.Connection,
+    *,
+    action_id: str,
+    team_id: str,
+    destination_ref: str,
+    payload: dict,
+    window_seconds: int = _LOW_DISK_NOTIFY_DEDUPE_SECONDS,
+) -> str | None:
+    if not str(destination_ref or "").startswith("whatsapp:"):
+        return None
+    fingerprints = _low_disk_fingerprints(payload)
+    if not fingerprints:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT payload
+            FROM actions
+            WHERE id<>%s
+              AND type='notify'
+              AND destination_ref=%s
+              AND status='done'
+              AND provider_ref IS NOT NULL
+              AND provider_ref NOT LIKE 'suppressed:%%'
+              AND updated_at > now() - make_interval(secs => %s)
+            ORDER BY updated_at DESC
+            """,
+            (action_id, destination_ref, int(window_seconds)),
+        )
+        recent_payloads = [row[0] or {} for row in cur.fetchall()]
+    for recent in recent_payloads:
+        duplicate = fingerprints & _low_disk_fingerprints(recent)
+        if not duplicate:
+            continue
+        fingerprint = sorted(duplicate)[0]
+        from argus.v2 import alerts
+        alerts.record(
+            conn,
+            severity="info",
+            project=str(team_id),
+            fingerprint=f"notify-suppressed:{fingerprint}",
+            message=f"suppressed duplicate low-disk notification: {fingerprint}",
+            channel="log",
+            payload={"destination_ref": destination_ref, "action_id": action_id},
+        )
+        log.info("suppressed duplicate low-disk notification %s", fingerprint)
+        return f"suppressed:{fingerprint}"
+    return None
+
+
+def _low_disk_fingerprints(payload: dict) -> set[str]:
+    fingerprints: set[str] = set()
+    for finding in payload.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        fingerprint = str(finding.get("fingerprint") or "")
+        if fingerprint.startswith("disk:low:"):
+            fingerprints.add(fingerprint)
+    return fingerprints
 
 
 def _execute_status(cur, action_id: str, cfg, payload: dict, existing,

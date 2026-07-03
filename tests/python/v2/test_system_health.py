@@ -1,6 +1,6 @@
 import subprocess
 
-from argus.v2 import system_health
+from argus.v2 import alerts, system_health
 from argus.v2.config import loader
 from argus.v2.ingress import events
 from argus.v2.orchestrator import reconcile
@@ -249,6 +249,48 @@ def test_notify_findings_creates_general_action_with_cooldown(conn, tmp_path, mo
     assert row[1] == "fake:general"
     assert "Argus health: system issue detected" in row[2]
     assert "ARGUS_TEST_SUPPORT_TOKEN" in row[2]
+
+
+def test_notify_findings_escalates_third_same_day_disk_low(conn, tmp_path, monkeypatch):
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    fingerprint = "disk:low:home"
+    for _ in range(2):
+        alerts.record(
+            conn,
+            severity="warn",
+            project="general",
+            fingerprint=fingerprint,
+            message="low disk space under /tmp: 4.0 GB free",
+            channel="whatsapp",
+        )
+
+    inserted = system_health.notify_findings(
+        conn,
+        cfg,
+        [system_health.Finding(
+            severity="warn",
+            fingerprint=fingerprint,
+            message="low disk space under /tmp: 3.9 GB free",
+            payload={"path": "/tmp", "free_gb": 3.9, "updated_at": "2026-07-03T08:30:00Z"},
+        )],
+        cooldown_seconds=0,
+    )
+    conn.commit()
+
+    assert inserted == 1
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT severity, message, payload->>'same_day_occurrences' "
+            "FROM alerts WHERE fingerprint=%s",
+            (f"{fingerprint}:repeated",),
+        )
+        alert_row = cur.fetchone()
+        cur.execute("SELECT payload->'findings'->0->>'fingerprint' FROM actions")
+        action_fingerprint = cur.fetchone()[0]
+    assert alert_row == ("error", "low disk space under /tmp: 3.9 GB free (repeated 3 times today)", "3")
+    assert action_fingerprint == f"{fingerprint}:repeated"
 
 
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):

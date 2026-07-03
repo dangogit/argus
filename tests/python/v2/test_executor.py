@@ -106,6 +106,61 @@ def test_reply_send_timeout_is_retryable(conn, cfg, monkeypatch):
     assert status in ("proposed", "approved"), f"expected retryable, got {status!r}"
 
 
+def test_low_disk_whatsapp_notify_suppresses_recent_same_fingerprint(conn, cfg, monkeypatch):
+    from argus.v2.channels import send as _send
+
+    def fail_deliver(_cfg, _dest, _text):
+        raise AssertionError("duplicate low-disk notification should not send")
+
+    monkeypatch.setattr(_send, "deliver", fail_deliver)
+    payload = (
+        '{"text":"Argus health: system issue detected",'
+        '"findings":[{"severity":"warn","fingerprint":"disk:low:home",'
+        '"message":"low disk space","payload":{"updated_at":"2026-07-03T08:30:00Z"}}]}'
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO actions
+               (team_id, type, risk, destination_ref, idempotency_key,
+                status, provider_ref, payload)
+               VALUES ('dev','notify','reversible_internal','whatsapp:owner',
+                       'disk-first','done','wa:first',%s::jsonb)""",
+            (payload,),
+        )
+        cur.execute(
+            """INSERT INTO actions
+               (team_id, type, risk, destination_ref, idempotency_key, payload)
+               VALUES ('dev','notify','reversible_internal','whatsapp:owner',
+                       'disk-dup',%s::jsonb)""",
+            (payload,),
+        )
+    conn.commit()
+
+    executor.process_proposed(conn, cfg)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, provider_ref, payload->>'suppression_reason' "
+            "FROM actions WHERE idempotency_key='disk-dup'",
+        )
+        action_row = cur.fetchone()
+        cur.execute(
+            "SELECT channel, message FROM alerts "
+            "WHERE fingerprint='notify-suppressed:disk:low:home'",
+        )
+        alert_row = cur.fetchone()
+    assert action_row == (
+        "done",
+        "suppressed:disk:low:home",
+        "duplicate_low_disk_notification",
+    )
+    assert alert_row == (
+        "log",
+        "suppressed duplicate low-disk notification: disk:low:home",
+    )
+
+
 def test_outward_channel_reply_requires_approval(conn, tmp_path):
     from argus.v2.config import loader
     from argus.v2.channels import fake
