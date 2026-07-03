@@ -140,6 +140,10 @@ def test_onboard_pm_mode_sets_safe_pr_defaults(tmp_path):
     assert '"ready": true' in roles["developer"]["prompt"]
     assert "ARGUS_RESULT" in roles["qa"]["prompt"]
     assert '"verdict": "pass"' in roles["qa"]["prompt"]
+    assert "environment blockers" in roles["qa"]["prompt"]
+    assert "auth blockers" in roles["qa"]["prompt"]
+    assert "access blockers" in roles["qa"]["prompt"]
+    assert "app-code regressions" in roles["qa"]["prompt"]
     assert "ARGUS_RESULT" in roles["senior"]["prompt"]
     assert '"decision": "approve"' in roles["senior"]["prompt"]
 

@@ -112,6 +112,19 @@ def test_bundled_project_rules_matches_developer_work():
     assert "AGENTS.md" in block
 
 
+def test_bundled_project_rules_tells_qa_to_classify_blockers():
+    block = sk.block_for(
+        "qa",
+        "review this failing browser verification",
+        dirs=[BUNDLED_SKILLS],
+        allow=["project-rules"],
+    )
+    assert "environment blockers" in block
+    assert "auth blockers" in block
+    assert "access blockers" in block
+    assert "app-code regressions" in block
+
+
 def test_bundled_support_email_triage_matches_vendor_notice():
     block = sk.block_for(
         "support",
