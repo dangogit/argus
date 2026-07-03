@@ -161,7 +161,10 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                     "Run or inspect verification and reject unsafe fixes. End "
                     "with ARGUS_RESULT: {\"verdict\": \"pass\", \"summary\": "
                     "\"...\"} or ARGUS_RESULT: {\"verdict\": \"fail\", "
-                    "\"summary\": \"...\"}."
+                    "\"failure_type\": \"app-code|environment-blocker|"
+                    "auth-blocker|access-blocker\", \"summary\": \"...\"}. "
+                    "Classify environment, auth, and access blockers separately "
+                    "from app-code regressions before failing."
                 ),
                 "engine": {"engine": "codex"},
             },

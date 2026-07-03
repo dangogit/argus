@@ -24,6 +24,11 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert cfg.teams[0].project.repo == "/repo/luma"
     assert cfg.teams[0].project.autofix.draft is True
     assert cfg.teams[0].project.pm.daily_limit == 2
+    qa_prompt = next(role.prompt for role in cfg.teams[0].roles if role.name == "qa")
+    assert "failure_type" in qa_prompt
+    assert "environment-blocker" in qa_prompt
+    assert "auth-blocker" in qa_prompt
+    assert "access-blocker" in qa_prompt
 
 
 def test_convert_without_projects_creates_default_team():

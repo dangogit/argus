@@ -805,10 +805,16 @@ def _has_known_root_cause(text: str) -> bool:
 
 
 def _parsed_failure_detail(parsed: dict) -> str:
+    failure_type = str(parsed.get("failure_type") or "").strip()
     for key in ("reason", "analysis", "summary", "message"):
         value = parsed.get(key)
         if value:
-            return str(value)
+            detail = str(value)
+            if failure_type:
+                return f"{failure_type}: {detail}"
+            return detail
+    if failure_type:
+        return failure_type
     return ""
 
 

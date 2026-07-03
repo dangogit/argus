@@ -31,6 +31,13 @@ def test_qa_fail_loops_back_to_developer(conn, cfg_project):
     assert nxt.role == "developer"
 
 
+def test_failure_detail_includes_failure_type():
+    assert pipeline._parsed_failure_detail({
+        "failure_type": "access-blocker",
+        "summary": "Preview URL returned 403.",
+    }) == "access-blocker: Preview URL returned 403."
+
+
 def test_rework_enqueues_fresh_qa_iteration(conn, cfg_project):
     rid = _open(conn, cfg_project); conn.commit()
     _finish_stage(conn, "developer", {"output": "", "parsed": {}})
@@ -56,18 +63,30 @@ def test_exhausted_qa_records_project_memory(conn, cfg_project):
 
     _finish_stage(conn, "developer", {"parsed": {}, "memory_fingerprints": ["prior"]})
     pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
-    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "fail"}})
+    qa = _finish_stage(conn, "qa", {
+        "parsed": {
+            "verdict": "fail",
+            "failure_type": "auth-blocker",
+            "summary": "GitHub token cannot read the repo.",
+        }
+    })
     pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
 
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
         assert cur.fetchone()[0] == "failed"
         cur.execute(
+            "SELECT note FROM pm_lessons WHERE team_id='dev' "
+            "ORDER BY created_at DESC LIMIT 1"
+        )
+        note = cur.fetchone()[0]
+        cur.execute(
             "SELECT finding, outcome FROM pm_lessons WHERE team_id='dev' ORDER BY created_at"
         )
         assert cur.fetchall()[-1] == ("fix payment", "qa-fail")
         cur.execute("SELECT lesson_fingerprint, outcome FROM pm_lesson_attributions")
         assert cur.fetchall() == [("prior", "qa-fail")]
+    assert "Blocking issue: auth-blocker: GitHub token cannot read the repo." in note
 
 
 def test_exhausted_senior_records_blocking_detail(conn, cfg_project):
