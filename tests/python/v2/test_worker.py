@@ -5,8 +5,9 @@ from threading import Event
 from argus.v2.queue import jobs
 from argus.v2.ingress import events
 from argus.v2.config import loader
+from argus.v2.orchestrator import pipeline
 from argus.v2.pm import memory as pm_memory
-from argus.v2.queue.models import RunRecord
+from argus.v2.queue.models import Job, RunRecord
 from argus.v2.worker import worker
 from argus.v2.workspace.repo import Worktree
 
@@ -41,6 +42,62 @@ def test_worker_run_carries_prompt_hash_from_snapshot(conn, cfg):
         cur.execute("SELECT prompt_hash FROM runs WHERE job_id="
                     "(SELECT id FROM jobs WHERE idempotency_key='k-hash')")
         assert cur.fetchone() == ("abc123def456",)
+
+
+def test_build_prompt_includes_qa_blocker_reporting_process():
+    job = Job(
+        id="j1", request_id=None, event_id=None, conversation_id=None,
+        team_id="dev", role="qa", stage=1, kind="pipeline", status="pending",
+        attempts=0, max_attempts=1, claim_token=None,
+        exec_snapshot={"prompt": "Run checks.", "process": (
+            "QA REPORTING:\n"
+            "- Before marking qa-fail, classify blockers separately as "
+            "environment blocker, auth blocker, access blocker, or app-code "
+            "regression."
+        )},
+        payload={"text": "verify"},
+    )
+
+    prompt = worker.job_exec.build_prompt(job)
+
+    assert "environment blocker" in prompt
+    assert "auth blocker" in prompt
+    assert "access blocker" in prompt
+    assert "app-code regression" in prompt
+
+
+def test_build_prompt_includes_recurring_theme_grouping_process():
+    job = Job(
+        id="j1", request_id=None, event_id=None, conversation_id=None,
+        team_id="dev", role="developer", stage=0, kind="pipeline", status="pending",
+        attempts=0, max_attempts=1, claim_token=None,
+        exec_snapshot={"prompt": "Implement.", "process": (
+            "RECURRING FINDINGS:\n"
+            "- Before repair work, group same-theme findings under one owner, "
+            "one flow, and one smallest-fix recommendation."
+        )},
+        payload={"text": "fix repeated low disk alerts"},
+    )
+
+    prompt = worker.job_exec.build_prompt(job)
+
+    assert "same-theme findings" in prompt
+    assert "one owner" in prompt
+    assert "one flow" in prompt
+    assert "smallest-fix recommendation" in prompt
+
+
+def test_pipeline_attaches_internal_process_blocks():
+    qa_snapshot = {}
+    dev_snapshot = {}
+
+    pipeline._add_role_process(qa_snapshot, "qa")
+    pipeline._add_role_process(dev_snapshot, "developer")
+
+    assert "environment blocker" in qa_snapshot["process"]
+    assert "app-code regression" in qa_snapshot["process"]
+    assert "same-theme findings" in dev_snapshot["process"]
+    assert "smallest-fix recommendation" in dev_snapshot["process"]
 
 
 def test_worker_returns_false_when_idle(conn, cfg):

@@ -43,6 +43,23 @@ _PIPELINE_CHECKPOINTS = (
     "and remaining work."
 )
 
+_QA_REPORTING_PROCESS = (
+    "QA REPORTING:\n"
+    "- Before marking qa-fail, classify blockers separately as environment "
+    "blocker, auth blocker, access blocker, or app-code regression.\n"
+    "- Mark qa-fail only for app-code regressions or unsafe changes. For "
+    "environment, auth, or access blockers, report the blocker class and exact "
+    "evidence."
+)
+
+_RECURRING_THEME_PROCESS = (
+    "RECURRING FINDINGS:\n"
+    "- Before repair work, group same-theme findings under one owner, one flow, "
+    "and one smallest-fix recommendation.\n"
+    "- If multiple reports repeat the same theme, repair the grouped cause once "
+    "instead of starting parallel fixes."
+)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -211,6 +228,7 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
     _add_pipeline_checkpoints(snapshot)
+    _add_role_process(snapshot, role_name)
     _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
@@ -1121,6 +1139,16 @@ def _add_pipeline_checkpoints(snapshot: dict) -> None:
     snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
 
 
+def _add_role_process(snapshot: dict, role_name: str) -> None:
+    blocks: list[str] = []
+    if role_name == "qa":
+        blocks.append(_QA_REPORTING_PROCESS)
+    if role_name in {"manager", "researcher", "developer"}:
+        blocks.append(_RECURRING_THEME_PROCESS)
+    if blocks:
+        snapshot["process"] = "\n\n".join(blocks)
+
+
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:
     """Freeze the rendered load-on-relevance skills block into the snapshot so
     the job replays deterministically. No-op (no key added) when nothing matches,
@@ -1157,6 +1185,7 @@ def enqueue_converse(conn: psycopg.Connection, cfg, *, event_id: str,
     text = _request_text(conn, event_id)
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_role_process(snapshot, "manager")
     _add_prompt_hash(snapshot)
     return jobs.enqueue(
         conn,
@@ -1187,6 +1216,7 @@ def enqueue_triage(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_role_process(snapshot, "manager")
     _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("manager"))
     key = f"triage:{team_id}:{fingerprint or event_id}"
@@ -1216,6 +1246,7 @@ def enqueue_research(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "researcher", role.skills, text)
+    _add_role_process(snapshot, "researcher")
     _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("researcher"))
     key = f"research:{team_id}:{fingerprint or event_id}"

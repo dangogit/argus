@@ -12,6 +12,7 @@ from argus.v2.db import pool
 
 SEVERITIES = {"info", "warn", "error", "critical"}
 CHANNELS = {"log", "whatsapp"}
+_OWNER_UPDATED_AT_DEDUP_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,19 @@ def record(
 ) -> str | None:
     severity = _severity(severity)
     resolved_channel = _channel(channel or channel_for_severity(severity))
+    payload_data = payload or {}
+    updated_at = _payload_updated_at(payload_data)
+    if resolved_channel == "whatsapp" and updated_at:
+        _lock_owner_alert(conn, project, fingerprint, resolved_channel, updated_at)
+        if _recent_alert_updated_at(
+            conn,
+            project,
+            fingerprint,
+            resolved_channel,
+            updated_at,
+            _OWNER_UPDATED_AT_DEDUP_SECONDS,
+        ):
+            return None
     if cooldown_seconds > 0 and _recent_alert(
         conn, project, fingerprint, resolved_channel, cooldown_seconds
     ):
@@ -63,10 +77,55 @@ def record(
                 str(fingerprint),
                 str(message),
                 resolved_channel,
-                Json(payload or {}),
+                Json(payload_data),
             ),
         )
         return str(cur.fetchone()[0])
+
+
+def _payload_updated_at(payload: dict[str, Any]) -> str:
+    value = payload.get("updated_at")
+    return str(value).strip() if value is not None else ""
+
+
+def _lock_owner_alert(
+    conn: psycopg.Connection,
+    project: str,
+    fingerprint: str,
+    channel: str,
+    updated_at: str,
+) -> None:
+    key = f"{project}\0{fingerprint}\0{channel}\0{updated_at}"
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s), 0)", (key,))
+
+
+def _recent_alert_updated_at(
+    conn: psycopg.Connection,
+    project: str,
+    fingerprint: str,
+    channel: str,
+    updated_at: str,
+    window_seconds: int,
+) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM alerts
+            WHERE project=%s AND fingerprint=%s AND channel=%s
+              AND payload->>'updated_at' = %s
+              AND ts > now() - make_interval(secs => %s)
+            LIMIT 1
+            """,
+            (
+                str(project),
+                str(fingerprint),
+                channel,
+                updated_at,
+                int(window_seconds),
+            ),
+        )
+        return cur.fetchone() is not None
 
 
 def _recent_alert(

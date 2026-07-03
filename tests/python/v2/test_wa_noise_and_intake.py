@@ -46,6 +46,30 @@ def test_record_without_cooldown_still_inserts_repeat(conn):
     assert len(rows) == 2
 
 
+def test_owner_alert_same_fingerprint_updated_at_dedups_without_cooldown(conn):
+    evidence_ids = [
+        "5a955738-9c67-4007-ad17-9dba0ad260c0",
+        "240f8e8d-2cbf-435c-9a8d-095771dfc5c4",
+        "5330ed6d-6785-4b40-892f-0801a77b994b",
+        "b667c413-abf8-4406-9845-1e9d96be09ff",
+        "3cc962f4-0ffb-4993-92b6-ea540af57f17",
+    ]
+    for evidence_id in evidence_ids:
+        alerts.record(conn, severity="error", project="general",
+                      fingerprint="disk:low:argus-run",
+                      message="low disk space under /Users/danielmini/argus-run",
+                      channel="whatsapp",
+                      payload={
+                          "updated_at": "2026-07-03T08:30:00+03:00",
+                          "evidence_id": evidence_id,
+                      })
+        conn.commit()
+
+    rows = [r for r in alerts.list_alerts(conn, project="general")
+            if r.fingerprint == "disk:low:argus-run"]
+    assert len(rows) == 1
+
+
 # --- A3/B1: non-actionable signals don't open requests ---
 
 @pytest.mark.parametrize("payload", [
