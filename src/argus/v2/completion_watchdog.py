@@ -44,6 +44,7 @@ class WatchdogFinding:
     retry_command: str
     retryable: bool
     destination_ref: str
+    alert_key: str
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,7 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
     if job_status in {"claimed", "running"}:
         retry_command += " --force-stuck"
     dest = rule.destination_ref or _team_control_dest(cfg, str(row["team_id"])) or "cli:local"
+    alert_key = _alert_key(row, category=category)
     return WatchdogFinding(
         request_id=request_id,
         team_id=str(row["team_id"]),
@@ -319,6 +321,7 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
         retry_command=retry_command,
         retryable=retryable,
         destination_ref=dest,
+        alert_key=alert_key,
     )
 
 
@@ -338,11 +341,44 @@ def _insert_alert(conn: psycopg.Connection, finding: WatchdogFinding) -> int:
                 job_id,
                 finding.team_id,
                 finding.destination_ref,
-                f"completion-watchdog:{finding.category}:{finding.request_id}",
+                finding.alert_key,
                 Json({"text": text, "urgent": True, "severity": "error"}),
             ),
         )
         return 1 if cur.rowcount else 0
+
+
+def _alert_key(row: dict[str, Any], *, category: str) -> str:
+    request_id = str(row["request_id"])
+    source = str(row.get("source") or "")
+    fingerprint = str(row.get("fingerprint") or "")
+    if source not in CONTENT_SOURCES and not fingerprint.startswith(CONTENT_PREFIXES):
+        return f"completion-watchdog:{category}:{request_id}"
+    lineage = _content_lineage(fingerprint) or request_id
+    return f"completion-watchdog:{category}:content:{lineage}:{_readiness_state(row)}"
+
+
+def _content_lineage(fingerprint: str) -> str:
+    if not fingerprint.startswith(CONTENT_PREFIXES):
+        return fingerprint
+    parts = fingerprint.split(":")
+    if parts and parts[-1].isdigit():
+        return ":".join(parts[:-1])
+    return fingerprint
+
+
+def _readiness_state(row: dict[str, Any]) -> str:
+    result = row.get("job_result")
+    parsed = result.get("parsed") if isinstance(result, dict) else None
+    if not isinstance(parsed, dict):
+        return "readiness:unknown"
+    status = str(parsed.get("status") or "").strip().lower()
+    if status in {"blocked", "error", "failed"}:
+        return f"blocker:{status}"
+    ready = parsed.get("ready")
+    if isinstance(ready, bool):
+        return f"ready:{str(ready).lower()}"
+    return "readiness:unknown"
 
 
 def _alert_text(finding: WatchdogFinding) -> str:

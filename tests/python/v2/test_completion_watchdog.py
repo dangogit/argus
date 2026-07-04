@@ -110,6 +110,47 @@ def test_old_content_approval_request_alerts_once(conn, tmp_path):
     assert f"Suggested retry: `argus request retry {rid}`" in text
 
 
+def test_content_schedule_approval_alerts_collapse_by_lineage_until_state_changes(conn, tmp_path):
+    fake.SENT.clear()
+    cfg = _cfg(tmp_path)
+    text = (
+        "Daniel approved one content live action in argus-content.\n"
+        "Approved action: schedule\n"
+        "Run content scheduling pipeline only for this exact target and action."
+    )
+    first = _open_request(
+        conn,
+        cfg,
+        fingerprint="content-approval:slug:weekly:schedule:1",
+        text=text,
+    )
+    second = _open_request(
+        conn,
+        cfg,
+        fingerprint="content-approval:slug:weekly:schedule:2",
+        text=text,
+    )
+    _age_request(conn, first)
+    _age_request(conn, second)
+
+    assert _run_watchdog(conn, cfg) == 1
+    assert len(fake.SENT) == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs
+            SET result='{"parsed":{"ready":false,"status":"blocked"}}'::jsonb
+            WHERE request_id=%s
+            """,
+            (second,),
+        )
+    conn.commit()
+
+    assert _run_watchdog(conn, cfg) == 1
+    assert len(fake.SENT) == 2
+
+
 def test_failed_content_approval_request_alerts(conn, tmp_path):
     fake.SENT.clear()
     cfg = _cfg(tmp_path)
