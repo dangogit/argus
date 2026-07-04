@@ -98,7 +98,9 @@ def _communicate_with_progress(
                 if not chunk:
                     break
                 events.put((name, chunk))
-        except OSError:
+        except (OSError, ValueError):
+            # ValueError: the main thread closes the pipe after kill/timeout
+            # while this reader is blocked in read() on the same file object.
             pass
 
     def writer() -> None:
