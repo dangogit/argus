@@ -184,6 +184,64 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_auto_changes_dedupe_equivalent_retro_items_before_pm_dispatch(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    evidence = [
+        "retro-change:edd1011b21359f54becb0faf",
+        "converse:956df200-2353-4b41-a513-4bf57a1ba38d",
+        "converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+    ]
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[
+        {
+            "type": "process-edit",
+            "statement": "qa-fail: Update QA reports to classify environment blockers",
+            "trigger": "retro-change duplicate",
+            "evidence_run_ids": evidence,
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "qa blocker classification",
+        },
+        {
+            "type": "process-edit",
+            "statement": "Update QA reports to classify environment blockers",
+            "trigger": "converse duplicate",
+            "evidence_run_ids": list(reversed(evidence)),
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "QA blocker classification",
+        },
+    ])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(DISTINCT payload->>'auto_request_id') FROM retro_backlog")
+        assert cur.fetchone()[0] == 1
+
+
+def test_auto_change_dedupe_key_normalizes_task_lineage_and_theme():
+    evidence = [
+        "retro-change:edd1011b21359f54becb0faf",
+        "converse:956df200-2353-4b41-a513-4bf57a1ba38d",
+        "converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+    ]
+
+    assert retro._auto_change_dedupe_key(
+        "dev",
+        "process-edit",
+        "qa-fail: Update QA reports to classify environment blockers",
+        {"evidence_run_ids": evidence, "theme": "qa blocker classification"},
+    ) == retro._auto_change_dedupe_key(
+        "dev",
+        "process-edit",
+        "Update QA reports to classify environment blockers",
+        {"evidence_run_ids": list(reversed(evidence)), "theme": "QA blocker classification"},
+    )
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

@@ -671,20 +671,29 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         )
         rows = cur.fetchall()
     queued = 0
+    seen: dict[tuple[str, str, str, tuple[str, ...], str], str] = {}
     for item_id, team_id, typ, statement, trigger, payload in rows:
         item_id = str(item_id)
         payload = payload or {}
-        if payload.get("auto_request_id"):
-            continue
         if not _auto_change_eligible(team_id, statement, trigger, payload):
             continue
         target_team = _auto_change_team(cfg, team_id)
         if not target_team:
             continue
+        dedupe_key = _auto_change_dedupe_key(target_team, typ, statement, payload)
+        auto_request_id = payload.get("auto_request_id")
+        if auto_request_id:
+            seen.setdefault(dedupe_key, str(auto_request_id))
+            continue
+        prior_request_id = seen.get(dedupe_key)
+        if prior_request_id:
+            _mark_auto_queued(conn, item_id, prior_request_id, target_team)
+            continue
         fingerprint = f"retro-change:{item_id}"
         existing = _request_by_fingerprint(conn, target_team, fingerprint)
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
+            seen.setdefault(dedupe_key, existing)
             continue
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
@@ -699,8 +708,23 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         )
         if request_id:
             _mark_auto_queued(conn, item_id, request_id, target_team)
+            seen.setdefault(dedupe_key, request_id)
             queued += 1
     return queued
+
+
+def _auto_change_dedupe_key(target_team: str, typ: str, statement: str,
+                            payload: dict) -> tuple[str, str, str, tuple[str, ...], str]:
+    lineage = tuple(sorted(_evidence_ids(payload)))
+    theme = _normalized_task_text(str(payload.get("theme") or ""))
+    return (target_team, typ, _normalized_task_text(statement), lineage, theme)
+
+
+def _normalized_task_text(text: str) -> str:
+    words = "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()
+    if words[:2] == ["qa", "fail"]:
+        words = words[2:]
+    return " ".join(words)
 
 
 def _auto_change_eligible(team_id: str, statement: str, trigger: str,
