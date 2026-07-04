@@ -35,6 +35,8 @@ Produce 0 to 5 candidate improvements. Quality over quantity. Each candidate:
   existing slug when it fits; invent a new one only for a genuinely new cause.
   Example slugs: triage-fail-loud, recurring-findings, worktree-deps,
   lost-work, flaky-gatherer, noisy-alerts.
+- recurring same-theme findings must be grouped under one owner, one affected
+  flow, and one smallest fix recommendation before repair work starts.
 
 Output ONLY a single JSON object, no prose and no code fences, EXACTLY:
 

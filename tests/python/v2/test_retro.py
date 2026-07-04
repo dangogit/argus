@@ -68,6 +68,16 @@ def test_scan_flags_unsafe_candidate_text():
     assert retro.scan("Prefer smaller focused diffs") == []
 
 
+def test_facilitator_prompt_requires_grouping_recurring_findings():
+    prompt = (Path(__file__).resolve().parents[3]
+              / "prompts" / "retro" / "facilitator.md").read_text(encoding="utf-8")
+
+    assert "recurring same-theme findings" in prompt
+    assert "one owner, one affected" in prompt
+    assert "smallest fix recommendation" in prompt
+    assert "before repair work starts" in prompt
+
+
 def test_synthesize_and_bridge_only_gated_lessons(conn):
     retro.record(conn, team_id="dev", retro_day=date(2026, 6, 18), candidates=[
         {"type": "lesson", "statement": "Run focused tests before PR", "trigger": "qa fail",
