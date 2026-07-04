@@ -381,8 +381,8 @@ def _suppress_duplicate_low_disk_notify(
 ) -> str | None:
     if not str(destination_ref or "").startswith("whatsapp:"):
         return None
-    fingerprints = _low_disk_fingerprints(payload)
-    if not fingerprints:
+    keys = _low_disk_keys(payload)
+    if not keys:
         return None
     with conn.cursor() as cur:
         cur.execute(
@@ -402,10 +402,10 @@ def _suppress_duplicate_low_disk_notify(
         )
         recent_payloads = [row[0] or {} for row in cur.fetchall()]
     for recent in recent_payloads:
-        duplicate = fingerprints & _low_disk_fingerprints(recent)
+        duplicate = keys & _low_disk_keys(recent)
         if not duplicate:
             continue
-        fingerprint = sorted(duplicate)[0]
+        fingerprint = sorted(duplicate)[0][0]
         from argus.v2 import alerts
         alerts.record(
             conn,
@@ -421,15 +421,20 @@ def _suppress_duplicate_low_disk_notify(
     return None
 
 
-def _low_disk_fingerprints(payload: dict) -> set[str]:
-    fingerprints: set[str] = set()
+def _low_disk_keys(payload: dict) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
     for finding in payload.get("findings") or []:
         if not isinstance(finding, dict):
             continue
         fingerprint = str(finding.get("fingerprint") or "")
         if fingerprint.startswith("disk:low:"):
-            fingerprints.add(fingerprint)
-    return fingerprints
+            evidence = (
+                finding.get("payload")
+                if isinstance(finding.get("payload"), dict)
+                else {}
+            )
+            keys.add((fingerprint, str(evidence.get("updated_at") or "")))
+    return keys
 
 
 def _execute_status(cur, action_id: str, cfg, payload: dict, existing,

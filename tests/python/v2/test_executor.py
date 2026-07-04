@@ -161,6 +161,57 @@ def test_low_disk_whatsapp_notify_suppresses_recent_same_fingerprint(conn, cfg, 
     )
 
 
+def test_low_disk_whatsapp_notify_sends_new_updated_at_evidence(conn, cfg, monkeypatch):
+    from argus.v2.channels import send as _send
+
+    sent = []
+
+    def deliver(_cfg, dest, text):
+        sent.append((dest, text))
+        return "wa:newer"
+
+    monkeypatch.setattr(_send, "deliver", deliver)
+    old_payload = (
+        '{"text":"Argus health: system issue detected",'
+        '"findings":[{"severity":"warn","fingerprint":"disk:low:home",'
+        '"message":"low disk space","payload":{"updated_at":"2026-07-03T08:30:00Z"}}]}'
+    )
+    newer_payload = (
+        '{"text":"Argus health: system issue detected",'
+        '"findings":[{"severity":"warn","fingerprint":"disk:low:home",'
+        '"message":"low disk space","payload":{"updated_at":"2026-07-03T08:35:00Z"}}]}'
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO actions
+               (team_id, type, risk, destination_ref, idempotency_key,
+                status, provider_ref, payload)
+               VALUES ('dev','notify','reversible_internal','whatsapp:owner',
+                       'disk-first','done','wa:first',%s::jsonb)""",
+            (old_payload,),
+        )
+        cur.execute(
+            """INSERT INTO actions
+               (team_id, type, risk, destination_ref, idempotency_key, payload)
+               VALUES ('dev','notify','reversible_internal','whatsapp:owner',
+                       'disk-newer',%s::jsonb)""",
+            (newer_payload,),
+        )
+    conn.commit()
+
+    executor.process_proposed(conn, cfg)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, provider_ref, payload->>'suppression_reason' "
+            "FROM actions WHERE idempotency_key='disk-newer'",
+        )
+        action_row = cur.fetchone()
+    assert sent == [("whatsapp:owner", "Argus health: system issue detected")]
+    assert action_row == ("done", "wa:newer", None)
+
+
 def test_outward_channel_reply_requires_approval(conn, tmp_path):
     from argus.v2.config import loader
     from argus.v2.channels import fake

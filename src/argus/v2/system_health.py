@@ -454,7 +454,7 @@ def _suppress_duplicate_disk_low_notify(
     ]
     if not disk_findings:
         return False
-    fingerprints = {finding.fingerprint for finding in disk_findings}
+    dedupe_keys = {_disk_low_notify_key(finding) for finding in disk_findings}
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -473,12 +473,27 @@ def _suppress_duplicate_disk_low_notify(
         for item in payload.get("findings") or []:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("fingerprint") or "") in fingerprints:
+            if _disk_low_payload_key(item) in dedupe_keys:
                 _record_disk_low_notify_suppression(
                     conn, destination, disk_findings, finding_payload
                 )
                 return True
     return False
+
+
+def _disk_low_notify_key(finding: Finding) -> tuple[str, str]:
+    return (
+        finding.fingerprint,
+        str(finding.payload.get("updated_at") or ""),
+    )
+
+
+def _disk_low_payload_key(item: dict[str, Any]) -> tuple[str, str]:
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    return (
+        str(item.get("fingerprint") or ""),
+        str(payload.get("updated_at") or ""),
+    )
 
 
 def _record_disk_low_notify_suppression(

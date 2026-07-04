@@ -293,6 +293,50 @@ def test_notify_findings_suppresses_duplicate_disk_low_outbox(
     )
 
 
+def test_notify_findings_keeps_new_disk_low_evidence(conn, tmp_path, monkeypatch):
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    first = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:home",
+        message="low disk space under /tmp: 4.0 GB free",
+        payload={
+            "path": "/tmp",
+            "free_gb": 4.0,
+            "updated_at": "2026-07-03T08:30:00Z",
+        },
+    )
+    newer = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:home",
+        message="low disk space under /tmp: 3.9 GB free",
+        payload={
+            "path": "/tmp",
+            "free_gb": 3.9,
+            "updated_at": "2026-07-03T08:35:00Z",
+        },
+    )
+
+    assert system_health.notify_findings(conn, cfg, [first], cooldown_seconds=0) == 1
+    assert system_health.notify_findings(conn, cfg, [newer], cooldown_seconds=0) == 1
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM actions WHERE type='notify' "
+            "AND payload->'findings'->0->>'fingerprint'='disk:low:home'"
+        )
+        action_count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM alerts "
+            "WHERE fingerprint LIKE 'disk:low:notify-suppressed:%'"
+        )
+        suppression_count = cur.fetchone()[0]
+    assert action_count == 2
+    assert suppression_count == 0
+
+
 def test_notify_findings_escalates_third_same_day_disk_low(conn, tmp_path, monkeypatch):
     path = _cfg_path(tmp_path)
     monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
