@@ -470,7 +470,9 @@ def _same_day_alert_count(
         cur.execute(
             """
             SELECT count(*) FROM alerts
-            WHERE project=%s AND fingerprint = ANY(%s) AND ts::date = now()::date
+            WHERE project=%s
+              AND fingerprint = ANY(%s::text[])
+              AND ts::date = now()::date
             """,
             (project, list(fingerprints)),
         )
