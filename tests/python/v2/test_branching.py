@@ -95,6 +95,49 @@ def test_exhausted_senior_records_blocking_detail(conn, cfg_project):
     assert "Blocking issue: Root cause still present in checkout.py" in note
 
 
+def test_stale_senior_failure_reconciles_latest_pass_before_recording(conn, cfg_project,
+                                                                      monkeypatch,
+                                                                      tmp_path):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(conn, cfg_project, text="fix checkout total"); conn.commit()
+
+    monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
+    monkeypatch.setattr(workspace, "diff", lambda project, cwd: "+fixed\n")
+    monkeypatch.setattr(pipeline, "_changed_files", lambda cwd: ["src/checkout.py"])
+
+    _finish_stage(conn, "developer", {"has_diff": True, "parsed": {"ready": True}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+    stale_senior = _finish_stage(conn, "senior", {
+        "parsed": {"decision": "reject", "reason": "Root cause still present."}
+    })
+    conn.commit()
+
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="qa", stage=1,
+                 idempotency_key=f"{rid}:later-qa", exec_snapshot={}, payload={},
+                 request_id=rid)
+    later_qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    assert later_qa.request_id == rid
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="senior", stage=2,
+                 idempotency_key=f"{rid}:later-senior", exec_snapshot={}, payload={},
+                 request_id=rid)
+    later_senior = _finish_stage(conn, "senior", {"parsed": {"decision": "approve"}})
+    assert later_senior.request_id == rid
+
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, stale_senior.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT outcome FROM pm_lessons WHERE team_id='dev'")
+        assert cur.fetchone()[0] == "qa-pass"
+        cur.execute("SELECT payload FROM actions WHERE type='open_pr'")
+        payload = cur.fetchone()[0]
+    assert payload["draft"] is False
+    assert payload["risk_summary"] == "low: QA passed and senior approved"
+
+
 def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, tmp_path):
     cfg_project.team("dev").pipeline.max_iters = 0
     rid = _open(conn, cfg_project, text="fix OpenClaw email lookup"); conn.commit()

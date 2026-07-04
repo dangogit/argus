@@ -509,6 +509,8 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
+        if _reconcile_latest_review_success(conn, cfg, job, team):
+            return
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
             reason,
@@ -522,6 +524,66 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         cur.execute("UPDATE requests SET branch_counters=%s, updated_at=now() WHERE id=%s",
                     (Json(counters), job.request_id))
     enqueue_stage(conn, cfg, request_id=job.request_id, stage_index=to_idx)
+
+
+def _reconcile_latest_review_success(conn: psycopg.Connection, cfg, job: Job, team) -> bool:
+    """If this failure is stale, let the newest review state win before terminal writes."""
+    if not job.request_id:
+        return False
+    qa_roles = [role for role in team.pipeline.stages if _is_qa(team, role)]
+    if not qa_roles or "senior" not in team.pipeline.stages:
+        return False
+    latest_qa = _latest_done_review(conn, job.request_id, qa_roles)
+    latest_senior = _latest_done_review(conn, job.request_id, ["senior"])
+    if not latest_qa or not latest_senior:
+        return False
+    _, _, qa_result = latest_qa
+    senior_job, senior_job_id, senior_result = latest_senior
+    if senior_job_id == job.id:
+        return False
+    qa_parsed = (qa_result or {}).get("parsed", {}) if isinstance(qa_result, dict) else {}
+    senior_parsed = (
+        (senior_result or {}).get("parsed", {}) if isinstance(senior_result, dict) else {}
+    )
+    if contracts.qa_verdict(qa_parsed, (qa_result or {}).get("test_exit")) != "pass":
+        return False
+    if contracts.senior_decision(senior_parsed) != "approve":
+        return False
+    _approve_done(conn, cfg, senior_job)
+    return True
+
+
+def _latest_done_review(conn: psycopg.Connection, request_id: str,
+                        roles: list[str]) -> tuple[Job, str, dict] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT j.id, j.request_id, j.event_id, j.conversation_id, j.team_id,
+                   j.role, j.stage, j.kind, j.status, j.attempts, j.max_attempts,
+                   j.claim_token, j.exec_snapshot, j.payload, j.result
+            FROM jobs j
+            WHERE j.request_id=%s
+              AND j.role = ANY(%s)
+              AND j.status='done'
+              AND EXISTS (
+                SELECT 1 FROM runs r WHERE r.job_id=j.id AND r.status='ok'
+              )
+            ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
+            LIMIT 1
+            """,
+            (request_id, roles),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    job = Job(id=str(row[0]), request_id=str(row[1]) if row[1] else None,
+              event_id=str(row[2]) if row[2] else None,
+              conversation_id=str(row[3]) if row[3] else None, team_id=row[4],
+              role=row[5], stage=row[6], kind=row[7], status=row[8],
+              attempts=row[9], max_attempts=row[10],
+              claim_token=str(row[11]) if row[11] else None,
+              exec_snapshot=row[12], payload=row[13])
+    return job, str(row[0]), row[14] or {}
 
 
 def _handle_recommended_fix(conn: psycopg.Connection, cfg, job: Job, team,
