@@ -438,31 +438,41 @@ def notify_findings(
 def _escalate_repeated_disk_low(conn: psycopg.Connection, finding: Finding) -> Finding:
     if finding.severity != "warn" or not finding.fingerprint.startswith("disk:low:"):
         return finding
-    occurrences = _same_day_alert_count(conn, "general", finding.fingerprint) + 1
+    escalated_fingerprint = f"{finding.fingerprint}:escalated"
+    occurrences = _same_day_alert_count(
+        conn,
+        "general",
+        finding.fingerprint,
+        escalated_fingerprint,
+    ) + 1
     if occurrences < _DISK_LOW_ESCALATE_OCCURRENCES:
         return finding
     return Finding(
         severity="error",
-        fingerprint=finding.fingerprint,
+        fingerprint=escalated_fingerprint,
         message=(
             f"{finding.message}; repeated {occurrences} times today, escalating"
         ),
-        payload={**finding.payload, "same_day_occurrences": occurrences},
+        payload={
+            **finding.payload,
+            "base_fingerprint": finding.fingerprint,
+            "same_day_occurrences": occurrences,
+        },
     )
 
 
 def _same_day_alert_count(
     conn: psycopg.Connection,
     project: str,
-    fingerprint: str,
+    *fingerprints: str,
 ) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT count(*) FROM alerts
-            WHERE project=%s AND fingerprint=%s AND ts::date = now()::date
+            WHERE project=%s AND fingerprint = ANY(%s) AND ts::date = now()::date
             """,
-            (project, fingerprint),
+            (project, list(fingerprints)),
         )
         return int(cur.fetchone()[0])
 
