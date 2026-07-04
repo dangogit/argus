@@ -5,6 +5,7 @@ retries automatically; retry is a human CLI action.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -338,11 +339,38 @@ def _insert_alert(conn: psycopg.Connection, finding: WatchdogFinding) -> int:
                 job_id,
                 finding.team_id,
                 finding.destination_ref,
-                f"completion-watchdog:{finding.category}:{finding.request_id}",
+                _alert_idempotency_key(finding),
                 Json({"text": text, "urgent": True, "severity": "error"}),
             ),
         )
         return 1 if cur.rowcount else 0
+
+
+def _alert_idempotency_key(finding: WatchdogFinding) -> str:
+    lineage = _content_approval_lineage(finding.fingerprint)
+    if not lineage:
+        return f"completion-watchdog:{finding.category}:{finding.request_id}"
+    state = "|".join(
+        [
+            finding.category,
+            finding.request_status,
+            str(finding.current_stage),
+            finding.job_role or "none",
+            str(finding.job_stage) if finding.job_stage is not None else "none",
+            finding.job_status or "none",
+            finding.reason,
+            finding.failure_reason,
+        ]
+    )
+    digest = hashlib.sha256(state.encode("utf-8")).hexdigest()[:16]
+    return f"completion-watchdog:{lineage}:{digest}"
+
+
+def _content_approval_lineage(fingerprint: str) -> str:
+    parts = str(fingerprint or "").split(":")
+    if len(parts) >= 5 and parts[0] == "content-approval":
+        return ":".join(parts[:4])
+    return ""
 
 
 def _alert_text(finding: WatchdogFinding) -> str:

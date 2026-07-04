@@ -110,6 +110,53 @@ def test_old_content_approval_request_alerts_once(conn, tmp_path):
     assert f"Suggested retry: `argus request retry {rid}`" in text
 
 
+def test_content_schedule_watchdog_coalesces_same_lineage(conn, tmp_path):
+    fake.SENT.clear()
+    cfg = _cfg(tmp_path)
+    fingerprints = [
+        "content-approval:pr:2:schedule:1783139496.457569",
+        "content-approval:pr:2:schedule:1783139798.681899",
+        "content-approval:pr:2:schedule:1783143407.541939",
+        "content-approval:pr:2:schedule:1783134871.010009",
+        "content-approval:pr:2:schedule:1783139495.990959",
+        "content-approval:pr:2:schedule:1783139798.232729",
+        "content-approval:pr:2:schedule:1783134871.445199",
+        "content-approval:pr:2:schedule:1783142804.704149",
+        "content-approval:pr:2:schedule:1783139797.427979",
+        "content-approval:pr:2:schedule:1783139797.782729",
+    ]
+    request_ids = []
+    for fingerprint in fingerprints:
+        rid = _open_request(
+            conn,
+            cfg,
+            fingerprint=fingerprint,
+            text=(
+                "Daniel approved one content live action in argus-content.\n"
+                "Approved action: schedule\n"
+                "Run content scheduling pipeline only for this exact target and action."
+            ),
+        )
+        request_ids.append(rid)
+        _age_request(conn, rid)
+
+    assert _run_watchdog(conn, cfg) == 1
+    assert _run_watchdog(conn, cfg) == 0
+    assert len(fake.SENT) == 1
+    assert "Fingerprint: content-approval:pr:2:schedule:" in fake.SENT[0][1]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE requests SET status='failed', updated_at=now() WHERE id=%s",
+            (request_ids[-1],),
+        )
+    conn.commit()
+
+    assert _run_watchdog(conn, cfg) == 1
+    assert len(fake.SENT) == 2
+    assert "Reason: request or pipeline job failed" in fake.SENT[1][1]
+
+
 def test_failed_content_approval_request_alerts(conn, tmp_path):
     fake.SENT.clear()
     cfg = _cfg(tmp_path)
