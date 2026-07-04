@@ -463,7 +463,7 @@ def _suppress_duplicate_disk_low_notify(
             WHERE team_id='general'
               AND type='notify'
               AND destination_ref=%s
-              AND created_at > now() - make_interval(secs => %s)
+              AND created_at > clock_timestamp() - make_interval(secs => %s)
             ORDER BY created_at DESC
             """,
             (destination, int(window_seconds)),
@@ -527,7 +527,7 @@ def _same_day_alert_count(conn: psycopg.Connection, project: str, fingerprint: s
             FROM alerts
             WHERE project=%s
               AND fingerprint=%s
-              AND ts >= date_trunc('day', now())
+              AND ts >= date_trunc('day', clock_timestamp())
             """,
             (project, fingerprint),
         )

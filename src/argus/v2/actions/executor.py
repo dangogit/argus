@@ -395,7 +395,7 @@ def _suppress_duplicate_low_disk_notify(
               AND status='done'
               AND provider_ref IS NOT NULL
               AND provider_ref NOT LIKE 'suppressed:%%'
-              AND updated_at > now() - make_interval(secs => %s)
+              AND updated_at > clock_timestamp() - make_interval(secs => %s)
             ORDER BY updated_at DESC
             """,
             (action_id, destination_ref, int(window_seconds)),
