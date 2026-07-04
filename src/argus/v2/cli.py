@@ -596,6 +596,32 @@ def cmd_dead_job(args) -> int:
     return 1
 
 
+def cmd_request(args) -> int:
+    if args.request_cmd != "retry":
+        return 1
+    from argus.v2 import completion_watchdog
+
+    cfg = _cfg()
+    conn = pool.connect()
+    try:
+        result = completion_watchdog.retry_request(
+            conn,
+            cfg,
+            args.request_id,
+            force_live=args.force_live,
+            force_stuck=args.force_stuck,
+        )
+        if result.ok:
+            conn.commit()
+            print(f"request retry: queued {result.request_id} job={result.job_id}")
+            return 0
+        conn.rollback()
+        print(f"request retry: {result.status}: {result.reason}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+
 def cmd_poll(args) -> int:
     from argus.v2.connectors import driver
     cfg = _cfg(); conn = pool.connect()
@@ -1273,6 +1299,7 @@ def cmd_host(args) -> int:
         print(host.status())
         return 0
     if args.host_cmd == "watchdog":
+        from argus.v2 import completion_watchdog
         from argus.v2 import system_health
         from argus.v2.actions import executor
 
@@ -1294,6 +1321,10 @@ def cmd_host(args) -> int:
                 )
                 inserted = system_health.notify_findings(conn, cfg, findings)
                 if inserted:
+                    executor.process_proposed(conn, cfg)
+                    notified = True
+                completion_inserted = completion_watchdog.run(conn, cfg)
+                if completion_inserted:
                     executor.process_proposed(conn, cfg)
                     notified = True
                 # Remediate after notifying so the alert captures the live PID,
@@ -1515,6 +1546,15 @@ def build_parser() -> argparse.ArgumentParser:
     r = djs.add_parser("retry")
     r.add_argument("job_id")
     r.set_defaults(fn=cmd_dead_job)
+    s = sub.add_parser("request")
+    rqs = s.add_subparsers(dest="request_cmd", required=True)
+    r = rqs.add_parser("retry")
+    r.add_argument("request_id")
+    r.add_argument("--force-live", action="store_true",
+                   help="allow retry of content live approval work after manual gate check")
+    r.add_argument("--force-stuck", action="store_true",
+                   help="requeue a claimed/running job whose lease still appears active")
+    r.set_defaults(fn=cmd_request)
     s = sub.add_parser("poll")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--source", action="append", default=[])

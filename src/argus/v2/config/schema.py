@@ -88,6 +88,14 @@ class NotificationSettings(BaseModel):
     )
 
 
+class CompletionWatchdog(BaseModel):
+    enabled: bool = False
+    threshold_minutes: int = 45
+    sources: List[str] = Field(default_factory=list)
+    fingerprint_prefixes: List[str] = Field(default_factory=list)
+    destination_ref: Optional[str] = None
+
+
 class Role(BaseModel):
     name: str
     kind: RoleKind
@@ -151,6 +159,7 @@ class Defaults(BaseModel):
     # default so existing installs are unaffected (real incident: the same bug
     # id opened tadam PR #324 and tadam-agents PR #302 on 2026-07-01).
     dedup_bug_dispatch: bool = False
+    completion_watchdog: CompletionWatchdog = Field(default_factory=CompletionWatchdog)
 
 
 class Company(BaseModel):
@@ -267,6 +276,7 @@ class Team(BaseModel):
     # Per-team override of company.defaults.dedup_bug_dispatch. None = inherit
     # the company setting; explicit true/false wins over it either way.
     dedup_bug_dispatch: Optional[bool] = None
+    completion_watchdog: Optional[CompletionWatchdog] = None
 
     def role(self, name: str) -> Role:
         for r in self.roles:
