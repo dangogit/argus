@@ -255,6 +255,85 @@ def test_auto_changes_coalesce_same_task_and_theme(conn, tmp_path):
     assert queued_backlog_items == 6
 
 
+def test_auto_change_task_key_normalizes_regression_cases():
+    cases = [
+        (
+            "Update the QA reporting prompt/process so QA reports must classify "
+            "environment blockers, auth blockers, and access blockers separately "
+            "from app-code regressions before marking qa-fail.",
+            "qa-blocker-classification",
+        ),
+        (
+            "Implement the minimal internal process change so recurring same-theme "
+            "findings are grouped under one owner, flow, and smallest fix "
+            "recommendation before starting repair work.",
+            "recurring-finding-grouping",
+        ),
+        (
+            "Implement a minimal internal change to suppress duplicate owner alert "
+            "notifications when alerts share the same fingerprint and updated_at "
+            "within a short send window.",
+            "duplicate-alert-suppression",
+        ),
+    ]
+
+    for statement, theme in cases:
+        assert retro._auto_change_task_key(statement, {"theme": theme}) == (
+            retro._auto_change_task_key(f"  {statement.upper()}  ",
+                                        {"theme": f"  {theme}  "})
+        )
+
+
+def test_auto_changes_reuse_existing_retro_request_by_task_and_theme(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    statement = (
+        "Update the QA reporting prompt/process so QA reports must classify "
+        "environment blockers, auth blockers, and access blockers separately "
+        "from app-code regressions before marking qa-fail."
+    )
+    theme = "qa-blocker-classification"
+    event_id = events.ingest_message(
+        conn, cfg, team="dev", source="retro", dedup_key="retro-change:old",
+        text="old auto-change",
+        metadata={
+            "retro_backlog_id": "old",
+            "retro_source_team": "dev",
+            "retro_task_text": f"  {statement.upper()}  ",
+            "retro_theme": f"  {theme}  ",
+        },
+    )
+    existing_request = pipeline.open_request(
+        conn, cfg, event_id=event_id, team_id="dev",
+        conversation_id=None, fingerprint="retro-change:old",
+    )
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": statement,
+        "trigger": "duplicate qa blocker evidence",
+        "evidence_run_ids": ["qa-a", "qa-b", "qa-c"],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": theme,
+    }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT id::text FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        request_ids = [row[0] for row in cur.fetchall()]
+        cur.execute("SELECT count(*) FROM events WHERE source='retro'")
+        event_count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT payload->>'auto_request_id' FROM retro_backlog "
+            "WHERE payload ? 'auto_request_id'"
+        )
+        auto_request_id = cur.fetchone()[0]
+    assert request_ids == [existing_request]
+    assert event_count == 1
+    assert auto_request_id == existing_request
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

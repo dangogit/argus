@@ -760,10 +760,13 @@ def _request_by_fingerprint(conn: psycopg.Connection, team_id: str,
 def _request_by_auto_change_task(conn: psycopg.Connection, *, target_team: str,
                                  item_id: str, statement: str,
                                  payload: dict) -> str | None:
-    task_key = _task_key(statement)
-    theme_key = _task_key(_payload_theme(payload))
-    if not task_key or not theme_key:
+    wanted = _auto_change_task_key(statement, payload)
+    if wanted is None:
         return None
+    existing = _request_by_retro_event_task(conn, target_team=target_team,
+                                            wanted=wanted)
+    if existing:
+        return existing
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -780,14 +783,48 @@ def _request_by_auto_change_task(conn: psycopg.Connection, *, target_team: str,
         rows = cur.fetchall()
     for request_id, existing_statement, existing_payload in rows:
         existing_payload = existing_payload or {}
-        if (_task_key(str(existing_statement or "")) == task_key
-                and _task_key(_payload_theme(existing_payload)) == theme_key):
+        if _auto_change_task_key(str(existing_statement or ""), existing_payload) == wanted:
             return str(request_id)
     return None
 
 
+def _request_by_retro_event_task(conn: psycopg.Connection, *, target_team: str,
+                                 wanted: tuple[str, str]) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id::text, e.payload
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.team_id=%s
+              AND e.source='retro'
+              AND e.payload ? 'retro_task_text'
+              AND e.payload ? 'retro_theme'
+            ORDER BY r.updated_at DESC
+            LIMIT 100
+            """,
+            (target_team,),
+        )
+        rows = cur.fetchall()
+    for request_id, event_payload in rows:
+        event_payload = event_payload or {}
+        if _auto_change_task_key(str(event_payload.get("retro_task_text") or ""),
+                                 event_payload) == wanted:
+            return str(request_id)
+    return None
+
+
+def _auto_change_task_key(statement: str, payload: dict) -> tuple[str, str] | None:
+    task_key = _task_key(statement)
+    theme_key = _task_key(_payload_theme(payload))
+    if not task_key or not theme_key:
+        return None
+    return task_key, theme_key
+
+
 def _payload_theme(payload: dict) -> str:
-    return str((payload or {}).get("theme") or "").strip()
+    payload = payload or {}
+    return str(payload.get("theme") or payload.get("retro_theme") or "").strip()
 
 
 def _task_key(text: str) -> str:
