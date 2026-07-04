@@ -217,7 +217,7 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
                 "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
-    _add_pipeline_checkpoints(snapshot)
+    _add_pipeline_checkpoints(snapshot, role_name=role_name)
     _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
@@ -1173,10 +1173,11 @@ def _add_prompt_hash(snapshot: dict) -> None:
     snapshot["prompt_hash"] = hashlib.sha256(assembled.encode()).hexdigest()[:12]
 
 
-def _add_pipeline_checkpoints(snapshot: dict) -> None:
+def _add_pipeline_checkpoints(snapshot: dict, role_name: str = "") -> None:
     checkpoints = _PIPELINE_CHECKPOINTS
     prompt = str(snapshot.get("prompt", "")).lower()
-    if "qa" in prompt or "senior" in prompt or "review" in prompt or "judge" in prompt:
+    if role_name in ("qa", "senior") or \
+            "qa" in prompt or "senior" in prompt or "review" in prompt or "judge" in prompt:
         checkpoints = f"{checkpoints}\n\n{_JUDGE_FAILURE_RULES}"
     snapshot["checkpoints"] = checkpoints
 

@@ -66,8 +66,8 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
 
 
 def test_judge_checkpoint_guidance_requires_exact_failure_reconciliation():
-    snap = {"prompt": "Run checks and judge the result."}
-    pipeline._add_pipeline_checkpoints(snap)
+    snap = {"prompt": "p"}
+    pipeline._add_pipeline_checkpoints(snap, role_name="qa")
 
     assert "JUDGE FAILURE RULES:" in snap["checkpoints"]
     assert "exact failing check" in snap["checkpoints"]

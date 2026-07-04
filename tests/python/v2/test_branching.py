@@ -96,7 +96,9 @@ def test_exhausted_senior_records_blocking_detail(conn, cfg_project):
         cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
         outcome, note = cur.fetchone()
     assert outcome == "qa-fail"
-    assert "Blocking issue: Root cause still present in checkout.py" in note
+    assert "Blocking issue: Failing check: senior review decision reject." in note
+    assert "Role output: Root cause still present in checkout.py" in note
+    assert "Reconciled: role verdict matches the failing check above." in note
 
 
 def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, tmp_path):
