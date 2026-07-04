@@ -32,11 +32,19 @@ def dispatch(conn: psycopg.Connection, cfg, *, project: str, fingerprint: str,
         if not message:
             raise FileNotFoundError(f"unknown finding {fingerprint} for {project}")
         row = {"fingerprint": fingerprint, "message": message, "severity": "warn"}
-    if not force:
-        _check_daily_limit(conn, project, int(team.project.pm.daily_limit))
     payload = dict(row)
     payload.setdefault("fingerprint", fingerprint)
     payload["text"] = _finding_text(payload)
+    coalesced_request_id = _coalesced_dispatch_request(
+        conn, project=project, fingerprint=fingerprint, payload=payload,
+    )
+    if coalesced_request_id:
+        _record_dispatch(
+            conn, project, fingerprint, f"{source}:coalesced", coalesced_request_id,
+        )
+        return DispatchResult(fingerprint, coalesced_request_id, None, "coalesced")
+    if not force:
+        _check_daily_limit(conn, project, int(team.project.pm.daily_limit))
     event_id = events.ingest_signal(
         conn, cfg, team=project, source=f"pm:{source}",
         fingerprint=fingerprint, payload=payload,
@@ -146,14 +154,50 @@ def _finding_text(row: dict) -> str:
     return json.dumps(row, sort_keys=True, separators=(",", ":"))
 
 
+def _coalesced_dispatch_request(conn: psycopg.Connection, *, project: str,
+                                fingerprint: str, payload: dict) -> str | None:
+    theme = _normalize_dispatch_key_part(payload.get("theme"))
+    task = _normalize_dispatch_key_part(payload.get("text"))
+    if not theme or not task:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT d.request_id::text, e.payload
+            FROM pm_dispatches d
+            JOIN requests r ON r.id=d.request_id
+            JOIN events e ON e.id=r.event_id
+            WHERE d.team_id=%s
+              AND d.fingerprint<>%s
+              AND d.request_id IS NOT NULL
+            ORDER BY d.created_at DESC
+            """,
+            (project, fingerprint),
+        )
+        rows = cur.fetchall()
+    for request_id, existing_payload in rows:
+        existing_payload = existing_payload or {}
+        if _normalize_dispatch_key_part(existing_payload.get("theme")) != theme:
+            continue
+        if _normalize_dispatch_key_part(existing_payload.get("text")) != task:
+            continue
+        return str(request_id)
+    return None
+
+
+def _normalize_dispatch_key_part(value) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
 def _check_daily_limit(conn: psycopg.Connection, project: str, limit: int) -> None:
     if limit <= 0:
         raise RuntimeError(f"pm breaker: {project} daily cap disabled")
     with conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM pm_dispatches "
-            "WHERE team_id=%s AND dispatch_day=current_date",
-            (project,),
+            "WHERE team_id=%s AND dispatch_day=current_date "
+            "AND source NOT LIKE %s",
+            (project, "%:coalesced"),
         )
         count = int(cur.fetchone()[0])
     if count >= limit:

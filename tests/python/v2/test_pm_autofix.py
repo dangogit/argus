@@ -106,6 +106,63 @@ def test_dispatch_duplicate_active_request_is_noop(conn, tmp_path):
         assert cur.fetchone()[0] == 1
 
 
+def test_dispatch_coalesces_same_task_text_and_theme(conn, tmp_path):
+    cfg = _project_cfg(tmp_path)
+    cfg.team("dev").project.pm.daily_limit = 3
+    cases = [
+        (
+            "qa-blocker",
+            "Classify sandbox-blocked QA checks as environment blockers.",
+            "  classify sandbox-blocked qa checks as environment blockers. ",
+            "qa-blocker-classification",
+        ),
+        (
+            "recurring-findings",
+            "Group recurring findings before opening draft PRs.",
+            "group recurring findings before opening draft prs.",
+            "recurring-finding-grouping",
+        ),
+        (
+            "duplicate-alert",
+            "Suppress duplicate owner alert notifications.",
+            " suppress duplicate owner alert notifications. ",
+            "duplicate-alert-suppression",
+        ),
+    ]
+    for prefix, first_text, second_text, theme in cases:
+        first = autofix.dispatch(
+            conn, cfg, project="dev", fingerprint=f"{prefix}-1",
+            finding={
+                "fingerprint": f"{prefix}-1",
+                "message": first_text,
+                "severity": "warn",
+                "theme": theme,
+            },
+        )
+        second = autofix.dispatch(
+            conn, cfg, project="dev", fingerprint=f"{prefix}-2",
+            finding={
+                "fingerprint": f"{prefix}-2",
+                "message": second_text,
+                "severity": "warn",
+                "theme": f" {theme} ",
+            },
+        )
+        assert first.status == "queued"
+        assert second.status == "coalesced"
+        assert second.request_id == first.request_id
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests")
+        assert cur.fetchone()[0] == len(cases)
+        cur.execute("SELECT count(*) FROM events")
+        assert cur.fetchone()[0] == len(cases)
+        cur.execute(
+            "SELECT count(*) FROM pm_dispatches WHERE source='pm:coalesced'"
+        )
+        assert cur.fetchone()[0] == len(cases)
+
+
 def test_dispatch_requires_project_config(conn, tmp_path):
     from argus.v2.config import loader
 

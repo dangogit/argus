@@ -187,24 +187,47 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
 def test_auto_changes_coalesce_same_task_and_theme(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
-    statement = (
-        "Update the QA reporting prompt/process so QA reports must classify "
-        "environment blockers, auth blockers, and access blockers separately "
-        "from app-code regressions before marking qa-fail."
-    )
-    for evidence in (
-        ["retro-change:edd1011b21359f54becb0faf", "a", "b"],
-        ["converse:956df200-2353-4b41-a513-4bf57a1ba38d", "c", "d"],
-    ):
-        retro.record(conn, team_id="dev", retro_day=day, candidates=[{
-            "type": "process-edit",
-            "statement": statement,
-            "trigger": "duplicate QA blocker classification produced another PM run",
-            "evidence_run_ids": evidence,
-            "confidence": 0.9,
-            "impact": 8,
-            "theme": "qa-blocker-classification",
-        }])
+    cases = [
+        (
+            "Update the QA reporting prompt/process so QA reports must classify "
+            "environment blockers, auth blockers, and access blockers separately "
+            "from app-code regressions before marking qa-fail.",
+            "qa-blocker-classification",
+            "duplicate QA blocker classification produced another PM run",
+            "retro-change:edd1011b21359f54becb0faf",
+            "converse:956df200-2353-4b41-a513-4bf57a1ba38d",
+        ),
+        (
+            "Group recurring findings by normalized task text and theme before "
+            "opening another PM draft PR.",
+            "recurring-finding-grouping",
+            "recurring finding grouping generated an equivalent PM run",
+            "retro-change:5a90b9fd3b28",
+            "converse:2d817adf-72cf-4372-9c2b-7eced0f7a5db",
+        ),
+        (
+            "Suppress duplicate approval alert PM requests with the same normalized "
+            "task text and theme before dispatching a new draft PR.",
+            "duplicate-alert-suppression",
+            "duplicate alert suppression evidence produced another PM run",
+            "retro-change:98d3a1cbbca4",
+            "converse:338ce0b6-7492-4a77-bf3d-c5fb79db0d4d",
+        ),
+    ]
+    for statement, theme, trigger, first_evidence, second_evidence in cases:
+        for evidence in (
+            [first_evidence, "a", "b"],
+            [second_evidence, "c", "d"],
+        ):
+            retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+                "type": "process-edit",
+                "statement": statement,
+                "trigger": trigger,
+                "evidence_run_ids": evidence,
+                "confidence": 0.9,
+                "impact": 8,
+                "theme": theme,
+            }])
 
     retro.run(conn, cfg, retro_day=day, company_only=True)
 
@@ -212,9 +235,9 @@ def test_auto_changes_coalesce_same_task_and_theme(conn, tmp_path):
         cur.execute(
             "SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'"
         )
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == len(cases)
         cur.execute("SELECT count(*) FROM events WHERE source='retro'")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == len(cases)
         cur.execute(
             """
             SELECT count(*)
@@ -222,7 +245,7 @@ def test_auto_changes_coalesce_same_task_and_theme(conn, tmp_path):
             WHERE payload ? 'auto_coalesced_from'
             """
         )
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == len(cases)
 
 
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
