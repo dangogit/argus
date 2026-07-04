@@ -72,11 +72,22 @@ def _migrate(dsn):
         conn.commit()
 
 
+def _external_dsn_allowed() -> bool:
+    """External ARGUS_DB_DSN is honored only under CI or an explicit opt-in.
+
+    The suite migrates the target and TRUNCATEs every table per test. On
+    2026-07-04 a dev session that inherited the live operational DSN in its
+    shell env ran the gate and wiped the production DB this way. An ambient
+    ARGUS_DB_DSN outside CI is treated as a leak and ignored in favor of the
+    ephemeral cluster."""
+    return bool(os.environ.get("CI")) or os.environ.get("ARGUS_DB_DSN_FOR_TESTS") == "1"
+
+
 @pytest.fixture(scope="session")
 def pg_dsn(tmp_path_factory):
     # CI / external Postgres: use it directly (the v2-ci job sets this).
     ext = os.environ.get("ARGUS_DB_DSN")
-    if ext:
+    if ext and _external_dsn_allowed():
         _migrate(ext)
         yield ext
         return
