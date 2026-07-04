@@ -699,25 +699,32 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         item_id = str(item_id)
         payload = payload or {}
         if payload.get("auto_request_id"):
-            key = _retro_dedupe_key(typ, statement, payload)
-            queued_by_key[key] = (str(payload["auto_request_id"]),
-                                  str(payload.get("auto_target_team") or ""))
+            request = (str(payload["auto_request_id"]),
+                       str(payload.get("auto_target_team") or ""))
+            for key in _retro_dispatch_keys(typ, statement, payload):
+                queued_by_key[key] = request
             continue
         if not _auto_change_eligible(team_id, statement, trigger, payload):
             continue
         target_team = _auto_change_team(cfg, team_id)
         if not target_team:
             continue
-        key = _retro_dedupe_key(typ, statement, payload)
-        if key in queued_by_key:
-            request_id, queued_team = queued_by_key[key]
-            _mark_auto_queued(conn, item_id, request_id, queued_team or target_team)
+        keys = _retro_dispatch_keys(typ, statement, payload)
+        for key in keys:
+            if key in queued_by_key:
+                request_id, queued_team = queued_by_key[key]
+                _mark_auto_queued(conn, item_id, request_id, queued_team or target_team)
+                break
+        else:
+            request_id = None
+        if request_id:
             continue
         fingerprint = f"retro-change:{item_id}"
         existing = _request_by_fingerprint(conn, target_team, fingerprint)
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
-            queued_by_key[key] = (existing, target_team)
+            for key in keys:
+                queued_by_key[key] = (existing, target_team)
             continue
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
@@ -732,9 +739,19 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         )
         if request_id:
             _mark_auto_queued(conn, item_id, request_id, target_team)
-            queued_by_key[key] = (request_id, target_team)
+            for key in keys:
+                queued_by_key[key] = (request_id, target_team)
             queued += 1
     return queued
+
+
+def _retro_dispatch_keys(typ: str, statement: str, payload: dict) -> tuple[str, ...]:
+    theme = _normalize_task_text(str(payload.get("theme") or ""))
+    task = _normalize_task_text(statement)
+    keys = [_retro_dedupe_key(typ, statement, payload)]
+    if theme:
+        keys.append(f"{typ}:{task}:{theme}")
+    return tuple(dict.fromkeys(keys))
 
 
 def _auto_change_eligible(team_id: str, statement: str, trigger: str,

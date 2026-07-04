@@ -95,6 +95,25 @@ def test_equivalent_retro_candidates_share_backlog_id():
     assert first.id == second.id
 
 
+def test_dispatch_keys_collapse_same_task_theme_across_lineage():
+    first = retro._retro_dispatch_keys("process-edit", (
+        "Implement minimal internal retro dedupe before dispatching PM runs "
+        "or draft PRs."
+    ), {
+        "theme": "retro-dedupe",
+        "lineage": "converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+    })
+    second = retro._retro_dispatch_keys("process-edit", (
+        "implement minimal internal retro dedupe before dispatching pm runs "
+        "or draft prs"
+    ), {
+        "theme": "retro dedupe",
+        "lineage": "retro-change:edd1011b21359f54becb0faf",
+    })
+
+    assert set(first) & set(second)
+
+
 def test_synthesize_and_bridge_only_gated_lessons(conn):
     retro.record(conn, team_id="dev", retro_day=date(2026, 6, 18), candidates=[
         {"type": "lesson", "statement": "Run focused tests before PR", "trigger": "qa fail",
@@ -258,6 +277,49 @@ def test_auto_changes_dedupe_equivalent_retro_items_before_pm_dispatch(conn, tmp
     assert backlog_count == 1
     assert request_count == 1
     assert event_count == 1
+
+
+def test_auto_changes_collapse_same_task_theme_before_dispatch(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    statement = (
+        "Implement minimal internal retro dedupe before dispatching PM runs "
+        "or draft PRs."
+    )
+    for trigger, lineage in [
+        ("converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+         "converse:325751ff-3210-442b-a672-4fb5cd7b75dc"),
+        ("retro-change:edd1011b21359f54becb0faf",
+         "retro-change:edd1011b21359f54becb0faf"),
+    ]:
+        retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day, candidates=[{
+            "type": "process-edit",
+            "statement": statement,
+            "trigger": trigger,
+            "lineage": lineage,
+            "evidence_run_ids": [trigger, f"{trigger}:qa", f"{trigger}:senior"],
+            "source_team_ids": ["argus", "tadam"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "retro-dedupe",
+        }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT payload->>'auto_request_id' FROM retro_backlog "
+            "WHERE team_id=%s AND type='process-edit' ORDER BY created_at",
+            (retro.COMPANY_TEAM_ID,),
+        )
+        request_ids = [row[0] for row in cur.fetchall()]
+        cur.execute(
+            "SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'"
+        )
+        request_count = cur.fetchone()[0]
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 1
+    assert request_count == 1
 
 
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
