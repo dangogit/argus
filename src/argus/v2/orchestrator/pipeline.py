@@ -417,12 +417,15 @@ _FILE_REF_RE = re.compile(r"[\w./-]+\.[A-Za-z]{1,6}(?::\d+)?")
 _DB_ENV_BLOCKER_MARKERS = (
     "could not connect",
     "connection refused",
+    "failed to connect",
     "is the server running",
+    "not accepting tcp/ip connections",
     "no postgres server available",
     "postgres initdb failed",
     "operationalerror",
-    "localhost",
-    "127.0.0.1",
+    "operation not permitted",
+    "did not run",
+    "skipped",
 )
 
 
@@ -434,10 +437,18 @@ def _qa_environment_blocker(result: dict) -> str:
     `{"verdict":"pass"}` from counting QA as fully passed when DB checks never
     actually ran.
     """
-    test_exit = result.get("test_exit")
-    if test_exit in (None, 0):
-        return ""
     output = str(result.get("test_output") or result.get("output") or result.get("error") or "")
+    parsed = result.get("parsed") or {}
+    if isinstance(parsed, dict):
+        output = "\n".join(
+            part for part in (
+                output,
+                str(parsed.get("summary") or ""),
+                str(parsed.get("analysis") or ""),
+                str(parsed.get("notes") or ""),
+            )
+            if part
+        )
     lowered = output.lower()
     if "postgres" not in lowered and "psycopg" not in lowered:
         return ""

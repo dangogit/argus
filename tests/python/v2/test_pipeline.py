@@ -585,6 +585,31 @@ def test_qa_environment_blocker_classifies_postgres_unavailable():
     assert "Postgres verification did not run" in reason
 
 
+def test_qa_environment_blocker_classifies_skipped_postgres_with_zero_exit():
+    reason = pipeline._qa_environment_blocker({
+        "parsed": {"verdict": "pass"},
+        "test_exit": 0,
+        "test_output": (
+            "2 passed, 1 skipped\n"
+            "SKIPPED [1] tests/python/v2/conftest.py:100: "
+            "no postgres server available (set ARGUS_DB_DSN or install postgresql@17)"
+        ),
+    })
+
+    assert "no postgres server available" in reason
+
+
+def test_qa_environment_blocker_reads_structured_qa_summary():
+    reason = pipeline._qa_environment_blocker({
+        "parsed": {
+            "verdict": "pass",
+            "summary": "DB-backed verification skipped: Postgres verification did not run.",
+        },
+    })
+
+    assert "Postgres verification did not run" in reason
+
+
 def test_qa_postgres_environment_blocker_is_not_full_pass(conn, cfg_project):
     eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
                                 dedup_key="qa-db-block", text="fix it")
