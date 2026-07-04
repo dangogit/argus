@@ -31,6 +31,33 @@ def test_qa_fail_loops_back_to_developer(conn, cfg_project):
     assert nxt.role == "developer"
 
 
+def test_qa_postgres_environment_blocker_does_not_advance(conn, cfg_project):
+    rid = _open(conn, cfg_project, text="fix db-backed flow"); conn.commit()
+    _finish_stage(conn, "developer", {"output": "", "parsed": {}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    output = (
+        "ERROR: psycopg.OperationalError: connection to server at "
+        "\"127.0.0.1\", port 5440 failed: Connection refused"
+    )
+    qa = _finish_stage(conn, "qa", {
+        "parsed": {"verdict": "pass", "summary": "QA passed"},
+        "test_exit": 1,
+        "test_output": output,
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "failed"
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        outcome, note = cur.fetchone()
+        assert outcome == "blocked"
+        assert "Blocking issue: QA verification blocked by environment" in note
+        assert "Connection refused" in note
+        cur.execute("SELECT role FROM jobs WHERE request_id=%s ORDER BY stage, updated_at", (rid,))
+        assert [row[0] for row in cur.fetchall()] == ["developer", "qa"]
+
+
 def test_rework_enqueues_fresh_qa_iteration(conn, cfg_project):
     rid = _open(conn, cfg_project); conn.commit()
     _finish_stage(conn, "developer", {"output": "", "parsed": {}})

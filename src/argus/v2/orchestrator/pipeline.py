@@ -307,9 +307,14 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
         else:
             _next(conn, cfg, job.request_id, 1)
     elif _is_qa(team, role):
-        verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
+        verdict = contracts.qa_verdict(
+            parsed, (result or {}).get("test_exit"), (result or {}).get("test_output"))
         if verdict == "pass" or (advisory and "verdict" not in parsed and (result or {}).get("test_exit") is None):
             _advance_or_done(conn, cfg, job, team)
+        elif verdict == "blocked":
+            detail = _qa_blocker_detail(parsed, result or {})
+            _record_memory_outcome(conn, job.request_id, "blocked", detail)
+            _no_fix_close(conn, cfg, job.request_id, detail, blocked=True)
         else:
             _loop_back(conn, cfg, job, team, to_role="developer",
                        detail=_parsed_failure_detail(parsed))
@@ -812,6 +817,18 @@ def _parsed_failure_detail(parsed: dict) -> str:
     return ""
 
 
+def _qa_blocker_detail(parsed: dict, result: dict) -> str:
+    output = str(result.get("test_output") or "").strip()
+    if len(output) > 1200:
+        output = output[-1200:]
+    if output:
+        return f"QA verification blocked by environment: {output}"
+    detail = _parsed_failure_detail(parsed)
+    if detail:
+        return detail
+    return "QA verification blocked by environment."
+
+
 def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
              risk_summary: str | None = None) -> dict:
     request = _request_text_for_request(conn, request_id)
@@ -895,7 +912,8 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
     for role, result in rows:
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
         if role == "qa":
-            verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
+            verdict = contracts.qa_verdict(
+                parsed, (result or {}).get("test_exit"), (result or {}).get("test_output"))
             parts.append(f"QA: {verdict}")
         elif role == "browser_verify":
             parts.append(f"Browser: {parsed.get('verdict') or 'skip'}")

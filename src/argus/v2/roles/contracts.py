@@ -74,20 +74,45 @@ def dev_ready(result: dict) -> bool:
     return bool(result.get("ready", True))  # default ready; qa is the real gate
 
 
-def qa_verdict(result: dict, test_exit: Optional[int]) -> str:
+_POSTGRES_ENV_MARKERS = (
+    "no postgres server available",
+    "postgres initdb failed",
+    "postgres did not start",
+    "could not connect to server",
+    "connection refused",
+    "connection to server at",
+    "psycopg.operationalerror",
+)
+
+
+def qa_verdict(result: dict, test_exit: Optional[int],
+               test_output: str | None = None) -> str:
     """Determine qa verdict.
 
     Priority:
-    1. parsed verdict field when present.
-    2. test_exit when present: 0 -> pass, non-zero -> fail.
-    3. PASS, for advisory or no-project mode with no structured result.
+    1. sandbox/Postgres availability blockers when verification output shows one.
+    2. parsed verdict field when present.
+    3. test_exit when present: 0 -> pass, non-zero -> fail.
+    4. PASS, for advisory or no-project mode with no structured result.
     """
+    if qa_environment_blocked(test_output):
+        return "blocked"
     v = result.get("verdict")
     if v is not None:
         return "pass" if v == "pass" else "fail"
     if test_exit is not None:
         return "pass" if test_exit == 0 else "fail"
     return "pass"  # no test_cmd and no verdict
+
+
+def qa_environment_blocked(test_output: str | None) -> bool:
+    """True when QA could not exercise DB-backed verification in this sandbox."""
+    lowered = (test_output or "").lower()
+    if not lowered:
+        return False
+    if "postgres" not in lowered and "psycopg" not in lowered:
+        return False
+    return any(marker in lowered for marker in _POSTGRES_ENV_MARKERS)
 
 
 def senior_decision(result: dict) -> str:
