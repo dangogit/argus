@@ -43,6 +43,14 @@ _PIPELINE_CHECKPOINTS = (
     "and remaining work."
 )
 
+_QA_ENV_BLOCKER_CHECKPOINTS = (
+    "\n"
+    "- QA must classify sandbox-blocked Postgres, PyPI, and localhost or "
+    "127.0.0.1 checks as environment blockers, not app-code regressions. If "
+    "the change otherwise passes review, report verdict pass with the blocker "
+    "called out in the summary."
+)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -210,7 +218,7 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
                 "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
-    _add_pipeline_checkpoints(snapshot)
+    _add_pipeline_checkpoints(snapshot, role_name)
     _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
@@ -1140,8 +1148,11 @@ def _add_prompt_hash(snapshot: dict) -> None:
     snapshot["prompt_hash"] = hashlib.sha256(assembled.encode()).hexdigest()[:12]
 
 
-def _add_pipeline_checkpoints(snapshot: dict) -> None:
-    snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
+def _add_pipeline_checkpoints(snapshot: dict, role_name: str | None = None) -> None:
+    checkpoints = _PIPELINE_CHECKPOINTS
+    if role_name == "qa":
+        checkpoints += _QA_ENV_BLOCKER_CHECKPOINTS
+    snapshot["checkpoints"] = checkpoints
 
 
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:

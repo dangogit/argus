@@ -65,6 +65,17 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "external side effects" in snap["checkpoints"]
 
 
+def test_qa_checkpoint_guidance_classifies_sandbox_infra_as_environment_blocker():
+    qa = {}
+    pipeline._add_pipeline_checkpoints(qa, "qa")
+    assert "sandbox-blocked Postgres, PyPI, and localhost" in qa["checkpoints"]
+    assert "environment blockers, not app-code regressions" in qa["checkpoints"]
+
+    developer = {}
+    pipeline._add_pipeline_checkpoints(developer, "developer")
+    assert "sandbox-blocked Postgres, PyPI, and localhost" not in developer["checkpoints"]
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
