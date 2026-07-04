@@ -68,6 +68,33 @@ def test_scan_flags_unsafe_candidate_text():
     assert retro.scan("Prefer smaller focused diffs") == []
 
 
+def test_equivalent_retro_candidates_share_backlog_id():
+    first = retro._normalize_candidate("dev", {
+        "type": "process-edit",
+        "statement": "Deduplicate equivalent retro items before PM dispatch.",
+        "trigger": "converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+        "evidence_run_ids": [
+            "converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+            "retro-change:b54f60db98f464b297168300",
+        ],
+        "theme": "retro-dedupe",
+    })
+    second = retro._normalize_candidate("dev", {
+        "type": "process-edit",
+        "statement": "deduplicate equivalent retro items before pm dispatch",
+        "trigger": "retro-change:3cadf2de00d9a29b8815ea40",
+        "evidence_run_ids": [
+            "retro-change:3cadf2de00d9a29b8815ea40",
+            "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+        ],
+        "theme": "retro dedupe",
+    })
+
+    assert first is not None
+    assert second is not None
+    assert first.id == second.id
+
+
 def test_synthesize_and_bridge_only_gated_lessons(conn):
     retro.record(conn, team_id="dev", retro_day=date(2026, 6, 18), candidates=[
         {"type": "lesson", "statement": "Run focused tests before PR", "trigger": "qa fail",
@@ -181,6 +208,55 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
         event_count = cur.fetchone()[0]
     assert rows and len(rows) == 1
     assert rows[0][0] == "dev"
+    assert event_count == 1
+
+
+def test_auto_changes_dedupe_equivalent_retro_items_before_pm_dispatch(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    for trigger, evidence in [
+        ("converse:325751ff-3210-442b-a672-4fb5cd7b75dc", [
+            "converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+            "converse:30e5f636-2d36-45cb-a877-5f3d4b429ce6",
+            "retro-change:b54f60db98f464b297168300",
+        ]),
+        ("retro-change:3cadf2de00d9a29b8815ea40", [
+            "retro-change:3cadf2de00d9a29b8815ea40",
+            "retro-change:94d1bf42d8323a709a0a267e",
+            "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+        ]),
+    ]:
+        retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day, candidates=[{
+            "type": "process-edit",
+            "statement": (
+                "Deduplicate equivalent retro items by normalized task text, "
+                "lineage, and theme before dispatching PM runs or draft PRs."
+            ),
+            "trigger": trigger,
+            "evidence_run_ids": evidence,
+            "source_team_ids": ["argus", "tadam"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "retro-dedupe",
+        }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM retro_backlog "
+            "WHERE team_id=%s AND type='process-edit'",
+            (retro.COMPANY_TEAM_ID,),
+        )
+        backlog_count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'"
+        )
+        request_count = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM events WHERE source='retro'")
+        event_count = cur.fetchone()[0]
+    assert backlog_count == 1
+    assert request_count == 1
     assert event_count == 1
 
 

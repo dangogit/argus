@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -372,9 +373,31 @@ def _normalize_candidate(team_id: str, candidate: dict) -> BacklogItem | None:
     else:
         status = "gated"
     priority = _priority(candidate.get("priority", candidate.get("impact")))
-    raw = f"{team_id}:{typ}:{statement}:{trigger}"
+    raw = f"{team_id}:{typ}:{_retro_dedupe_key(typ, statement, candidate)}"
     item_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
     return BacklogItem(item_id, team_id, typ, status, priority, statement, trigger)
+
+
+def _retro_dedupe_key(typ: str, statement: str, payload: dict) -> str:
+    theme = _normalize_task_text(str(payload.get("theme") or ""))
+    lineage = _lineage_key(payload)
+    return f"{typ}:{_normalize_task_text(statement)}:{theme}:{lineage}"
+
+
+def _normalize_task_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def _lineage_key(payload: dict) -> str:
+    values = []
+    for key in ("lineage", "request_lineage", "original_request_lineage",
+                "root_fingerprint", "source_fingerprint"):
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            values.extend(str(item) for item in raw if str(item))
+        elif raw:
+            values.append(str(raw))
+    return "|".join(sorted({_normalize_task_text(value) for value in values if value}))
 
 
 def _priority(value) -> int:
@@ -671,20 +694,30 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         )
         rows = cur.fetchall()
     queued = 0
+    queued_by_key: dict[str, tuple[str, str]] = {}
     for item_id, team_id, typ, statement, trigger, payload in rows:
         item_id = str(item_id)
         payload = payload or {}
         if payload.get("auto_request_id"):
+            key = _retro_dedupe_key(typ, statement, payload)
+            queued_by_key[key] = (str(payload["auto_request_id"]),
+                                  str(payload.get("auto_target_team") or ""))
             continue
         if not _auto_change_eligible(team_id, statement, trigger, payload):
             continue
         target_team = _auto_change_team(cfg, team_id)
         if not target_team:
             continue
+        key = _retro_dedupe_key(typ, statement, payload)
+        if key in queued_by_key:
+            request_id, queued_team = queued_by_key[key]
+            _mark_auto_queued(conn, item_id, request_id, queued_team or target_team)
+            continue
         fingerprint = f"retro-change:{item_id}"
         existing = _request_by_fingerprint(conn, target_team, fingerprint)
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
+            queued_by_key[key] = (existing, target_team)
             continue
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
@@ -699,6 +732,7 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         )
         if request_id:
             _mark_auto_queued(conn, item_id, request_id, target_team)
+            queued_by_key[key] = (request_id, target_team)
             queued += 1
     return queued
 
