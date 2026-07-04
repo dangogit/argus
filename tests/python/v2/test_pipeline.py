@@ -228,11 +228,16 @@ def test_low_disk_process_guard_key_normalizes_supplied_pairs():
     ) == pipeline._process_guard_key(
         wa_dedupe, "retro-change:2851e16d8281fc8ab7c28e49"
     )
+    assert pipeline._process_guard_key(
+        escalation, "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b"
+    ) == pipeline._process_guard_key(
+        wa_dedupe, "retro-change:2851e16d8281fc8ab7c28e49"
+    )
     assert pipeline._process_guard_key(escalation, "F1") is None
     assert pipeline._process_guard_key("fix login", "converse:one") is None
 
 
-def test_low_disk_process_guard_collapses_retro_change_and_converse_pairs(conn, cfg):
+def test_low_disk_process_guard_collapses_supplied_fingerprints(conn, cfg):
     cases = [
         (
             "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
@@ -269,12 +274,12 @@ def test_low_disk_process_guard_collapses_retro_change_and_converse_pairs(conn, 
     conn.commit()
 
     assert request_ids[0][0] is not None and request_ids[0][1] is None
-    assert request_ids[1][0] is not None and request_ids[1][1] is None
+    assert request_ids[1][0] is None and request_ids[1][1] is None
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM jobs WHERE team_id='dev' AND stage=0")
-        assert cur.fetchone()[0] == 2
+        assert cur.fetchone()[0] == 1
         cur.execute("SELECT count(*) FROM alerts WHERE fingerprint LIKE 'process-guard:%'")
-        assert cur.fetchone()[0] == 2
+        assert cur.fetchone()[0] == 3
 
 
 def test_triage_jobs_dedup_on_fingerprint(conn, cfg):

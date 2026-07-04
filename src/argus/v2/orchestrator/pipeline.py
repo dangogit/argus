@@ -95,11 +95,7 @@ def _process_guard_key(text: str, fingerprint: Optional[str]) -> Optional[str]:
         return None
     if not any(marker in cleaned for marker in ("low", "low-space", "free space")):
         return None
-    cleaned = re.sub(r"\s*::\s*senior did not pass after .*?$", "", cleaned)
-    cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
-    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
-    cleaned = " ".join(cleaned.split())
-    return f"low-disk:{cleaned}" if cleaned else None
+    return "low-disk:process"
 
 
 def _process_guard_duplicate(conn: psycopg.Connection, *, team_id: str,
