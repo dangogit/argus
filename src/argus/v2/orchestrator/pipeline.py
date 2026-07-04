@@ -45,11 +45,14 @@ _PIPELINE_CHECKPOINTS = (
 
 _REVIEW_RECONCILIATION = (
     "REVIEW RECONCILIATION:\n"
-    "- Before emitting ARGUS_RESULT verdict=fail or decision=changes, cite the "
-    "exact failing check, command, test, file, or review finding.\n"
+    "- Before emitting ARGUS_RESULT verdict=fail, decision=changes, a QA "
+    "summary failure, or a PR risk summary failure, cite the exact failing "
+    "check, command, test, file, or review finding.\n"
     "- Reconcile that failure against role-level outputs already in context. If "
     "the latest QA passed, senior approved, or the failure is from an unrelated "
     "previous run, do not label it qa-fail or senior-failed.\n"
+    "- Do not emit qa-fail or senior-failed from a stale transcript summary when "
+    "role-level outputs show a later pass or approve.\n"
     "- If the blocker is environment, auth, or access, classify that blocker "
     "separately from app-code regressions."
 )

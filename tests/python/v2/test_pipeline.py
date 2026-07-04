@@ -81,8 +81,14 @@ def test_enqueue_stage_adds_review_reconciliation_to_judges(conn, cfg):
         checkpoints = snapshots[role]["checkpoints"]
         assert "REVIEW RECONCILIATION:" in checkpoints
         assert "exact failing check" in checkpoints
+        assert "role-level outputs" in checkpoints
+        assert "QA summary failure" in checkpoints
+        assert "PR risk summary failure" in checkpoints
         assert "latest QA passed" in checkpoints
         assert "senior approved" in checkpoints
+        assert "senior-failed" in checkpoints
+        assert "stale transcript summary" in checkpoints
+        assert "later pass or approve" in checkpoints
 
 
 def test_add_prompt_hash_is_deterministic():
