@@ -70,6 +70,10 @@ def synthesize(conn: psycopg.Connection, *, retro_day: date | None = None) -> in
             item = _normalize_candidate(team_id, candidate)
             if item is None:
                 continue
+            candidate_payload = dict(candidate)
+            evidence_ids = sorted(_evidence_ids(candidate_payload))
+            if evidence_ids:
+                candidate_payload["evidence_run_ids"] = evidence_ids
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -81,11 +85,29 @@ def synthesize(conn: psycopg.Connection, *, retro_day: date | None = None) -> in
                       priority=EXCLUDED.priority,
                       statement=EXCLUDED.statement,
                       trigger=EXCLUDED.trigger,
-                      payload=retro_backlog.payload || EXCLUDED.payload,
+                      payload=retro_backlog.payload || EXCLUDED.payload ||
+                        jsonb_build_object(
+                          'evidence_run_ids',
+                          (
+                            SELECT COALESCE(jsonb_agg(DISTINCT value), '[]'::jsonb)
+                            FROM jsonb_array_elements_text(
+                              CASE jsonb_typeof(retro_backlog.payload->'evidence_run_ids')
+                                WHEN 'array' THEN retro_backlog.payload->'evidence_run_ids'
+                                WHEN 'string' THEN jsonb_build_array(retro_backlog.payload->>'evidence_run_ids')
+                                ELSE '[]'::jsonb
+                              END ||
+                              CASE jsonb_typeof(EXCLUDED.payload->'evidence_run_ids')
+                                WHEN 'array' THEN EXCLUDED.payload->'evidence_run_ids'
+                                WHEN 'string' THEN jsonb_build_array(EXCLUDED.payload->>'evidence_run_ids')
+                                ELSE '[]'::jsonb
+                              END
+                            ) AS evidence(value)
+                          )
+                        ),
                       updated_at=clock_timestamp()
                     """,
                     (item.id, item.team_id, item.type, item.status, item.priority,
-                     item.statement, item.trigger, Json(candidate)),
+                     item.statement, item.trigger, Json(candidate_payload)),
                 )
                 count += 1
     return count
@@ -372,7 +394,11 @@ def _normalize_candidate(team_id: str, candidate: dict) -> BacklogItem | None:
     else:
         status = "gated"
     priority = _priority(candidate.get("priority", candidate.get("impact")))
-    raw = f"{team_id}:{typ}:{statement}:{trigger}"
+    theme = " ".join(str(candidate.get("theme") or "").split())
+    if theme:
+        raw = f"{team_id}:{typ}:theme:{theme}"
+    else:
+        raw = f"{team_id}:{typ}:{statement}:{trigger}"
     item_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
     return BacklogItem(item_id, team_id, typ, status, priority, statement, trigger)
 

@@ -216,6 +216,71 @@ def test_auto_change_text_requires_grouping_before_repair():
     assert "disk:low:2a969bc5353e" in text
 
 
+def test_synthesize_groups_recurring_same_theme_findings(conn):
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[
+        {
+            "type": "process-edit",
+            "statement": "Route gender-classification reports to one owner and fix",
+            "trigger": "duplicate tadam-agents gender-classification bug report",
+            "evidence_run_ids": [
+                "supabase-tadam-agents-bug_reports-c664a210-dd41-459e-aa4e-9489b05f135f"
+            ],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "gender-classification-bug",
+        },
+        {
+            "type": "process-edit",
+            "statement": "Group duplicate gender reports before repairing",
+            "trigger": "second tadam-agents gender-classification bug report",
+            "evidence_run_ids": [
+                "supabase-tadam-agents-bug_reports-284b2295-9309-410f-b167-8fc3a16736d6"
+            ],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "gender-classification-bug",
+        },
+        {
+            "type": "process-edit",
+            "statement": "Route low-disk alerts to one owner and fix",
+            "trigger": "low-disk alert",
+            "evidence_run_ids": ["disk:low:2a969bc5353e"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "low-disk-alerts",
+        },
+        {
+            "type": "process-edit",
+            "statement": "Handle repeated low-disk alerts with one smallest fix",
+            "trigger": "second low-disk alert",
+            "evidence_run_ids": ["disk:low:7e457f84"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "low-disk-alerts",
+        },
+    ])
+
+    assert retro.synthesize(conn, retro_day=day) == 4
+
+    rows = retro.backlog(conn, team_id="dev")
+    assert len(rows) == 2
+    by_statement = {row.statement: row for row in rows}
+    assert "Group duplicate gender reports before repairing" in by_statement
+    assert "Handle repeated low-disk alerts with one smallest fix" in by_statement
+    with conn.cursor() as cur:
+        cur.execute("SELECT statement, payload FROM retro_backlog")
+        payloads = {statement: payload for statement, payload in cur.fetchall()}
+    assert set(payloads["Group duplicate gender reports before repairing"]["evidence_run_ids"]) == {
+        "supabase-tadam-agents-bug_reports-c664a210-dd41-459e-aa4e-9489b05f135f",
+        "supabase-tadam-agents-bug_reports-284b2295-9309-410f-b167-8fc3a16736d6",
+    }
+    assert set(payloads["Handle repeated low-disk alerts with one smallest fix"]["evidence_run_ids"]) == {
+        "disk:low:2a969bc5353e",
+        "disk:low:7e457f84",
+    }
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
