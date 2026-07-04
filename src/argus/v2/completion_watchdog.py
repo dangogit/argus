@@ -24,6 +24,15 @@ CONTENT_SOURCES = {
 }
 CONTENT_PREFIXES = ("content-approval:", "content-team-run:")
 LIVE_CONTENT_ACTIONS = {"publish", "schedule", "media", "cta"}
+LIVE_READINESS_CHECKS = (
+    "approval proof",
+    "durable media",
+    "CTA routes",
+    "DM activation",
+    "Metricool targets",
+    "connector auth",
+)
+LIVE_READINESS_TEXT = ", ".join(LIVE_READINESS_CHECKS)
 
 
 @dataclass(frozen=True)
@@ -120,7 +129,8 @@ def retry_request(conn: psycopg.Connection, cfg, request_id: str, *,
                          row.get("payload") or {})
     if mode == "live" and not force_live:
         return RetryResult(False, request_id, row.get("job_id"), "needs-force-live",
-                           "live content action requires --force-live after manual gate check")
+                           "live content action requires --force-live after manual "
+                           f"live-readiness check: {LIVE_READINESS_TEXT}")
     job_id = row.get("job_id")
     if not job_id:
         return RetryResult(False, request_id, None, "no-job", "request has no pipeline job")
@@ -368,6 +378,7 @@ def _alert_text(finding: WatchdogFinding) -> str:
         lines.append(f"Suggested retry: `{finding.retry_command}`")
     else:
         lines.append(f"Manual live retry only: `{finding.retry_command}`")
+        lines.append(f"Required live-readiness checks: {LIVE_READINESS_TEXT}")
     if finding.source in CONTENT_SOURCES or finding.fingerprint.startswith(CONTENT_PREFIXES):
         lines.append(
             "Safety: watchdog only alerts. It does not publish, schedule, upload media, or change CTA routes."

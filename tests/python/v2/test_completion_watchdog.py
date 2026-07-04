@@ -91,6 +91,41 @@ def _run_watchdog(conn, cfg):
     return inserted
 
 
+def test_live_alert_text_requires_readiness_checks():
+    text = completion_watchdog._alert_text(
+        completion_watchdog.WatchdogFinding(
+            request_id="r1",
+            team_id="content",
+            category="slow",
+            reason="request open for >= 45 minutes",
+            source="pm:content-approval-watch",
+            fingerprint="content-approval:slug:demo:publish:2",
+            request_status="open",
+            current_stage=0,
+            job_id="j1",
+            job_role="developer",
+            job_stage=0,
+            job_status="pending",
+            failure_reason="",
+            retry_command="argus request retry r1 --force-live",
+            retryable=False,
+            destination_ref="fake:argus-content",
+        )
+    )
+
+    assert "Manual live retry only: `argus request retry r1 --force-live`" in text
+    assert "Required live-readiness checks:" in text
+    for check in (
+        "approval proof",
+        "durable media",
+        "CTA routes",
+        "DM activation",
+        "Metricool targets",
+        "connector auth",
+    ):
+        assert check in text
+
+
 def test_old_content_approval_request_alerts_once(conn, tmp_path):
     fake.SENT.clear()
     cfg = _cfg(tmp_path)
@@ -189,6 +224,16 @@ def test_draft_retryable_live_manual(conn, tmp_path):
     live_text = next(text for text in texts if f"Request: {live}" in text)
     assert f"Suggested retry: `argus request retry {draft}`" in draft_text
     assert f"Manual live retry only: `argus request retry {live} --force-live`" in live_text
+    assert "Required live-readiness checks:" in live_text
+    for check in (
+        "approval proof",
+        "durable media",
+        "CTA routes",
+        "DM activation",
+        "Metricool targets",
+        "connector auth",
+    ):
+        assert check in live_text
     assert "Safety: watchdog only alerts." in live_text
 
     draft_retry = completion_watchdog.retry_request(conn, cfg, draft)
@@ -197,3 +242,5 @@ def test_draft_retryable_live_manual(conn, tmp_path):
     assert draft_retry.ok is True
     assert live_retry.ok is False
     assert live_retry.status == "needs-force-live"
+    assert "live-readiness check" in live_retry.reason
+    assert "Metricool targets" in live_retry.reason
