@@ -820,11 +820,23 @@ def _parsed_failure_detail(parsed: dict) -> str:
     return ""
 
 
+_SANDBOX_ENV_TARGETS = (
+    "postgres", "pg_isready", "psql", "pypi", "pip install",
+    "localhost", "127.0.0.1",
+)
+_SANDBOX_ENV_BLOCKERS = (
+    "sandbox", "network", "egress", "blocked", "cannot connect",
+    "can't connect", "could not connect", "unable to connect",
+    "connection refused", "connection reset", "connection timed out",
+    "network is unreachable", "operation not permitted",
+)
+
+
 def _is_sandbox_env_blocker(text: str) -> bool:
     lowered = (text or "").lower()
-    if not any(term in lowered for term in ("sandbox", "network", "localhost", "127.0.0.1")):
+    if not any(term in lowered for term in _SANDBOX_ENV_TARGETS):
         return False
-    return any(term in lowered for term in ("postgres", "pypi", "localhost", "127.0.0.1"))
+    return any(term in lowered for term in _SANDBOX_ENV_BLOCKERS)
 
 
 def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
@@ -906,8 +918,11 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
             "ORDER BY stage, updated_at",
             (request_id,))
         rows = cur.fetchall()
+    latest_by_role = {}
     parts = []
     for role, result in rows:
+        latest_by_role[role] = result
+    for role, result in latest_by_role.items():
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))

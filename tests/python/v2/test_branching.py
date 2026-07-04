@@ -155,6 +155,45 @@ def test_sandbox_blocked_qa_records_environment_blocker(conn, cfg_project, monke
     assert "QA environment blocker" in payload["risk_summary"]
 
 
+def test_later_passing_qa_summary_ignores_stale_sandbox_blocker(
+        conn, cfg_project, monkeypatch, tmp_path):
+    cfg_project.team("dev").pipeline.max_iters = 1
+    rid = _open(conn, cfg_project, text="fix local package smoke"); conn.commit()
+
+    monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
+    monkeypatch.setattr(workspace, "diff", lambda project, cwd: "+fixed\n")
+    monkeypatch.setattr(pipeline, "_changed_files", lambda cwd: ["src/package.py"])
+
+    _finish_stage(conn, "developer", {
+        "has_diff": True,
+        "parsed": {"ready": True, "summary": "Added package smoke handling."},
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {
+        "parsed": {
+            "verdict": "fail",
+            "reason": "PyPI localhost check blocked by sandbox network restrictions.",
+        }
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+
+    _finish_stage(conn, "developer", {
+        "has_diff": True,
+        "parsed": {"ready": True, "summary": "Kept package smoke handling."},
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+    senior = _finish_stage(conn, "senior", {"parsed": {"decision": "approve"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, senior.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM actions WHERE type='open_pr'")
+        payload = cur.fetchone()[0]
+    assert payload["checks"] == "QA: pass; Senior: approve"
+    assert payload["risk_summary"] == "low: QA passed and senior approved"
+
+
 def test_qa_pass_then_senior_approve_completes(conn, cfg_project):
     rid = _open(conn, cfg_project); conn.commit()
     _finish_stage(conn, "developer", {"output": "", "parsed": {}})

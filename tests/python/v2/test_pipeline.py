@@ -148,12 +148,50 @@ def test_sandbox_env_blocker_detects_postgres_pypi_and_localhost():
         "Postgres check blocked by sandbox network restrictions."
     ) is True
     assert pipeline._is_sandbox_env_blocker(
+        "pg_isready failed: operation not permitted by the sandbox."
+    ) is True
+    assert pipeline._is_sandbox_env_blocker(
         "PyPI check failed because sandbox network egress is disabled."
+    ) is True
+    assert pipeline._is_sandbox_env_blocker(
+        "Could not verify package on PyPI: network is unreachable."
     ) is True
     assert pipeline._is_sandbox_env_blocker(
         "localhost:3000 health check cannot run in this sandbox."
     ) is True
+    assert pipeline._is_sandbox_env_blocker(
+        "127.0.0.1 health check blocked by sandbox restrictions."
+    ) is True
+    assert pipeline._is_sandbox_env_blocker("PyPI returned HTTP 404") is False
     assert pipeline._is_sandbox_env_blocker("unit test failed with assertion error") is False
+
+
+def test_checks_summary_reconciles_latest_role_results():
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, *_args):
+            pass
+
+        def fetchall(self):
+            return [
+                ("qa", {"parsed": {
+                    "verdict": "fail",
+                    "reason": "Postgres localhost check blocked by sandbox network.",
+                }}),
+                ("qa", {"parsed": {"verdict": "pass"}}),
+                ("senior", {"parsed": {"decision": "approve"}}),
+            ]
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+    assert pipeline._checks_summary(Conn(), "r1") == "QA: pass; Senior: approve"
 
 
 def test_enqueue_stage_is_idempotent(conn, cfg):
