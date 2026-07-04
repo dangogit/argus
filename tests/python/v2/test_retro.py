@@ -184,6 +184,44 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_live_content_auto_change_requires_readiness_checks(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="__company__", retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": (
+            "Run live-readiness checks before dispatching live content publish, "
+            "CTA, or schedule work."
+        ),
+        "trigger": (
+            "Content live publish, CTA, and schedule attempts repeatedly stopped "
+            "on missing gates, expired media, and Slack reauth blockers."
+        ),
+        "evidence_run_ids": [
+            "content-approval:pr:2:schedule:1783134871.010009",
+            "content-approval:pr:1:cta:1783096672.050329",
+            "content-approval:pr:2:publish:1783099493.667819",
+            "content-approval:pr:2:schedule:1783139797.782729",
+        ],
+        "source_team_ids": ["content", "dev"],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "live-content-readiness",
+    }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT e.payload->>'text' "
+            "FROM events e JOIN requests r ON r.event_id=e.id "
+            "WHERE r.fingerprint LIKE 'retro-change:%'"
+        )
+        text = cur.fetchone()[0]
+    assert "approval proof, durable media" in text
+    assert "CTA routes, DM activation, Metricool targets, and connector auth" in text
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

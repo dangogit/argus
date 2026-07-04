@@ -765,15 +765,38 @@ def _auto_change_text(*, team_id: str, typ: str, statement: str,
                       trigger: str, payload: dict) -> str:
     scope = "company" if team_id == COMPANY_TEAM_ID else f"team {team_id}"
     evidence = ", ".join(_evidence_ids(payload)) or "none"
-    return "\n".join([
+    lines = [
         f"Retro auto-change request for {scope}.",
         f"Type: {typ}",
         f"Change: {statement}",
         f"Trigger: {trigger}",
         f"Evidence: {evidence}",
+    ]
+    if _is_live_content_change(statement, trigger, payload):
+        lines.append(
+            "Before dispatching live content publish, CTA, or schedule work, "
+            "require live-readiness checks for approval proof, durable media, "
+            "CTA routes, DM activation, Metricool targets, and connector auth."
+        )
+    lines.append(
         "Implement minimal internal change. Do not merge, deploy, send messages, "
-        "or change secrets.",
-    ])
+        "or change secrets."
+    )
+    return "\n".join(lines)
+
+
+def _is_live_content_change(statement: str, trigger: str, payload: dict) -> bool:
+    text = " ".join([
+        statement,
+        trigger,
+        str(payload.get("theme") or ""),
+        " ".join(_evidence_ids(payload)),
+    ]).lower()
+    return (
+        "content-approval:" in text
+        or "live content" in text
+        or ("content" in text and any(word in text for word in ("publish", "schedule", "cta")))
+    )
 
 
 def _evidence_ids(candidate: dict) -> set[str]:
