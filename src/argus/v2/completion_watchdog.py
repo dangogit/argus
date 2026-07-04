@@ -354,11 +354,18 @@ def _alert_key(row: dict[str, Any], *, category: str) -> str:
     fingerprint = str(row.get("fingerprint") or "")
     if source not in CONTENT_SOURCES and not fingerprint.startswith(CONTENT_PREFIXES):
         return f"completion-watchdog:{category}:{request_id}"
-    lineage = _content_lineage(fingerprint) or request_id
+    lineage = _content_lineage(row) or request_id
     return f"completion-watchdog:{category}:content:{lineage}:{_readiness_state(row)}"
 
 
-def _content_lineage(fingerprint: str) -> str:
+def _content_lineage(row: dict[str, Any]) -> str:
+    payload = row.get("payload")
+    if isinstance(payload, dict):
+        for key in ("original_request_id", "origin_request_id", "root_request_id"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+    fingerprint = str(row.get("fingerprint") or "")
     if not fingerprint.startswith(CONTENT_PREFIXES):
         return fingerprint
     parts = fingerprint.split(":")

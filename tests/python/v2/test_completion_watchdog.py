@@ -41,7 +41,8 @@ def _cfg(tmp_path, *, generic=False):
 
 
 def _open_request(conn, cfg, *, team="content", source="pm:content-approval-watch",
-                  fingerprint="content-approval:slug:demo:draft:1", text=None):
+                  fingerprint="content-approval:slug:demo:draft:1", text=None,
+                  extra_payload=None):
     text = text or (
         "Daniel approved one content draft action in argus-content.\n"
         "Approved action: draft\n"
@@ -49,7 +50,7 @@ def _open_request(conn, cfg, *, team="content", source="pm:content-approval-watc
     )
     eid = events.ingest_signal(
         conn, cfg, team=team, source=source, fingerprint=fingerprint,
-        payload={"text": text},
+        payload={"text": text, **(extra_payload or {})},
     )
     rid = pipeline.open_request(
         conn, cfg, event_id=eid, team_id=team, conversation_id=None,
@@ -91,6 +92,35 @@ def _run_watchdog(conn, cfg):
     return inserted
 
 
+def test_content_schedule_alert_key_uses_original_lineage_until_state_changes():
+    base = {
+        "request_id": "request-1",
+        "source": "pm:content-approval-watch",
+        "fingerprint": "content-approval:slug:weekly:schedule:ready-check",
+        "payload": {"original_request_id": "content-schedule-weekly"},
+        "job_result": {},
+    }
+    repeated = {
+        **base,
+        "request_id": "request-2",
+        "fingerprint": "content-approval:slug:weekly:schedule:blocker-check",
+    }
+    blocked = {
+        **repeated,
+        "job_result": {"parsed": {"ready": False, "status": "blocked"}},
+    }
+
+    assert completion_watchdog._alert_key(base, category="slow") == (
+        "completion-watchdog:slow:content:content-schedule-weekly:readiness:unknown"
+    )
+    assert completion_watchdog._alert_key(repeated, category="slow") == (
+        "completion-watchdog:slow:content:content-schedule-weekly:readiness:unknown"
+    )
+    assert completion_watchdog._alert_key(blocked, category="slow") == (
+        "completion-watchdog:slow:content:content-schedule-weekly:blocker:blocked"
+    )
+
+
 def test_old_content_approval_request_alerts_once(conn, tmp_path):
     fake.SENT.clear()
     cfg = _cfg(tmp_path)
@@ -121,14 +151,16 @@ def test_content_schedule_approval_alerts_collapse_by_lineage_until_state_change
     first = _open_request(
         conn,
         cfg,
-        fingerprint="content-approval:slug:weekly:schedule:1",
+        fingerprint="content-approval:slug:weekly:schedule:ready-check",
         text=text,
+        extra_payload={"original_request_id": "content-schedule-weekly"},
     )
     second = _open_request(
         conn,
         cfg,
-        fingerprint="content-approval:slug:weekly:schedule:2",
+        fingerprint="content-approval:slug:weekly:schedule:blocker-check",
         text=text,
+        extra_payload={"original_request_id": "content-schedule-weekly"},
     )
     _age_request(conn, first)
     _age_request(conn, second)
