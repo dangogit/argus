@@ -581,6 +581,22 @@ def test_content_drain_parser(monkeypatch):
     assert calls == ["drain"]
 
 
+def test_content_publish_requires_live_readiness_checks(capsys):
+    assert cli.main(["content", "publish", "draft-1"]) == 1
+
+    err = capsys.readouterr().err
+    assert "content publish: missing live-readiness checks:" in err
+    for check in (
+        "approval proof",
+        "durable media",
+        "CTA routes",
+        "DM activation",
+        "Metricool targets",
+        "connector auth",
+    ):
+        assert check in err
+
+
 def test_content_draft_list_and_publish(conn, pg_dsn, monkeypatch, capsys):
     from argus.v2.actions import handlers
     from argus.v2.content import state
@@ -594,16 +610,36 @@ def test_content_draft_list_and_publish(conn, pg_dsn, monkeypatch, capsys):
         "--request", "announce launch",
     ]) == 0
     draft_id = state.register("luma", "linkedin")
-    monkeypatch.setattr(handlers, "run", lambda action_type, payload: "posted:1")
+    calls = []
+    monkeypatch.setattr(
+        handlers,
+        "run",
+        lambda action_type, payload: calls.append((action_type, payload)) or "posted:1",
+    )
 
     assert cli.main(["content", "list"]) == 0
-    assert cli.main(["content", "publish", draft_id]) == 0
+    assert cli.main(["content", "publish", draft_id]) == 1
+    assert calls == []
+    assert cli.main([
+        "content", "publish", draft_id,
+        "--approval-proof",
+        "--durable-media",
+        "--cta-routes",
+        "--dm-activation",
+        "--metricool-targets",
+        "--connector-auth",
+    ]) == 0
 
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
+    err = captured.err
     assert "content queue " in out
     assert f"draft\t{draft_id}\tluma\tlinkedin\tready" in out
     assert "queue\t" in out
+    assert "content publish: missing live-readiness checks:" in err
+    assert "Metricool targets" in err
     assert "content publish: posted:1" in out
+    assert calls[0][0] == "social_publish"
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM content_drafts WHERE id=%s", (draft_id,))
         assert cur.fetchone()[0] == "published"

@@ -43,6 +43,21 @@ _PIPELINE_CHECKPOINTS = (
     "and remaining work."
 )
 
+_CONTENT_LIVE_SOURCES = frozenset({
+    "content-approval-watch",
+    "pm:content-approval-watch",
+})
+_CONTENT_LIVE_ACTIONS = frozenset({"publish", "schedule", "media", "cta"})
+_CONTENT_READINESS_CHECKS = (
+    "approval proof",
+    "durable media",
+    "CTA routes",
+    "DM activation",
+    "Metricool targets",
+    "connector auth",
+)
+_CONTENT_READINESS_TEXT = ", ".join(_CONTENT_READINESS_CHECKS)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -138,8 +153,65 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         if not row:
             return None  # active request already exists for this fingerprint
         request_id = str(row[0])
+    live_action = _live_content_action(conn, event_id, fingerprint)
+    if live_action:
+        _hold_live_content_request(conn, cfg, request_id=request_id,
+                                   team_id=team_id,
+                                   conversation_id=conversation_id,
+                                   action=live_action)
+        return request_id
     enqueue_stage(conn, cfg, request_id=request_id, stage_index=0)
     return request_id
+
+
+def _live_content_action(conn: psycopg.Connection, event_id, fingerprint: Optional[str]) -> str:
+    if not event_id:
+        return ""
+    with conn.cursor() as cur:
+        cur.execute("SELECT source, payload FROM events WHERE id=%s", (event_id,))
+        row = cur.fetchone()
+    if not row:
+        return ""
+    source, payload = str(row[0] or ""), row[1] or {}
+    return _live_content_action_from_event(source, payload, fingerprint)
+
+
+def _live_content_action_from_event(source: str, payload: dict,
+                                    fingerprint: Optional[str]) -> str:
+    if source not in _CONTENT_LIVE_SOURCES and not str(fingerprint or "").startswith(
+        "content-approval:"
+    ):
+        return ""
+    text = str(payload.get("text") or "")
+    match = re.search(r"approved action:\s*([a-z]+)", text.lower())
+    if not match:
+        return ""
+    action = match.group(1)
+    return action if action in _CONTENT_LIVE_ACTIONS else ""
+
+
+def _hold_live_content_request(conn: psycopg.Connection, cfg, *, request_id: str,
+                               team_id: str, conversation_id: Optional[str],
+                               action: str) -> None:
+    dest = _control_destination(conn, cfg, team_id, conversation_id)
+    text = (
+        f"Live content {action} work held before dispatch.\n"
+        f"Complete live-readiness checks first: {_CONTENT_READINESS_TEXT}."
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE requests SET status='awaiting_approval', updated_at=now() "
+            "WHERE id=%s",
+            (request_id,),
+        )
+        cur.execute(
+            "INSERT INTO actions (request_id, team_id, type, risk, destination_ref, "
+            "  idempotency_key, payload) "
+            "VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
+            "ON CONFLICT (idempotency_key) DO NOTHING",
+            (request_id, team_id, dest, f"live-content-readiness:{request_id}",
+             Json({"text": text, "severity": "warning"})),
+        )
 
 
 def _bug_ref_for_event(conn: psycopg.Connection, event_id) -> Optional[str]:

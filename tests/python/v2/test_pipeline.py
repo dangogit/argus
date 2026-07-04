@@ -25,6 +25,93 @@ def test_open_request_creates_first_stage_job(conn, cfg):
     assert rows == [("developer", 0, "pipeline")]  # first stage only
 
 
+def test_live_content_action_classifier_covers_publish_schedule_and_cta():
+    for action in ("publish", "schedule", "cta"):
+        assert pipeline._live_content_action_from_event(
+            "pm:content-approval-watch",
+            {"text": f"Approved action: {action}"},
+            "content-approval:slug:demo",
+        ) == action
+    assert pipeline._live_content_action_from_event(
+        "pm:content-approval-watch",
+        {"text": "Approved action: draft"},
+        "content-approval:slug:demo",
+    ) == ""
+    assert pipeline._live_content_action_from_event(
+        "manual",
+        {"text": "Approved action: publish"},
+        "manual:1",
+    ) == ""
+
+
+def test_live_content_approval_requires_readiness_before_dispatch(conn, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg_path = tmp_path / "argus.yaml"
+    cfg_path.write_text(
+        "company:\n"
+        "  name: c\n"
+        "  defaults: { engine: { engine: echo } }\n"
+        "teams:\n"
+        "  - name: content\n"
+        f"    project: {{ repo: {repo} }}\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n"
+        "    channels: [ { type: fake, role: control, channel_id: argus-content } ]\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(cfg_path)
+    eid = events.ingest_signal(
+        conn,
+        cfg,
+        team="content",
+        source="pm:content-approval-watch",
+        fingerprint="content-approval:slug:demo:publish:1",
+        payload={
+            "text": (
+                "Daniel approved one content live action in argus-content.\n"
+                "Approved action: publish\n"
+                "Run content publishing pipeline only for this exact target."
+            )
+        },
+    )
+    conn.commit()
+
+    rid = pipeline.open_request(
+        conn,
+        cfg,
+        event_id=eid,
+        team_id="content",
+        conversation_id=None,
+        fingerprint="content-approval:slug:demo:publish:1",
+    )
+    conn.commit()
+
+    assert rid is not None
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "awaiting_approval"
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s", (rid,))
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT destination_ref, payload->>'text' FROM actions "
+            "WHERE idempotency_key=%s",
+            (f"live-content-readiness:{rid}",),
+        )
+        dest, text = cur.fetchone()
+    assert dest == "fake:argus-content"
+    assert "Live content publish work held before dispatch." in text
+    for check in (
+        "approval proof",
+        "durable media",
+        "CTA routes",
+        "DM activation",
+        "Metricool targets",
+        "connector auth",
+    ):
+        assert check in text
+
+
 def test_enqueue_stage_sets_project_in_snapshot(conn, cfg):
     """Developer/pipeline jobs must carry project=team_id so the worker sets
     ARGUS_PROJECT (hermes per-project profile). Regression: it was omitted, so

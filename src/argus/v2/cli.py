@@ -29,6 +29,15 @@ WOW_FIRST_TASK = (
     "Prefer docs or tests if code risk is unclear."
 )
 
+LIVE_CONTENT_READINESS_FLAGS = (
+    ("approval_proof", "approval proof"),
+    ("durable_media", "durable media"),
+    ("cta_routes", "CTA routes"),
+    ("dm_activation", "DM activation"),
+    ("metricool_targets", "Metricool targets"),
+    ("connector_auth", "connector auth"),
+)
+
 
 def _cfg():
     path = os.environ.get("ARGUS_CONFIG") or os.environ["ARGUS_CONFIG_V2"]
@@ -1150,6 +1159,18 @@ def cmd_content(args) -> int:
         from argus.v2.actions import handlers
         from argus.v2.content import state
 
+        missing = [
+            label
+            for attr, label in LIVE_CONTENT_READINESS_FLAGS
+            if not getattr(args, attr, False)
+        ]
+        if missing:
+            print(
+                "content publish: missing live-readiness checks: "
+                + ", ".join(missing),
+                file=sys.stderr,
+            )
+            return 1
         draft = state.latest_draft(args.draft_id)
         if not draft:
             print(f"content publish: unknown draft {args.draft_id}", file=sys.stderr)
@@ -1801,6 +1822,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(fn=cmd_content)
     r = cts.add_parser("publish")
     r.add_argument("draft_id")
+    r.add_argument("--approval-proof", action="store_true")
+    r.add_argument("--durable-media", action="store_true")
+    r.add_argument("--cta-routes", action="store_true")
+    r.add_argument("--dm-activation", action="store_true")
+    r.add_argument("--metricool-targets", action="store_true")
+    r.add_argument("--connector-auth", action="store_true")
     r.set_defaults(fn=cmd_content)
     r = cts.add_parser("drain"); r.set_defaults(fn=cmd_content)
     s = sub.add_parser("brief")
