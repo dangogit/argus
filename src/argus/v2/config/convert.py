@@ -92,7 +92,9 @@ def _team_from_project(project: dict) -> dict:
              "for the owner: what was wrong and what you changed>\"} when you "
              "edited code, or {\"ready\": false, \"analysis\": \"<why no change "
              "was warranted>\"} otherwise."},
-            {"name": "qa", "kind": "judge", "prompt": "Run checks and judge the result."},
+            {"name": "qa", "kind": "judge", "prompt":
+             "Run checks and judge the result. Before marking qa-fail, classify "
+             "each blocker as environment, auth, access, or app-code regression."},
             {"name": "senior", "kind": "judge", "prompt": "Review the change before PR."},
         ],
         "pipeline": {"stages": ["researcher", "developer", "qa", "senior"], "max_iters": 2},
