@@ -678,7 +678,10 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                       f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}")
                 return
             pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd)
-            _record_memory_outcome(conn, job.request_id, "qa-pass", pr_info["summary_short"])
+            _record_memory_outcome(
+                conn, job.request_id, "qa-pass",
+                _pm_pass_note(conn, job.request_id, pr_info["summary_short"]),
+            )
             cur.execute(
                 "INSERT INTO actions "
                 "(request_id, job_id, team_id, type, risk, "
@@ -912,12 +915,41 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
-            parts.append(f"QA: {verdict}")
+            detail = _parsed_failure_detail(parsed)
+            suffix = (" (environment blocker)" if verdict == "pass"
+                      and _is_sandbox_network_environment_blocker(detail) else "")
+            parts.append(f"QA: {verdict}{suffix}")
         elif role == "browser_verify":
             parts.append(f"Browser: {parsed.get('verdict') or 'skip'}")
         elif role == "senior":
             parts.append(f"Senior: {parsed.get('decision') or 'approve'}")
     return "; ".join(parts) or "QA and senior approved"
+
+
+def _pm_pass_note(conn: psycopg.Connection, request_id: str, summary: str) -> str:
+    blocker = _qa_pass_environment_blocker(conn, request_id)
+    if not blocker:
+        return summary
+    return f"Environment blocker: {blocker} Otherwise passing: {summary}"
+
+
+def _qa_pass_environment_blocker(conn: psycopg.Connection, request_id: str) -> str:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT result FROM jobs WHERE request_id=%s AND role='qa' "
+            "ORDER BY stage, updated_at",
+            (request_id,))
+        rows = cur.fetchall()
+    for (result,) in rows:
+        if not isinstance(result, dict):
+            continue
+        parsed = result.get("parsed", {}) or {}
+        if contracts.qa_verdict(parsed, result.get("test_exit")) != "pass":
+            continue
+        detail = _parsed_failure_detail(parsed)
+        if _is_sandbox_network_environment_blocker(detail):
+            return detail
+    return ""
 
 
 def _changed_files(cwd: str) -> list[str]:

@@ -353,6 +353,52 @@ def test_pr_summary_falls_back_to_request_text(conn, cfg, tmp_path):
     assert "file(s):" not in info["body"].split("## Changed Files")[0]
 
 
+class _RowsCursor:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, *args, **kwargs):
+        return None
+
+    def fetchall(self):
+        return self.rows
+
+
+class _RowsConn:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def cursor(self):
+        return _RowsCursor(self.rows)
+
+
+def test_qa_pass_with_sandbox_network_checks_stays_pass_with_environment_note():
+    qa_detail = (
+        "Local Postgres and PyPI checks are blocked by sandbox networking: "
+        "pypi.org name resolution failed."
+    )
+    checks_conn = _RowsConn([
+        ("qa", {"parsed": {"verdict": "pass", "summary": qa_detail}}),
+        ("senior", {"parsed": {"decision": "approve"}}),
+    ])
+    note_conn = _RowsConn([
+        ({"parsed": {"verdict": "pass", "summary": qa_detail}},),
+    ])
+
+    assert pipeline._checks_summary(checks_conn, "rid") == (
+        "QA: pass (environment blocker); Senior: approve"
+    )
+    note = pipeline._pm_pass_note(note_conn, "rid", "Updated PM summary.")
+    assert note.startswith("Environment blocker:")
+    assert "Otherwise passing: Updated PM summary." in note
+
+
 def _developer_job(conn, rid, result: dict) -> Job:
     """Mark the open request's stage-0 developer job done with `result`, then
     return a Job matching that row so on_job_done can advance the pipeline."""
