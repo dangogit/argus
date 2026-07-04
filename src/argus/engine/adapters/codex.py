@@ -6,6 +6,7 @@ confined by the workspace-write sandbox.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -114,6 +115,15 @@ def _codex_progress_heartbeat(cwd: str, started_at: float):
 def _codex_sessions_root() -> Path:
     home = os.environ.get("CODEX_HOME")
     return (Path(home) if home else Path.home() / ".codex") / "sessions"
+
+
+def _config_override_args(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    args: list[str] = []
+    for item in shlex.split(raw):
+        args += ["-c", item]
+    return args
 
 
 def _resolve_path(path: str) -> Path:
@@ -240,6 +250,7 @@ def run(prompt: str) -> EngineResult:
     # per-job snapshot flag, surfaced here as ARGUS_CODEX_NETWORK by the worker.
     if os.environ.get("ARGUS_CODEX_NETWORK") == "1" and sandbox == "workspace-write":
         argv += ["-c", "sandbox_workspace_write.network_access=true"]
+    argv += _config_override_args(os.environ.get("ARGUS_CODEX_CONFIG_OVERRIDES"))
 
     started_at = time.time()
     if stdin_mode:
