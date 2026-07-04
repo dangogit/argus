@@ -307,6 +307,12 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
         else:
             _next(conn, cfg, job.request_id, 1)
     elif _is_qa(team, role):
+        env_blocker = _qa_environment_blocker(result or {})
+        if env_blocker:
+            reason = f"QA environment blocker: {env_blocker}"
+            _record_memory_outcome(conn, job.request_id, "blocked", reason)
+            _fail(conn, cfg, job.request_id, reason)
+            return
         verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
         if verdict == "pass" or (advisory and "verdict" not in parsed and (result or {}).get("test_exit") is None):
             _advance_or_done(conn, cfg, job, team)
@@ -407,6 +413,41 @@ _NO_FIX_MARKERS = (
 # only treat the result as an actionable diagnosis when one is present. Matches
 # path.ext or path.ext:line tokens (e.g. components/Pay.vue:498, src/index.ts).
 _FILE_REF_RE = re.compile(r"[\w./-]+\.[A-Za-z]{1,6}(?::\d+)?")
+
+_DB_ENV_BLOCKER_MARKERS = (
+    "could not connect",
+    "connection refused",
+    "is the server running",
+    "no postgres server available",
+    "postgres initdb failed",
+    "operationalerror",
+    "localhost",
+    "127.0.0.1",
+)
+
+
+def _qa_environment_blocker(result: dict) -> str:
+    """Detect DB-backed QA that was blocked by the local Postgres environment.
+
+    A non-zero test command with localhost/Postgres availability text is an
+    environment blocker, not a code verdict. This stops a later structured
+    `{"verdict":"pass"}` from counting QA as fully passed when DB checks never
+    actually ran.
+    """
+    test_exit = result.get("test_exit")
+    if test_exit in (None, 0):
+        return ""
+    output = str(result.get("test_output") or result.get("output") or result.get("error") or "")
+    lowered = output.lower()
+    if "postgres" not in lowered and "psycopg" not in lowered:
+        return ""
+    if not any(marker in lowered for marker in _DB_ENV_BLOCKER_MARKERS):
+        return ""
+    return _one_line(output, limit=300) or "Postgres unavailable during QA verification."
+
+
+def _one_line(text: str, *, limit: int) -> str:
+    return " ".join(str(text or "").split())[:limit]
 
 
 def _recommends_fix(parsed: dict, analysis: str) -> bool:

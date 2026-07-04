@@ -357,6 +357,19 @@ def _developer_job(conn, rid, result: dict) -> Job:
                exec_snapshot={}, payload={})
 
 
+def _pipeline_job(conn, rid, role: str, stage: int, result: dict) -> Job:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, event_id, conversation_id, team_id FROM jobs "
+                    "WHERE request_id=%s AND role=%s AND stage=%s", (rid, role, stage))
+        jid, eid, conv, team_id = cur.fetchone()
+        cur.execute("UPDATE jobs SET status='done', result=%s WHERE id=%s",
+                    (Json(result), jid))
+    return Job(id=jid, request_id=rid, event_id=eid, conversation_id=conv,
+               team_id=team_id, role=role, stage=stage, kind="pipeline",
+               status="done", attempts=0, max_attempts=3, claim_token=None,
+               exec_snapshot={}, payload={})
+
+
 def test_recommends_fix_helper_classifies_diagnosed_but_unapplied():
     """_recommends_fix: a concrete, located, recommended fix with no diff is the
     third class of ready=false (not blocked, not genuine no-fix)."""
@@ -556,6 +569,55 @@ def test_dev_ready_advances_to_qa(conn, cfg_project):
     with conn.cursor() as cur:
         cur.execute("SELECT role, stage FROM jobs WHERE request_id=%s AND role='qa'", (rid,))
         assert cur.fetchone() == ("qa", 1)
+
+
+def test_qa_environment_blocker_classifies_postgres_unavailable():
+    reason = pipeline._qa_environment_blocker({
+        "parsed": {"verdict": "pass"},
+        "test_exit": 2,
+        "test_output": (
+            "psycopg.OperationalError: could not connect to server: "
+            "Connection refused. Is the server running on host localhost? "
+            "Postgres verification did not run."
+        ),
+    })
+
+    assert "Postgres verification did not run" in reason
+
+
+def test_qa_postgres_environment_blocker_is_not_full_pass(conn, cfg_project):
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="qa-db-block", text="fix it")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None, fingerprint="QA-DB-BLOCK")
+    conn.commit()
+    dev = _developer_job(conn, rid, {"has_diff": True,
+                                     "parsed": {"ready": True, "summary": "fixed"}})
+    pipeline.on_job_done(conn, cfg_project, dev)
+    conn.commit()
+
+    qa = _pipeline_job(conn, rid, "qa", 1, {
+        "parsed": {"verdict": "pass", "summary": "Looks good."},
+        "test_exit": 2,
+        "test_output": (
+            "psycopg.OperationalError: connection refused\n"
+            "Is the server running on host \"127.0.0.1\" and accepting TCP/IP "
+            "connections?\nPostgres verification did not run."
+        ),
+    })
+    pipeline.on_job_done(conn, cfg_project, qa)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "failed"
+        cur.execute("SELECT count(*) FROM actions WHERE request_id=%s AND type='open_pr'", (rid,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE fingerprint='QA-DB-BLOCK'")
+        outcome, note = cur.fetchone()
+    assert outcome == "blocked"
+    assert "QA environment blocker" in note
+    assert "Postgres" in note
 
 
 def test_failure_text_warns_timeout_may_have_side_effects(conn, cfg_project):
