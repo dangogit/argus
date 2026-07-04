@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from threading import Event, Thread
 from urllib.parse import urlparse
 
+import psycopg
+
 from argus.v2 import alerts
 from argus.v2.browser import (
     PreviewError,
@@ -53,7 +55,7 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
         heartbeat_thread = _start_heartbeat(job.id, job.claim_token, heartbeat_stop)
         workdir = None
         test_exit = None
-        test_context = None
+        test_contexts = []
         try:
             team = cfg.team(job.team_id) if job.team_id else None
             project = getattr(team, "project", None) if team else None
@@ -89,18 +91,25 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                             capture_output=True, text=True, timeout=timeout,
                         )
                         test_exit = test_run.returncode
-                        test_context = _format_test_context(
-                            project.test_cmd, test_exit, test_run.stdout, test_run.stderr)
+                        test_contexts.append(_format_test_context(
+                            project.test_cmd, test_exit, test_run.stdout, test_run.stderr))
                     except subprocess.TimeoutExpired:
                         test_exit = 124
-                        test_context = _format_test_context(
-                            project.test_cmd, test_exit, "", f"timed out after {timeout}s")
+                        test_contexts.append(_format_test_context(
+                            project.test_cmd, test_exit, "", f"timed out after {timeout}s"))
+                if _is_qa_role(team, job.role):
+                    pg_exit, pg_context = _qa_postgres_context(project)
+                    if pg_context:
+                        test_contexts.append(pg_context)
+                    if pg_exit is not None and pg_exit != 0 and (test_exit in (None, 0)):
+                        test_exit = pg_exit
 
             bundle = ctx.assemble(conn, team_id=job.team_id,
                                   conversation_id=job.conversation_id,
                                   now=datetime.now(timezone.utc), cfg=cfg,
                                   query=(job.payload or {}).get("text", ""))
             context = bundle.as_prompt()
+            test_context = "\n\n".join(test_contexts)
             if test_context:
                 context = f"{context}\n\n{test_context}" if context else test_context
             if job.kind in ("converse", "triage"):
@@ -375,6 +384,24 @@ def _stop_heartbeat(stop: Event, thread: Thread | None) -> None:
     stop.set()
     if thread:
         thread.join(timeout=2)
+
+
+def _qa_postgres_context(project) -> tuple[int | None, str | None]:
+    if not getattr(project, "require_postgres_for_qa", False):
+        return None, None
+    dsn = os.environ.get("ARGUS_QA_DB_DSN") or os.environ.get("ARGUS_DB_DSN")
+    if not dsn:
+        return 125, _format_test_context(
+            "postgres readiness", 125, "",
+            "environment blocker: ARGUS_QA_DB_DSN or ARGUS_DB_DSN is required for DB-backed QA")
+    try:
+        with psycopg.connect(dsn, connect_timeout=2) as conn:
+            conn.execute("SELECT 1")
+    except psycopg.OperationalError as exc:
+        return 125, _format_test_context(
+            "postgres readiness", 125, "",
+            f"environment blocker: Postgres unavailable for DB-backed QA: {exc}")
+    return 0, _format_test_context("postgres readiness", 0, "ok", "")
 
 
 def _is_qa_role(team, role_name: str) -> bool:

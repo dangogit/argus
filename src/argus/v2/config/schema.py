@@ -131,6 +131,7 @@ class ProjectDefaults(BaseModel):
     setup_timeout_seconds: Optional[int] = None
     test_cmd: Optional[str] = None
     test_timeout_seconds: Optional[int] = None
+    require_postgres_for_qa: Optional[bool] = None
     remote: Optional[str] = None
     github_repo: Optional[str] = None
     allow_code_mode: Optional[bool] = None
@@ -176,6 +177,7 @@ class Project(BaseModel):
     setup_timeout_seconds: int = 900
     test_cmd: Optional[str] = None
     test_timeout_seconds: int = 900
+    require_postgres_for_qa: bool = False
     remote: str = "origin"
     github_repo: Optional[str] = None   # owner/repo override for gh (else from remote)
     allow_code_mode: bool = True        # builder/worker may batch edits via ARGUS_SCRIPT

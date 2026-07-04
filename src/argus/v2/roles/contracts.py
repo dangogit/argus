@@ -78,15 +78,18 @@ def qa_verdict(result: dict, test_exit: Optional[int]) -> str:
     """Determine qa verdict.
 
     Priority:
-    1. parsed verdict field when present.
-    2. test_exit when present: 0 -> pass, non-zero -> fail.
-    3. PASS, for advisory or no-project mode with no structured result.
+    1. non-zero test_exit when present: deterministic checks failed.
+    2. parsed verdict field when present.
+    3. zero test_exit when present: pass.
+    4. PASS, for advisory or no-project mode with no structured result.
     """
+    if test_exit is not None and test_exit != 0:
+        return "fail"
     v = result.get("verdict")
     if v is not None:
         return "pass" if v == "pass" else "fail"
     if test_exit is not None:
-        return "pass" if test_exit == 0 else "fail"
+        return "pass"
     return "pass"  # no test_cmd and no verdict
 
 

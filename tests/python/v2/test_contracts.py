@@ -20,8 +20,8 @@ def test_qa_verdict_uses_test_exit_without_structured_verdict():
     assert contracts.qa_verdict({"verdict": "fail"}, test_exit=None) == "fail"
 
 
-def test_qa_verdict_prefers_structured_verdict():
-    assert contracts.qa_verdict({"verdict": "pass"}, test_exit=1) == "pass"
+def test_qa_verdict_deterministic_failure_overrides_structured_pass():
+    assert contracts.qa_verdict({"verdict": "pass"}, test_exit=1) == "fail"
     assert contracts.qa_verdict({"verdict": "fail"}, test_exit=0) == "fail"
 
 

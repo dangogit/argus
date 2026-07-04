@@ -81,6 +81,53 @@ def too_vague_to_dispatch(text: str) -> bool:
     return len(words) < 2 or len(cleaned) < 6
 
 
+def _low_disk_process_key(fingerprint: Optional[str], text: str) -> Optional[str]:
+    """Collapse the same low-disk process request across chat and retro origins."""
+    if not fingerprint or not (
+        fingerprint.startswith("converse:") or fingerprint.startswith("retro-change:")
+    ):
+        return None
+    cleaned = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
+    if "disk" not in cleaned or not any(
+        token in cleaned for token in ("low", "space", "capacity")
+    ):
+        return None
+    if any(token in cleaned for token in ("dedupe", "duplicate", "already sent", "same alert")):
+        return "low-disk-process:dedupe-notification"
+    if any(token in cleaned for token in ("escalate", "three", "3", "same day")):
+        return "low-disk-process:three-occurrence-escalation"
+    return None
+
+
+def _equivalent_process_request_exists(
+    conn: psycopg.Connection,
+    *,
+    team_id: str,
+    fingerprint: Optional[str],
+    text: str,
+) -> bool:
+    key = _low_disk_process_key(fingerprint, text)
+    if not key:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.fingerprint, e.payload->>'text'
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.team_id=%s
+              AND r.created_at >= now() - interval '24 hours'
+              AND (r.fingerprint LIKE 'converse:%%'
+                   OR r.fingerprint LIKE 'retro-change:%%')
+            """,
+            (team_id,),
+        )
+        return any(
+            _low_disk_process_key(row[0], row[1] or "") == key
+            for row in cur.fetchall()
+        )
+
+
 def _stage_key(request_id: str, stage_index: int, branch_iter: int) -> str:
     raw = f"{request_id}:stage:{stage_index}:iter:{branch_iter}"
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -90,6 +137,13 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
                  conversation_id: Optional[str], fingerprint: Optional[str] = None,
                  dedup_terminal: bool = False) -> Optional[str]:
     with conn.cursor() as cur:
+        text = _request_text(conn, event_id)
+        if _equivalent_process_request_exists(
+            conn, team_id=team_id, fingerprint=fingerprint, text=text
+        ):
+            log.info("request suppressed by equivalent process guard team=%s fingerprint=%s",
+                     team_id, fingerprint, extra={"team_id": team_id})
+            return None
         if fingerprint and dedup_terminal:
             # Signal-origin work: a connector row maps to one fingerprint for its
             # whole lifetime, so a re-emitted row must NOT open a second pipeline

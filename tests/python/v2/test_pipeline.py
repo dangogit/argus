@@ -200,6 +200,56 @@ def test_signal_fingerprint_dedups_across_completion(conn, cfg):
         assert cur.fetchone()[0] == 1  # exactly one stage-0 job for the row
 
 
+def test_low_disk_process_guard_collapses_retro_and_converse_pairs(conn, cfg):
+    cases = [
+        (
+            "retro-change:3cadf2de00d9a29b8815ea40",
+            "Add minimal Argus process change so disk low-space alerts escalate "
+            "a fingerprint after three same-day occurrences instead of continuing "
+            "warning-only hourly notifications.",
+        ),
+        (
+            "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+            "Add minimal Argus process change so disk low-space alerts escalate "
+            "a fingerprint after three same-day occurrences instead of continuing "
+            "warning-only hourly notifications.",
+        ),
+        (
+            "retro-change:2851e16d8281fc8ab7c28e49",
+            "Implement a minimal dedupe guard before WhatsApp posting for low-disk "
+            "notifications: if the same alert fingerprint was already sent within "
+            "a short window, skip the duplicate.",
+        ),
+        (
+            "converse:cb8313d2-be1f-4fd4-9098-805913ebd9f2",
+            "Implement a minimal dedupe guard before WhatsApp posting for low-disk "
+            "notifications: if the same alert fingerprint was already sent within "
+            "a short window, skip the duplicate.",
+        ),
+    ]
+    request_ids = []
+    for idx, (fingerprint, text) in enumerate(cases):
+        eid = events.ingest_message(conn, cfg, team="dev", source=f"low-disk-{idx}",
+                                    dedup_key=fingerprint, text=text)
+        conn.commit()
+        request_ids.append(pipeline.open_request(
+            conn, cfg, event_id=eid, team_id="dev", conversation_id=None,
+            fingerprint=fingerprint))
+        conn.commit()
+
+    assert [rid is not None for rid in request_ids] == [True, False, True, False]
+    with conn.cursor() as cur:
+        cur.execute("SELECT fingerprint FROM requests")
+        rows = [row[0] for row in cur.fetchall()]
+        cur.execute("SELECT count(*) FROM jobs WHERE kind='pipeline'")
+        job_count = cur.fetchone()[0]
+    assert set(rows) == {
+        "retro-change:3cadf2de00d9a29b8815ea40",
+        "retro-change:2851e16d8281fc8ab7c28e49",
+    }
+    assert job_count == 2
+
+
 def test_triage_jobs_dedup_on_fingerprint(conn, cfg):
     # The triage job key is fingerprint-derived, so two emissions of the same
     # signal collapse to a single job via ON CONFLICT.

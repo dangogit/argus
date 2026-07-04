@@ -206,6 +206,55 @@ def test_worker_turns_qa_test_timeout_into_context(conn, tmp_path, monkeypatch):
     assert "timed out after 3s" in result["test_output"]
 
 
+def test_worker_marks_missing_qa_postgres_as_environment_blocker(
+        conn, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "argus.yaml"
+    cfg_path.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n  - name: dev\n"
+        f"    project: {{ repo: {tmp_path}, base_branch: main, test_cmd: \"true\", "
+        "require_postgres_for_qa: true }\n"
+        "    roles: [ { name: qa, kind: judge, prompt: p } ]\n"
+        "    pipeline: { stages: [qa] }\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(cfg_path)
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="qa-pg-blocker", text="check it")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO requests (event_id, team_id) VALUES (%s,'dev') RETURNING id",
+                    (eid,))
+        rid = str(cur.fetchone()[0])
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="qa", stage=0,
+                 idempotency_key="qa-pg-blocker", exec_snapshot={"engine": "echo"},
+                 payload={"text": "check it"}, request_id=rid, event_id=eid)
+    conn.commit()
+
+    monkeypatch.setenv(
+        "ARGUS_QA_DB_DSN",
+        "host=127.0.0.1 port=1 dbname=argus user=argus",
+    )
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree(str(tmp_path), "b", str(tmp_path)))
+
+    def fake_run_job(cfg, job, context, workdir):
+        return (
+            RunRecord(role=job.role, engine="echo", status="ok",
+                      output='ARGUS_RESULT: {"verdict": "pass"}'),
+            {},
+            [],
+        )
+
+    monkeypatch.setattr(worker.job_exec, "run_job", fake_run_job)
+
+    assert worker.run_once(cfg, "w1") is True
+    with conn.cursor() as cur:
+        cur.execute("SELECT result FROM jobs WHERE idempotency_key='qa-pg-blocker'")
+        result = cur.fetchone()[0]
+    assert result["test_exit"] == 125
+    assert "environment blocker: Postgres unavailable" in result["test_output"]
+
+
 def test_builder_without_diff_marks_not_ready(conn, tmp_path, monkeypatch):
     cfg_path = tmp_path / "argus.yaml"
     cfg_path.write_text(
