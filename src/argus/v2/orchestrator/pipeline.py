@@ -506,11 +506,13 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
     key = str(to_idx)
     current = int(counters.get(key, 0))
     if current >= team.pipeline.max_iters:
+        env_blocked = _is_sandbox_env_blocker(detail)
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
-            reason = f"{reason} Blocking issue: {detail}"
+            label = "Environment blocker" if env_blocked else "Blocking issue"
+            reason = f"{reason} {label}: {detail}"
         _record_memory_outcome(
-            conn, job.request_id, "qa-fail",
+            conn, job.request_id, "blocked" if env_blocked else "qa-fail",
             reason,
         )
         if _open_draft_pr_after_failure(conn, cfg, job, reason):
@@ -737,7 +739,13 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
               f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}")
         return True
 
-    failure_label = "QA failed" if job.role == "qa" else f"{job.role} failed"
+    env_blocked = _is_sandbox_env_blocker(reason)
+    failure_label = (
+        "QA environment blocker" if job.role == "qa" and env_blocked
+        else "QA failed" if job.role == "qa"
+        else f"{job.role} environment blocker" if env_blocked
+        else f"{job.role} failed"
+    )
     risk = f"needs review: {failure_label}; {reason} Opened as draft so the diff is inspectable."
     pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd, risk_summary=risk)
     with conn.cursor() as cur:
@@ -810,6 +818,13 @@ def _parsed_failure_detail(parsed: dict) -> str:
         if value:
             return str(value)
     return ""
+
+
+def _is_sandbox_env_blocker(text: str) -> bool:
+    lowered = (text or "").lower()
+    if not any(term in lowered for term in ("sandbox", "network", "localhost", "127.0.0.1")):
+        return False
+    return any(term in lowered for term in ("postgres", "pypi", "localhost", "127.0.0.1"))
 
 
 def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
@@ -896,6 +911,8 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
+            if verdict == "fail" and _is_sandbox_env_blocker(_parsed_failure_detail(parsed)):
+                verdict = "environment-blocked"
             parts.append(f"QA: {verdict}")
         elif role == "browser_verify":
             parts.append(f"Browser: {parsed.get('verdict') or 'skip'}")

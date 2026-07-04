@@ -143,6 +143,19 @@ def test_looks_blocked_distinguishes_block_from_no_fix():
     assert pipeline._looks_blocked({"status": "no_fix"}, "could not find a bug") is False
 
 
+def test_sandbox_env_blocker_detects_postgres_pypi_and_localhost():
+    assert pipeline._is_sandbox_env_blocker(
+        "Postgres check blocked by sandbox network restrictions."
+    ) is True
+    assert pipeline._is_sandbox_env_blocker(
+        "PyPI check failed because sandbox network egress is disabled."
+    ) is True
+    assert pipeline._is_sandbox_env_blocker(
+        "localhost:3000 health check cannot run in this sandbox."
+    ) is True
+    assert pipeline._is_sandbox_env_blocker("unit test failed with assertion error") is False
+
+
 def test_enqueue_stage_is_idempotent(conn, cfg):
     eid = _event(conn, cfg); conn.commit()
     rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",

@@ -123,6 +123,38 @@ def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, t
         assert "QA failed" in payload["body"]
 
 
+def test_sandbox_blocked_qa_records_environment_blocker(conn, cfg_project, monkeypatch, tmp_path):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(conn, cfg_project, text="fix local db smoke"); conn.commit()
+
+    monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
+    monkeypatch.setattr(workspace, "diff", lambda project, cwd: "+fixed\n")
+    monkeypatch.setattr(pipeline, "_changed_files", lambda cwd: ["src/db.py"])
+
+    _finish_stage(conn, "developer", {
+        "has_diff": True,
+        "parsed": {"ready": True, "summary": "Added the DB smoke fix."},
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {
+        "parsed": {
+            "verdict": "fail",
+            "reason": "Postgres localhost check blocked by sandbox network restrictions.",
+        }
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        outcome, note = cur.fetchone()
+        cur.execute("SELECT payload FROM actions WHERE type='open_pr'")
+        payload = cur.fetchone()[0]
+    assert outcome == "blocked"
+    assert "Environment blocker: Postgres localhost check blocked" in note
+    assert payload["checks"] == "QA: environment-blocked"
+    assert "QA environment blocker" in payload["risk_summary"]
+
+
 def test_qa_pass_then_senior_approve_completes(conn, cfg_project):
     rid = _open(conn, cfg_project); conn.commit()
     _finish_stage(conn, "developer", {"output": "", "parsed": {}})
