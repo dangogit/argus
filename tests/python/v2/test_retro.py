@@ -184,6 +184,77 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_auto_changes_coalesce_same_task_and_theme(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    cases = [
+        (
+            "Update the QA reporting prompt/process so QA reports must classify "
+            "environment blockers, auth blockers, and access blockers separately "
+            "from app-code regressions before marking qa-fail.",
+            "qa-blocker-classification",
+        ),
+        (
+            "Implement the minimal internal process change so recurring same-theme "
+            "findings are grouped under one owner, flow, and smallest fix "
+            "recommendation before starting repair work.",
+            "recurring-finding-grouping",
+        ),
+        (
+            "Implement a minimal internal change to suppress duplicate owner alert "
+            "notifications when alerts share the same fingerprint and updated_at "
+            "within a short send window.",
+            "duplicate-alert-suppression",
+        ),
+    ]
+    candidates = []
+    for idx, (statement, theme) in enumerate(cases):
+        candidates.extend([
+            {
+                "type": "process-edit",
+                "statement": statement,
+                "trigger": "converse duplicate evidence",
+                "evidence_run_ids": [f"{theme}-a", f"{theme}-b", f"{theme}-c"],
+                "confidence": 0.9,
+                "impact": 8,
+                "theme": theme,
+            },
+            {
+                "type": "process-edit",
+                "statement": f"  {statement.upper()}  ",
+                "trigger": f"retro-change duplicate evidence {idx}",
+                "evidence_run_ids": [f"{theme}-d", f"{theme}-e", f"{theme}-f"],
+                "confidence": 0.9,
+                "impact": 8,
+                "theme": f"  {theme}  ",
+            },
+        ])
+    retro.record(conn, team_id="dev", retro_day=day, candidates=candidates)
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'"
+        )
+        request_count = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM events WHERE source='retro'")
+        event_count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(DISTINCT payload->>'auto_request_id') FROM retro_backlog "
+            "WHERE payload ? 'auto_request_id'"
+        )
+        distinct_auto_requests = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM retro_backlog WHERE payload ? 'auto_request_id'"
+        )
+        queued_backlog_items = cur.fetchone()[0]
+    assert request_count == 3
+    assert event_count == 3
+    assert distinct_auto_requests == 3
+    assert queued_backlog_items == 6
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

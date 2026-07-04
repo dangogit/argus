@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -688,10 +689,22 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
             continue
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
+        existing = _request_by_auto_change_task(conn, target_team=target_team,
+                                                item_id=item_id,
+                                                statement=statement,
+                                                payload=payload)
+        if existing:
+            _mark_auto_queued(conn, item_id, existing, target_team)
+            continue
         event_id = events.ingest_message(
             conn, cfg, team=target_team, source="retro",
             dedup_key=fingerprint, text=text,
-            metadata={"retro_backlog_id": item_id, "retro_source_team": team_id},
+            metadata={
+                "retro_backlog_id": item_id,
+                "retro_source_team": team_id,
+                "retro_task_text": statement,
+                "retro_theme": _payload_theme(payload),
+            },
         )
         request_id = pipeline.open_request(
             conn, cfg, event_id=event_id, team_id=target_team,
@@ -742,6 +755,43 @@ def _request_by_fingerprint(conn: psycopg.Connection, team_id: str,
         )
         row = cur.fetchone()
     return row[0] if row else None
+
+
+def _request_by_auto_change_task(conn: psycopg.Connection, *, target_team: str,
+                                 item_id: str, statement: str,
+                                 payload: dict) -> str | None:
+    task_key = _task_key(statement)
+    theme_key = _task_key(_payload_theme(payload))
+    if not task_key or not theme_key:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT payload->>'auto_request_id', statement, payload
+            FROM retro_backlog
+            WHERE id<>%s
+              AND type=ANY(%s)
+              AND payload ? 'auto_request_id'
+              AND payload->>'auto_target_team'=%s
+            ORDER BY updated_at DESC
+            """,
+            (item_id, list(_AUTO_TYPES), target_team),
+        )
+        rows = cur.fetchall()
+    for request_id, existing_statement, existing_payload in rows:
+        existing_payload = existing_payload or {}
+        if (_task_key(str(existing_statement or "")) == task_key
+                and _task_key(_payload_theme(existing_payload)) == theme_key):
+            return str(request_id)
+    return None
+
+
+def _payload_theme(payload: dict) -> str:
+    return str((payload or {}).get("theme") or "").strip()
+
+
+def _task_key(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).split())
 
 
 def _mark_auto_queued(conn: psycopg.Connection, item_id: str, request_id: str,
