@@ -83,6 +83,11 @@ _POSTGRES_ENV_MARKERS = (
     "connection to server at",
     "psycopg.operationalerror",
 )
+_LOCALHOST_ENV_MARKERS = (
+    "localhost",
+    "127.0.0.1",
+    "::1",
+)
 
 
 def qa_verdict(result: dict, test_exit: Optional[int],
@@ -110,7 +115,9 @@ def qa_environment_blocked(test_output: str | None) -> bool:
     lowered = (test_output or "").lower()
     if not lowered:
         return False
-    if "postgres" not in lowered and "psycopg" not in lowered:
+    has_db_context = "postgres" in lowered or "psycopg" in lowered
+    has_localhost_context = any(marker in lowered for marker in _LOCALHOST_ENV_MARKERS)
+    if not has_db_context and not has_localhost_context:
         return False
     return any(marker in lowered for marker in _POSTGRES_ENV_MARKERS)
 

@@ -33,6 +33,19 @@ def test_qa_verdict_blocks_postgres_environment_failure_before_structured_pass()
     assert contracts.qa_verdict({"verdict": "pass"}, test_exit=1, test_output=output) == "blocked"
 
 
+def test_qa_verdict_blocks_localhost_environment_failure_without_db_word():
+    output = (
+        "ERROR: connection to server at \"localhost\" (::1), port 5440 failed: "
+        "Connection refused"
+    )
+    assert contracts.qa_verdict({"verdict": "pass"}, test_exit=1, test_output=output) == "blocked"
+
+
+def test_qa_verdict_blocks_postgres_skip_even_when_test_exit_passes():
+    output = "SKIPPED tests/python/v2/test_migrate.py: no postgres server available"
+    assert contracts.qa_verdict({"verdict": "pass"}, test_exit=0, test_output=output) == "blocked"
+
+
 def test_senior_decision_defaults_changes_when_unclear():
     assert contracts.senior_decision({"decision": "approve"}) == "approve"
     assert contracts.senior_decision({}) == "changes"  # fail-safe: don't ship unreviewed
