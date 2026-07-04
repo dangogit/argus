@@ -70,6 +70,38 @@ def test_exhausted_qa_records_project_memory(conn, cfg_project):
         assert cur.fetchall() == [("prior", "qa-fail")]
 
 
+def test_exhausted_qa_sandbox_network_check_records_environment_blocker(conn, cfg_project):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(conn, cfg_project, text="update PM summary process"); conn.commit()
+    pm_memory.append(conn, team_id="dev", fingerprint="prior",
+                     finding="old lesson", outcome="qa-pass")
+
+    _finish_stage(conn, "developer", {"parsed": {}, "memory_fingerprints": ["prior"]})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {
+        "parsed": {
+            "verdict": "fail",
+            "summary": (
+                "Local Postgres and PyPI checks are blocked by sandbox "
+                "networking: pypi.org name resolution failed."
+            ),
+        },
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT outcome, note FROM pm_lessons WHERE team_id='dev' ORDER BY created_at"
+        )
+        outcome, note = cur.fetchall()[-1]
+        cur.execute("SELECT lesson_fingerprint, outcome FROM pm_lesson_attributions")
+        attributions = cur.fetchall()
+    assert outcome == "blocked"
+    assert note.startswith("Environment blocker:")
+    assert "PyPI checks are blocked by sandbox networking" in note
+    assert attributions == []
+
+
 def test_exhausted_senior_records_blocking_detail(conn, cfg_project):
     cfg_project.team("dev").pipeline.max_iters = 0
     rid = _open(conn, cfg_project, text="fix checkout total"); conn.commit()

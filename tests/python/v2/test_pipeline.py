@@ -143,6 +143,17 @@ def test_looks_blocked_distinguishes_block_from_no_fix():
     assert pipeline._looks_blocked({"status": "no_fix"}, "could not find a bug") is False
 
 
+def test_sandbox_network_postgres_or_pypi_blocker_is_environment_blocker():
+    pypi = "PyPI check blocked by sandbox networking: name resolution failed."
+    postgres = "local Postgres cannot connect because sandbox network is unreachable."
+    app_failure = "QA failed: assertion error in checkout.py."
+
+    assert pipeline._is_sandbox_network_environment_blocker(pypi) is True
+    assert pipeline._is_sandbox_network_environment_blocker(postgres) is True
+    assert pipeline._is_sandbox_network_environment_blocker(app_failure) is False
+    assert pipeline._memory_outcome_note("blocked", pypi).startswith("Environment blocker:")
+
+
 def test_enqueue_stage_is_idempotent(conn, cfg):
     eid = _event(conn, cfg); conn.commit()
     rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",

@@ -509,8 +509,9 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
+        outcome = "blocked" if _is_sandbox_network_environment_blocker(reason) else "qa-fail"
         _record_memory_outcome(
-            conn, job.request_id, "qa-fail",
+            conn, job.request_id, outcome,
             reason,
         )
         if _open_draft_pr_after_failure(conn, cfg, job, reason):
@@ -783,6 +784,8 @@ def _record_memory_outcome(conn: psycopg.Connection, request_id: str,
 
 def _memory_outcome_note(outcome: str, note: str) -> str:
     if outcome == "blocked":
+        if _is_sandbox_network_environment_blocker(note):
+            return f"Environment blocker: {note}"
         return f"Blocking issue: {note}"
     if outcome == "found-not-fixed":
         return f"Next repair action: apply the diagnosed fix. Evidence: {note}"
@@ -802,6 +805,19 @@ def _memory_outcome_note(outcome: str, note: str) -> str:
 def _has_known_root_cause(text: str) -> bool:
     lowered = text.lower()
     return "root cause" in lowered and "no root cause" not in lowered
+
+
+def _is_sandbox_network_environment_blocker(text: str) -> bool:
+    lowered = (text or "").lower()
+    if not ("sandbox" in lowered and "network" in lowered):
+        return False
+    if not any(target in lowered for target in ("postgres", "pypi")):
+        return False
+    return any(marker in lowered for marker in (
+        "blocked", "cannot connect", "connection refused", "network is unreachable",
+        "temporary failure", "name resolution", "operation not permitted",
+        "failed to establish", "max retries exceeded", "timed out",
+    ))
 
 
 def _parsed_failure_detail(parsed: dict) -> str:
