@@ -143,6 +143,21 @@ def test_looks_blocked_distinguishes_block_from_no_fix():
     assert pipeline._looks_blocked({"status": "no_fix"}, "could not find a bug") is False
 
 
+def test_looks_environment_blocker_catches_sandbox_infra_checks():
+    assert pipeline._looks_environment_blocker(
+        "Sandbox blocked Postgres: connection refused on 127.0.0.1."
+    )
+    assert pipeline._looks_environment_blocker(
+        "PyPI install smoke timed out because network is blocked in sandbox."
+    )
+    assert pipeline._looks_environment_blocker(
+        "localhost check failed: no route to host inside sandbox."
+    )
+    assert not pipeline._looks_environment_blocker(
+        "Unit test failed: expected 3 rows from localhost parser fixture."
+    )
+
+
 def test_enqueue_stage_is_idempotent(conn, cfg):
     eid = _event(conn, cfg); conn.commit()
     rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",

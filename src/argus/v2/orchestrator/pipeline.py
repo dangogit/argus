@@ -496,6 +496,11 @@ def _next(conn: psycopg.Connection, cfg, request_id: str, stage_index: int) -> N
 def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
                detail: str = "") -> None:
     """Loop back to to_role, bumping the branch counter. If over max_iters, fail."""
+    if _looks_environment_blocker(detail):
+        reason = f"Environment blocker: {detail}"
+        _record_memory_outcome(conn, job.request_id, "blocked", reason)
+        _no_fix_close(conn, cfg, job.request_id, reason, blocked=True)
+        return
     to_idx = _index(team, to_role)
     if to_idx is None:
         _fail(conn, cfg, job.request_id, f"Cannot route {job.role} failure back to {to_role}.")
@@ -810,6 +815,24 @@ def _parsed_failure_detail(parsed: dict) -> str:
         if value:
             return str(value)
     return ""
+
+
+_SANDBOX_INFRA_RE = re.compile(
+    r"\b(postgres|pypi|localhost|127\.0\.0\.1|::1)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_environment_blocker(detail: str) -> bool:
+    text = (detail or "").lower()
+    if not text or not _SANDBOX_INFRA_RE.search(text):
+        return False
+    return any(marker in text for marker in (
+        "sandbox", "blocked", "connection refused", "could not connect",
+        "cannot connect", "can't connect", "network is unreachable",
+        "operation not permitted", "permission denied", "timed out",
+        "timeout", "no route to host",
+    ))
 
 
 def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,

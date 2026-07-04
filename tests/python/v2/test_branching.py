@@ -70,6 +70,36 @@ def test_exhausted_qa_records_project_memory(conn, cfg_project):
         assert cur.fetchall() == [("prior", "qa-fail")]
 
 
+def test_qa_sandbox_infra_failure_records_environment_blocker(conn, cfg_project):
+    rid = _open(conn, cfg_project, text="fix install smoke"); conn.commit()
+
+    _finish_stage(conn, "developer", {"parsed": {}, "memory_fingerprints": ["prior"]})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {
+        "parsed": {
+            "verdict": "fail",
+            "reason": (
+                "Sandbox blocked checks: Postgres connection refused, PyPI timed "
+                "out, and localhost was unreachable. Code review passed."
+            ),
+        },
+    })
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        outcome, note = cur.fetchone()
+        cur.execute("SELECT count(*) FROM jobs WHERE request_id=%s AND role='developer'", (rid,))
+        dev_jobs = cur.fetchone()[0]
+
+    assert outcome == "blocked"
+    assert note.startswith("Blocking issue: Environment blocker:")
+    assert "qa-fail" not in note
+    assert dev_jobs == 1
+
+
 def test_exhausted_senior_records_blocking_detail(conn, cfg_project):
     cfg_project.team("dev").pipeline.max_iters = 0
     rid = _open(conn, cfg_project, text="fix checkout total"); conn.commit()
