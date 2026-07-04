@@ -8,6 +8,7 @@ import hashlib
 import logging
 import re
 import subprocess
+from datetime import timedelta
 from typing import Optional
 
 import psycopg
@@ -31,6 +32,7 @@ log = logging.getLogger("argus.pipeline")
 # work. Without this gate an internal "no findings" alert opened a build request,
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
+_PROCESS_GUARD_WINDOW = timedelta(hours=24)
 
 _PIPELINE_CHECKPOINTS = (
     "CHECKPOINTS:\n"
@@ -81,6 +83,51 @@ def too_vague_to_dispatch(text: str) -> bool:
     return len(words) < 2 or len(cleaned) < 6
 
 
+def _process_guard_key(text: str, fingerprint: Optional[str]) -> Optional[str]:
+    """Collapse duplicate owner-chat and retro auto-change work for the same
+    low-disk process item. This intentionally stays narrow: it only applies to
+    PM-origin fingerprints that caused duplicate Argus process-change PRs."""
+    fp = fingerprint or ""
+    if not (fp.startswith("retro-change:") or fp.startswith("converse:")):
+        return None
+    cleaned = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if "disk" not in cleaned:
+        return None
+    if not any(marker in cleaned for marker in ("low", "low-space", "free space")):
+        return None
+    cleaned = re.sub(r"\s*::\s*senior did not pass after .*?$", "", cleaned)
+    cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
+    return f"low-disk:{cleaned}" if cleaned else None
+
+
+def _process_guard_duplicate(conn: psycopg.Connection, *, team_id: str,
+                             fingerprint: Optional[str], key: str) -> Optional[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id, r.fingerprint, e.payload->>'text'
+            FROM requests r
+            JOIN events e ON e.id=r.event_id
+            WHERE r.team_id=%s
+              AND r.created_at >= now() - %s::interval
+              AND r.fingerprint IS NOT NULL
+              AND r.fingerprint <> %s
+              AND (r.fingerprint LIKE 'retro-change:%%'
+                   OR r.fingerprint LIKE 'converse:%%')
+            ORDER BY r.created_at ASC
+            """,
+            (team_id, f"{int(_PROCESS_GUARD_WINDOW.total_seconds())} seconds",
+             fingerprint or ""),
+        )
+        rows = cur.fetchall()
+    for request_id, existing_fp, text in rows:
+        if _process_guard_key(str(text or ""), str(existing_fp or "")) == key:
+            return str(request_id)
+    return None
+
+
 def _stage_key(request_id: str, stage_index: int, branch_iter: int) -> str:
     raw = f"{request_id}:stage:{stage_index}:iter:{branch_iter}"
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -90,6 +137,20 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
                  conversation_id: Optional[str], fingerprint: Optional[str] = None,
                  dedup_terminal: bool = False) -> Optional[str]:
     with conn.cursor() as cur:
+        text = _request_text(conn, event_id) if fingerprint else ""
+        guard_key = _process_guard_key(text, fingerprint)
+        if guard_key:
+            duplicate_id = _process_guard_duplicate(
+                conn, team_id=team_id, fingerprint=fingerprint, key=guard_key,
+            )
+            if duplicate_id:
+                alerts.record(conn, severity="info", project=str(team_id),
+                              fingerprint=f"process-guard:{fingerprint}",
+                              message="skipped duplicate low-disk process request",
+                              channel="log",
+                              payload={"duplicate_request_id": duplicate_id,
+                                       "process_guard_key": guard_key})
+                return None
         if fingerprint and dedup_terminal:
             # Signal-origin work: a connector row maps to one fingerprint for its
             # whole lifetime, so a re-emitted row must NOT open a second pipeline

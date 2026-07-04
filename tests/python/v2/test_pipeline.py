@@ -200,6 +200,83 @@ def test_signal_fingerprint_dedups_across_completion(conn, cfg):
         assert cur.fetchone()[0] == 1  # exactly one stage-0 job for the row
 
 
+def test_low_disk_process_guard_key_normalizes_supplied_pairs():
+    escalation = (
+        "Add minimal Argus process change so disk low-space alerts escalate "
+        "a fingerprint after three same-day occurrences instead of continuing "
+        "warning-only hourly notifications; include focused test coverage for "
+        "repeated same-day disk:low fingerprint behavior. :: senior did not "
+        "pass after 1 rework attempt(s)."
+    )
+    wa_dedupe = (
+        "Implement a minimal dedupe guard before WhatsApp posting for "
+        "low-disk notifications: if the same alert fingerprint was already "
+        "sent within a short window, skip the duplicate and record/log the "
+        "suppression. Add a narrow test covering same-fingerprint low-disk "
+        "notifications with identical updated_at evidence. Do not merge, "
+        "deploy, send messages, or change secrets. :: senior did not pass "
+        "after 1 rework attempt(s)."
+    )
+
+    assert pipeline._process_guard_key(
+        escalation, "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b"
+    ) == pipeline._process_guard_key(
+        escalation, "retro-change:3cadf2de00d9a29b8815ea40"
+    )
+    assert pipeline._process_guard_key(
+        wa_dedupe, "converse:cb8313d2-be1f-4fd4-9098-805913ebd9f2"
+    ) == pipeline._process_guard_key(
+        wa_dedupe, "retro-change:2851e16d8281fc8ab7c28e49"
+    )
+    assert pipeline._process_guard_key(escalation, "F1") is None
+    assert pipeline._process_guard_key("fix login", "converse:one") is None
+
+
+def test_low_disk_process_guard_collapses_retro_change_and_converse_pairs(conn, cfg):
+    cases = [
+        (
+            "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+            "retro-change:3cadf2de00d9a29b8815ea40",
+            "Add minimal Argus process change so disk low-space alerts escalate "
+            "a fingerprint after three same-day occurrences instead of continuing "
+            "warning-only hourly notifications; include focused test coverage for "
+            "repeated same-day disk:low fingerprint behavior. :: senior did not "
+            "pass after 1 rework attempt(s).",
+        ),
+        (
+            "converse:cb8313d2-be1f-4fd4-9098-805913ebd9f2",
+            "retro-change:2851e16d8281fc8ab7c28e49",
+            "Implement a minimal dedupe guard before WhatsApp posting for "
+            "low-disk notifications: if the same alert fingerprint was already "
+            "sent within a short window, skip the duplicate and record/log the "
+            "suppression. Add a narrow test covering same-fingerprint low-disk "
+            "notifications with identical updated_at evidence. Do not merge, "
+            "deploy, send messages, or change secrets. :: senior did not pass "
+            "after 1 rework attempt(s).",
+        ),
+    ]
+    request_ids = []
+    for idx, (converse_fp, retro_fp, text) in enumerate(cases):
+        e1 = events.ingest_message(conn, cfg, team="dev", source=f"wa-{idx}",
+                                   dedup_key=converse_fp, text=text)
+        r1 = pipeline.open_request(conn, cfg, event_id=e1, team_id="dev",
+                                   conversation_id=None, fingerprint=converse_fp)
+        e2 = events.ingest_message(conn, cfg, team="dev", source=f"retro-{idx}",
+                                   dedup_key=retro_fp, text=text)
+        r2 = pipeline.open_request(conn, cfg, event_id=e2, team_id="dev",
+                                   conversation_id=None, fingerprint=retro_fp)
+        request_ids.append((r1, r2))
+    conn.commit()
+
+    assert request_ids[0][0] is not None and request_ids[0][1] is None
+    assert request_ids[1][0] is not None and request_ids[1][1] is None
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs WHERE team_id='dev' AND stage=0")
+        assert cur.fetchone()[0] == 2
+        cur.execute("SELECT count(*) FROM alerts WHERE fingerprint LIKE 'process-guard:%'")
+        assert cur.fetchone()[0] == 2
+
+
 def test_triage_jobs_dedup_on_fingerprint(conn, cfg):
     # The triage job key is fingerprint-derived, so two emissions of the same
     # signal collapse to a single job via ON CONFLICT.
