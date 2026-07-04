@@ -606,6 +606,61 @@ def test_critical_diff_scan_blocks_open_pr(conn, cfg_project, monkeypatch, tmp_p
         assert "Deterministic diff scan blocked PR" in cur.fetchone()[0]
 
 
+def test_stale_senior_failure_reconciles_latest_approval_before_memory(
+        conn, cfg_project, monkeypatch, tmp_path):
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="stale-senior", text="fix duplicate alerts")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+
+    monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
+    monkeypatch.setattr(workspace, "diff", lambda project, cwd: "")
+
+    dev = _developer_job(conn, rid, {"has_diff": True,
+                                     "parsed": {"ready": True, "summary": "fixed"}})
+    pipeline.on_job_done(conn, cfg_project, dev)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs SET status='done', result=%s "
+            "WHERE request_id=%s AND role='qa'",
+            (Json({"parsed": {"verdict": "pass"}}), rid),
+        )
+        cur.execute("SELECT id, event_id, conversation_id, team_id FROM jobs "
+                    "WHERE request_id=%s AND role='qa'", (rid,))
+        qa_id, qa_eid, qa_conv, qa_team = cur.fetchone()
+    qa = Job(id=qa_id, request_id=rid, event_id=qa_eid, conversation_id=qa_conv,
+             team_id=qa_team, role="qa", stage=1, kind="pipeline", status="done",
+             attempts=0, max_attempts=3, claim_token=None, exec_snapshot={}, payload={})
+    pipeline.on_job_done(conn, cfg_project, qa)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE requests SET branch_counters=%s WHERE id=%s",
+            (Json({"0": 2}), rid),
+        )
+        cur.execute(
+            "UPDATE jobs SET status='done', result=%s, updated_at=clock_timestamp() "
+            "WHERE request_id=%s AND role='senior'",
+            (Json({"parsed": {"decision": "approve"}}), rid),
+        )
+    stale = Job(id="stale-senior", request_id=rid, event_id=eid, conversation_id=None,
+                team_id="dev", role="senior", stage=2, kind="pipeline",
+                status="done", attempts=0, max_attempts=3, claim_token=None,
+                exec_snapshot={}, payload={})
+
+    pipeline._loop_back(conn, cfg_project, stale, cfg_project.team("dev"),
+                        to_role="developer", detail="old failure")
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        assert cur.fetchall() == [("qa-pass", "fixed")]
+        cur.execute("SELECT payload->>'risk_summary' FROM actions WHERE type='open_pr'")
+        assert cur.fetchone()[0] == "low: QA passed and senior approved"
+
+
 def test_recommends_fix_heuristic_no_false_positives():
     """_recommends_fix must fire on a real diagnosed-but-unapplied fix and stay
     quiet on genuine no-fix / negated text (review hardening)."""

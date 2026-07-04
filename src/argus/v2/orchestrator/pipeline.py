@@ -506,6 +506,8 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
     key = str(to_idx)
     current = int(counters.get(key, 0))
     if current >= team.pipeline.max_iters:
+        if _reconcile_latest_review_success(conn, cfg, job, team):
+            return
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
@@ -522,6 +524,64 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         cur.execute("UPDATE requests SET branch_counters=%s, updated_at=now() WHERE id=%s",
                     (Json(counters), job.request_id))
     enqueue_stage(conn, cfg, request_id=job.request_id, stage_index=to_idx)
+
+
+def _reconcile_latest_review_success(conn: psycopg.Connection, cfg, job: Job, team) -> bool:
+    """Let newer passing review output win before recording terminal failure.
+
+    A stale QA/senior failure can arrive after a later retry has already written
+    a pass/approve result. Re-check the newest reviewer rows before emitting
+    qa-fail memory or forced-draft PR risk from the stale job.
+    """
+    latest_senior = _latest_done_review_job(conn, job.request_id, "senior")
+    if latest_senior:
+        senior_job, result = latest_senior
+        parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
+        if contracts.senior_decision(parsed) == "approve":
+            _approve_done(conn, cfg, senior_job)
+            return True
+
+    if _is_qa(team, job.role) or _is_browser_verify(team, job.role):
+        latest = _latest_done_review_job(conn, job.request_id, job.role)
+        if latest:
+            review_job, result = latest
+            parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
+            if _is_qa(team, job.role):
+                passed = contracts.qa_verdict(parsed, (result or {}).get("test_exit")) == "pass"
+            else:
+                passed = (parsed or {}).get("verdict") == "pass"
+            if passed:
+                _advance_or_done(conn, cfg, review_job, team)
+                return True
+    return False
+
+
+def _latest_done_review_job(conn: psycopg.Connection, request_id: str | None,
+                            role: str) -> tuple[Job, dict] | None:
+    if not request_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, request_id, event_id, conversation_id, team_id, role, stage,
+                   kind, status, attempts, max_attempts, claim_token, exec_snapshot,
+                   payload, result
+            FROM jobs
+            WHERE request_id=%s AND role=%s AND kind='pipeline' AND status='done'
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (request_id, role),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    job = Job(id=row[0], request_id=row[1], event_id=row[2], conversation_id=row[3],
+              team_id=row[4], role=row[5], stage=row[6], kind=row[7],
+              status=row[8], attempts=row[9], max_attempts=row[10],
+              claim_token=row[11], exec_snapshot=row[12] or {},
+              payload=row[13] or {})
+    return job, row[14] or {}
 
 
 def _handle_recommended_fix(conn: psycopg.Connection, cfg, job: Job, team,
