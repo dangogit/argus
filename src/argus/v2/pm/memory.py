@@ -17,6 +17,7 @@ _ENV_BLOCKER_SCOPES = ("postgres", "pypi", "localhost", "127.0.0.1")
 _ENV_BLOCKER_CAUSES = (
     "sandbox", "network", "networking", "connection refused", "could not",
     "cannot", "can't", "unable", "blocked", "timeout", "timed out",
+    "permissionerror", "operation not permitted",
 )
 
 

@@ -47,6 +47,18 @@ def test_environment_blocker_rendering_is_pure():
     assert memory._render_note(pypi_lesson).startswith("Environment blocker: PyPI")
 
 
+def test_environment_blocker_rendering_handles_sandbox_permission_errors():
+    lesson = memory.Lesson(
+        "pg",
+        "change otherwise passed",
+        "qa-fail",
+        "Local Postgres check failed: PermissionError: Operation not permitted",
+    )
+
+    assert memory._render_outcome(lesson) == "environment-blocker"
+    assert memory._render_note(lesson).startswith("Environment blocker: Local Postgres")
+
+
 def test_environment_blocker_rendering_preserves_passes():
     lesson = memory.Lesson(
         "pg",
