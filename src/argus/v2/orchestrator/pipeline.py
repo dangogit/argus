@@ -537,9 +537,11 @@ def _reconcile_latest_review_success(conn: psycopg.Connection, cfg, job: Job, te
     latest_senior = _latest_done_review(conn, job.request_id, ["senior"])
     if not latest_qa or not latest_senior:
         return False
-    _, _, qa_result = latest_qa
-    senior_job, senior_job_id, senior_result = latest_senior
+    _, _, qa_result, qa_run_status = latest_qa
+    senior_job, senior_job_id, senior_result, senior_run_status = latest_senior
     if senior_job_id == job.id:
+        return False
+    if qa_run_status != "ok" or senior_run_status != "ok":
         return False
     qa_parsed = (qa_result or {}).get("parsed", {}) if isinstance(qa_result, dict) else {}
     senior_parsed = (
@@ -554,21 +556,26 @@ def _reconcile_latest_review_success(conn: psycopg.Connection, cfg, job: Job, te
 
 
 def _latest_done_review(conn: psycopg.Connection, request_id: str,
-                        roles: list[str]) -> tuple[Job, str, dict] | None:
+                        roles: list[str]) -> tuple[Job, str, dict, str] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT j.id, j.request_id, j.event_id, j.conversation_id, j.team_id,
                    j.role, j.stage, j.kind, j.status, j.attempts, j.max_attempts,
-                   j.claim_token, j.exec_snapshot, j.payload, j.result
+                   j.claim_token, j.exec_snapshot, j.payload, j.result, latest_run.status
             FROM jobs j
+            JOIN LATERAL (
+                SELECT r.status, r.ended_at, r.started_at, r.id
+                FROM runs r
+                WHERE r.job_id=j.id
+                ORDER BY r.ended_at DESC NULLS LAST, r.started_at DESC, r.id DESC
+                LIMIT 1
+            ) latest_run ON true
             WHERE j.request_id=%s
               AND j.role = ANY(%s)
               AND j.status='done'
-              AND EXISTS (
-                SELECT 1 FROM runs r WHERE r.job_id=j.id AND r.status='ok'
-              )
-            ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
+            ORDER BY COALESCE(latest_run.ended_at, j.updated_at) DESC,
+                     j.updated_at DESC, j.created_at DESC, j.id DESC
             LIMIT 1
             """,
             (request_id, roles),
@@ -583,7 +590,7 @@ def _latest_done_review(conn: psycopg.Connection, request_id: str,
               attempts=row[9], max_attempts=row[10],
               claim_token=str(row[11]) if row[11] else None,
               exec_snapshot=row[12], payload=row[13])
-    return job, str(row[0]), row[14] or {}
+    return job, str(row[0]), row[14] or {}, row[15]
 
 
 def _handle_recommended_fix(conn: psycopg.Connection, cfg, job: Job, team,
