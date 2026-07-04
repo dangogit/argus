@@ -43,6 +43,17 @@ _PIPELINE_CHECKPOINTS = (
     "and remaining work."
 )
 
+_REVIEW_RECONCILIATION = (
+    "REVIEW RECONCILIATION:\n"
+    "- Before emitting ARGUS_RESULT verdict=fail or decision=changes, cite the "
+    "exact failing check, command, test, file, or review finding.\n"
+    "- Reconcile that failure against role-level outputs already in context. If "
+    "the latest QA passed, senior approved, or the failure is from an unrelated "
+    "previous run, do not label it qa-fail or senior-failed.\n"
+    "- If the blocker is environment, auth, or access, classify that blocker "
+    "separately from app-code regressions."
+)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -211,6 +222,7 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
     _add_pipeline_checkpoints(snapshot)
+    _add_review_reconciliation(snapshot, role_name)
     _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
@@ -1119,6 +1131,13 @@ def _add_prompt_hash(snapshot: dict) -> None:
 
 def _add_pipeline_checkpoints(snapshot: dict) -> None:
     snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
+
+
+def _add_review_reconciliation(snapshot: dict, role_name: str) -> None:
+    if role_name in ("qa", "senior"):
+        snapshot["checkpoints"] = (
+            f"{snapshot.get('checkpoints', '')}\n\n{_REVIEW_RECONCILIATION}"
+        )
 
 
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:

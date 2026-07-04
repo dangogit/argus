@@ -65,6 +65,26 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "external side effects" in snap["checkpoints"]
 
 
+def test_enqueue_stage_adds_review_reconciliation_to_judges(conn, cfg):
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    pipeline.enqueue_stage(conn, cfg, request_id=rid, stage_index=1)
+    pipeline.enqueue_stage(conn, cfg, request_id=rid, stage_index=2)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT role, exec_snapshot FROM jobs WHERE request_id=%s", (rid,))
+        snapshots = {role: snap for role, snap in cur.fetchall()}
+
+    assert "REVIEW RECONCILIATION:" not in snapshots["developer"]["checkpoints"]
+    for role in ("qa", "senior"):
+        checkpoints = snapshots[role]["checkpoints"]
+        assert "REVIEW RECONCILIATION:" in checkpoints
+        assert "exact failing check" in checkpoints
+        assert "latest QA passed" in checkpoints
+        assert "senior approved" in checkpoints
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
