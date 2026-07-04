@@ -531,7 +531,9 @@ def _reconcile_latest_review_success(conn: psycopg.Connection, cfg, job: Job, te
 
     A stale QA/senior failure can arrive after a later retry has already written
     a pass/approve result. Re-check the newest reviewer rows before emitting
-    qa-fail memory or forced-draft PR risk from the stale job.
+    qa-fail memory or forced-draft PR risk from the stale job. "Newest" means
+    newest retry job, not latest completion timestamp, because stale workers can
+    finish late and move updated_at forward.
     """
     latest_senior = _latest_done_review_job(conn, job.request_id, "senior")
     if latest_senior:
@@ -568,7 +570,7 @@ def _latest_done_review_job(conn: psycopg.Connection, request_id: str | None,
                    payload, result
             FROM jobs
             WHERE request_id=%s AND role=%s AND kind='pipeline' AND status='done'
-            ORDER BY updated_at DESC, id DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
             (request_id, role),
@@ -947,12 +949,20 @@ def _batch_bug_count(conn: psycopg.Connection, request_id: str) -> int:
 def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT role, result FROM jobs WHERE request_id=%s "
-            "ORDER BY stage, updated_at",
+            "SELECT role, result FROM jobs "
+            "WHERE request_id=%s AND kind='pipeline' AND status='done' "
+            "AND role IN ('qa','browser_verify','senior') "
+            "ORDER BY created_at DESC, id DESC",
             (request_id,))
         rows = cur.fetchall()
-    parts = []
+    latest = {}
     for role, result in rows:
+        latest.setdefault(role, result)
+    parts = []
+    for role in ("qa", "browser_verify", "senior"):
+        if role not in latest:
+            continue
+        result = latest[role]
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))

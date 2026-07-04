@@ -661,6 +661,106 @@ def test_stale_senior_failure_reconciles_latest_approval_before_memory(
         assert cur.fetchone()[0] == "low: QA passed and senior approved"
 
 
+def test_stale_senior_failure_uses_retry_order_not_late_update(
+        conn, cfg_project, monkeypatch, tmp_path):
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="stale-senior-order", text="fix stale review")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+
+    monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
+    monkeypatch.setattr(workspace, "diff", lambda project, cwd: "")
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET branch_counters=%s WHERE id=%s",
+                    (Json({"0": 2}), rid))
+        cur.execute(
+            """
+            INSERT INTO jobs
+              (request_id, event_id, team_id, role, stage, kind, status,
+               idempotency_key, result, created_at, updated_at)
+            VALUES
+              (%s,%s,'dev','senior',2,'pipeline','done',%s,%s,
+               now() - interval '2 minutes', now()),
+              (%s,%s,'dev','senior',2,'pipeline','done',%s,%s,
+               now() - interval '1 minute', now() - interval '1 minute')
+            """,
+            (
+                rid, eid, f"senior-old:{rid}",
+                Json({"parsed": {"decision": "reject",
+                                 "reason": "old senior failure"}}),
+                rid, eid, f"senior-new:{rid}",
+                Json({"parsed": {"decision": "approve"}}),
+            ),
+        )
+        cur.execute(
+            "SELECT id FROM jobs WHERE idempotency_key=%s",
+            (f"senior-old:{rid}",),
+        )
+        stale_id = str(cur.fetchone()[0])
+
+    stale = Job(id=stale_id, request_id=rid, event_id=eid, conversation_id=None,
+                team_id="dev", role="senior", stage=2, kind="pipeline",
+                status="done", attempts=0, max_attempts=3, claim_token=None,
+                exec_snapshot={}, payload={})
+
+    pipeline._loop_back(conn, cfg_project, stale, cfg_project.team("dev"),
+                        to_role="developer", detail="old senior failure")
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT outcome FROM pm_lessons WHERE team_id='dev'")
+        assert cur.fetchall() == [("qa-pass",)]
+        cur.execute("SELECT payload->>'risk_summary' FROM actions WHERE type='open_pr'")
+        assert cur.fetchone()[0] == "low: QA passed and senior approved"
+
+
+def test_pr_checks_summary_reconciles_latest_review_statuses(conn, cfg, tmp_path):
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="stale-pr-checks", text="fix stale PR checks")
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO jobs
+              (request_id, event_id, team_id, role, stage, kind, status,
+               idempotency_key, result, created_at, updated_at)
+            VALUES
+              (%s,%s,'dev','qa',1,'pipeline','done',%s,%s,
+               now() - interval '4 minutes', now()),
+              (%s,%s,'dev','qa',1,'pipeline','done',%s,%s,
+               now() - interval '3 minutes', now() - interval '3 minutes'),
+              (%s,%s,'dev','senior',2,'pipeline','done',%s,%s,
+               now() - interval '2 minutes', now()),
+              (%s,%s,'dev','senior',2,'pipeline','done',%s,%s,
+               now() - interval '1 minute', now() - interval '1 minute')
+            """,
+            (
+                rid, eid, f"qa-old:{rid}",
+                Json({"parsed": {"verdict": "fail", "reason": "old QA failure"}}),
+                rid, eid, f"qa-new:{rid}",
+                Json({"parsed": {"verdict": "pass"}}),
+                rid, eid, f"senior-old:{rid}",
+                Json({"parsed": {"decision": "reject", "reason": "old senior failure"}}),
+                rid, eid, f"senior-new:{rid}",
+                Json({"parsed": {"decision": "approve"}}),
+            ),
+        )
+    conn.commit()
+
+    info = pipeline._pr_info(conn, cfg, rid, cwd=str(tmp_path))
+
+    assert info["checks"] == "QA: pass; Senior: approve"
+    assert "old QA failure" not in info["body"]
+    assert "old senior failure" not in info["body"]
+
+
 def test_recommends_fix_heuristic_no_false_positives():
     """_recommends_fix must fire on a real diagnosed-but-unapplied fix and stay
     quiet on genuine no-fix / negated text (review hardening)."""
