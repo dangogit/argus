@@ -65,6 +65,27 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "external side effects" in snap["checkpoints"]
 
 
+def test_judge_checkpoint_guidance_requires_exact_failure_reconciliation():
+    snap = {"prompt": "Run checks and judge the result."}
+    pipeline._add_pipeline_checkpoints(snap)
+
+    assert "JUDGE FAILURE RULES:" in snap["checkpoints"]
+    assert "exact failing check" in snap["checkpoints"]
+    assert "reconcile it with the role-level output" in snap["checkpoints"]
+
+
+def test_failure_reconciliation_cites_exact_qa_check_and_role_output():
+    text = pipeline._failure_reconciliation("qa", {
+        "parsed": {"verdict": "fail", "analysis": "Regression still fails."},
+        "test_exit": 7,
+        "test_output": "TEST RESULT\ncommand: pytest tests/test_email.py -q\nexit_code: 7\noutput:\nboom",
+    })
+
+    assert "Failing check: `pytest tests/test_email.py -q` exited 7." in text
+    assert "Role output: Regression still fails." in text
+    assert "Reconciled: role verdict matches the failing check above." in text
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}

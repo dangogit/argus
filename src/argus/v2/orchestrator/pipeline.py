@@ -43,6 +43,13 @@ _PIPELINE_CHECKPOINTS = (
     "and remaining work."
 )
 
+_JUDGE_FAILURE_RULES = (
+    "JUDGE FAILURE RULES:\n"
+    "- Before emitting qa-fail or senior-failed, cite the exact failing check "
+    "(command, exit code, browser verdict, or senior review decision) and "
+    "reconcile it with the role-level output you are relying on."
+)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -312,7 +319,7 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
             _advance_or_done(conn, cfg, job, team)
         else:
             _loop_back(conn, cfg, job, team, to_role="developer",
-                       detail=_parsed_failure_detail(parsed))
+                       detail=_parsed_failure_detail(parsed), result=result)
     elif _is_browser_verify(team, role):
         # The verdict is written by the worker from the browser-use result, or set
         # to 'pass' when the diff touched no UI files (skipped). Fail-closed: any
@@ -322,14 +329,14 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
             _advance_or_done(conn, cfg, job, team)
         else:
             _loop_back(conn, cfg, job, team, to_role="developer",
-                       detail=_parsed_failure_detail(parsed))
+                       detail=_parsed_failure_detail(parsed), result=result)
     elif role == "senior":
         decision = contracts.senior_decision(parsed)
         if decision == "approve" or (advisory and "decision" not in parsed):
             _approve_done(conn, cfg, job)
         else:
             _loop_back(conn, cfg, job, team, to_role="developer",
-                       detail=_parsed_failure_detail(parsed))
+                       detail=_parsed_failure_detail(parsed), result=result)
     else:
         # Generic linear advance for any other role
         next_index = job.stage + 1
@@ -494,7 +501,7 @@ def _next(conn: psycopg.Connection, cfg, request_id: str, stage_index: int) -> N
 
 
 def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
-               detail: str = "") -> None:
+               detail: str = "", result: dict | None = None) -> None:
     """Loop back to to_role, bumping the branch counter. If over max_iters, fail."""
     to_idx = _index(team, to_role)
     if to_idx is None:
@@ -507,8 +514,9 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
     current = int(counters.get(key, 0))
     if current >= team.pipeline.max_iters:
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
-        if detail:
-            reason = f"{reason} Blocking issue: {detail}"
+        failure_context = _failure_reconciliation(job.role, result or {}, detail)
+        if failure_context:
+            reason = f"{reason} Blocking issue: {failure_context}"
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
             reason,
@@ -809,6 +817,54 @@ def _parsed_failure_detail(parsed: dict) -> str:
         value = parsed.get(key)
         if value:
             return str(value)
+    return ""
+
+
+def _failure_reconciliation(role: str, result: dict, detail: str = "") -> str:
+    exact = _exact_failing_check(role, result)
+    role_output = (detail or _parsed_failure_detail(
+        result.get("parsed", {}) if isinstance(result, dict) else {}
+    )).rstrip(". ")
+    parts = []
+    if exact:
+        parts.append(f"Failing check: {exact}.")
+    if role_output:
+        parts.append(f"Role output: {role_output}.")
+    if exact and role_output:
+        parts.append("Reconciled: role verdict matches the failing check above.")
+    return " ".join(parts)
+
+
+def _exact_failing_check(role: str, result: dict) -> str:
+    if not isinstance(result, dict):
+        return ""
+    parsed = result.get("parsed") if isinstance(result.get("parsed"), dict) else {}
+    if role == "qa":
+        test_exit = result.get("test_exit")
+        if test_exit is not None:
+            command = _test_command(result.get("test_output", ""))
+            if command:
+                return f"`{command}` exited {test_exit}"
+            return f"QA test command exited {test_exit}"
+        verdict = parsed.get("verdict")
+        return f"QA verdict {verdict}" if verdict else ""
+    if role == "browser_verify":
+        browser = result.get("browser_verify") if isinstance(result.get("browser_verify"), dict) else {}
+        verdict = parsed.get("verdict") or browser.get("verdict")
+        reason = parsed.get("analysis") or browser.get("reason")
+        if verdict and reason:
+            return f"browser verdict {verdict}: {reason}"
+        return f"browser verdict {verdict}" if verdict else ""
+    if role == "senior":
+        decision = parsed.get("decision")
+        return f"senior review decision {decision}" if decision else ""
+    return ""
+
+
+def _test_command(test_output: object) -> str:
+    for line in str(test_output or "").splitlines():
+        if line.startswith("command:"):
+            return line.split(":", 1)[1].strip()
     return ""
 
 
@@ -1118,7 +1174,11 @@ def _add_prompt_hash(snapshot: dict) -> None:
 
 
 def _add_pipeline_checkpoints(snapshot: dict) -> None:
-    snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
+    checkpoints = _PIPELINE_CHECKPOINTS
+    prompt = str(snapshot.get("prompt", "")).lower()
+    if "qa" in prompt or "senior" in prompt or "review" in prompt or "judge" in prompt:
+        checkpoints = f"{checkpoints}\n\n{_JUDGE_FAILURE_RULES}"
+    snapshot["checkpoints"] = checkpoints
 
 
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:

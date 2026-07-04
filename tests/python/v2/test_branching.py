@@ -56,7 +56,11 @@ def test_exhausted_qa_records_project_memory(conn, cfg_project):
 
     _finish_stage(conn, "developer", {"parsed": {}, "memory_fingerprints": ["prior"]})
     pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
-    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "fail"}})
+    qa = _finish_stage(conn, "qa", {
+        "parsed": {"verdict": "fail", "analysis": "Regression still fails."},
+        "test_exit": 7,
+        "test_output": "TEST RESULT\ncommand: pytest tests/test_email.py -q\nexit_code: 7\noutput:\nboom",
+    })
     pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
 
     with conn.cursor() as cur:
@@ -120,6 +124,9 @@ def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, t
         assert payload["changed_files"] == ["src/email.ts"]
         assert payload["checks"] == "QA: fail"
         assert "needs review" in payload["risk_summary"]
+        assert "Failing check: `pytest tests/test_email.py -q` exited 7." in payload["risk_summary"]
+        assert "Role output: Regression still fails." in payload["risk_summary"]
+        assert "Reconciled: role verdict matches the failing check above." in payload["risk_summary"]
         assert "QA failed" in payload["body"]
 
 
