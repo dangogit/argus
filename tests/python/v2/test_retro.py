@@ -184,6 +184,47 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_auto_changes_coalesce_same_task_and_theme(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    statement = (
+        "Update the QA reporting prompt/process so QA reports must classify "
+        "environment blockers, auth blockers, and access blockers separately "
+        "from app-code regressions before marking qa-fail."
+    )
+    for evidence in (
+        ["retro-change:edd1011b21359f54becb0faf", "a", "b"],
+        ["converse:956df200-2353-4b41-a513-4bf57a1ba38d", "c", "d"],
+    ):
+        retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+            "type": "process-edit",
+            "statement": statement,
+            "trigger": "duplicate QA blocker classification produced another PM run",
+            "evidence_run_ids": evidence,
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "qa-blocker-classification",
+        }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'"
+        )
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM events WHERE source='retro'")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM retro_backlog
+            WHERE payload ? 'auto_coalesced_from'
+            """
+        )
+        assert cur.fetchone()[0] == 1
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

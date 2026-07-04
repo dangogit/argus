@@ -686,6 +686,15 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
             continue
+        coalesced = _coalesced_auto_request(
+            conn, target_team=target_team, item_id=item_id,
+            statement=statement, payload=payload,
+        )
+        if coalesced:
+            request_id, existing_item_id = coalesced
+            _mark_auto_queued(conn, item_id, request_id, target_team,
+                              coalesced_from=existing_item_id)
+            continue
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
         event_id = events.ingest_message(
@@ -744,8 +753,54 @@ def _request_by_fingerprint(conn: psycopg.Connection, team_id: str,
     return row[0] if row else None
 
 
+def _coalesced_auto_request(conn: psycopg.Connection, *, target_team: str,
+                            item_id: str, statement: str,
+                            payload: dict) -> tuple[str, str] | None:
+    theme = _normalize_auto_key_part(payload.get("theme"))
+    task = _normalize_auto_key_part(statement)
+    if not theme or not task:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text, statement, payload
+            FROM retro_backlog
+            WHERE status='gated'
+              AND type=ANY(%s)
+              AND id<>%s
+              AND payload ? 'auto_request_id'
+            ORDER BY updated_at DESC
+            """,
+            (list(_AUTO_TYPES), item_id),
+        )
+        rows = cur.fetchall()
+    for existing_id, existing_statement, existing_payload in rows:
+        existing_payload = existing_payload or {}
+        if existing_payload.get("auto_target_team") != target_team:
+            continue
+        if _normalize_auto_key_part(existing_payload.get("theme")) != theme:
+            continue
+        if _normalize_auto_key_part(existing_statement) != task:
+            continue
+        request_id = existing_payload.get("auto_request_id")
+        if request_id:
+            return str(request_id), str(existing_id)
+    return None
+
+
+def _normalize_auto_key_part(value) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
 def _mark_auto_queued(conn: psycopg.Connection, item_id: str, request_id: str,
-                      target_team: str) -> None:
+                      target_team: str, coalesced_from: str | None = None) -> None:
+    payload = {
+        "auto_request_id": request_id,
+        "auto_target_team": target_team,
+        "auto_queued_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if coalesced_from:
+        payload["auto_coalesced_from"] = coalesced_from
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -753,11 +808,7 @@ def _mark_auto_queued(conn: psycopg.Connection, item_id: str, request_id: str,
             SET payload = payload || %s::jsonb, updated_at=clock_timestamp()
             WHERE id=%s
             """,
-            (Json({
-                "auto_request_id": request_id,
-                "auto_target_team": target_team,
-                "auto_queued_at": datetime.now(timezone.utc).isoformat(),
-            }), item_id),
+            (Json(payload), item_id),
         )
 
 
