@@ -13,6 +13,11 @@ _ATTR_OUTCOMES = frozenset({"qa-pass", "qa-fail"})
 _MIN_APPLIED = 5
 _MIN_FAILS = 3
 _FAIL_RATE = 0.5
+_ENV_BLOCKER_SCOPES = ("postgres", "pypi", "localhost", "127.0.0.1")
+_ENV_BLOCKER_CAUSES = (
+    "sandbox", "network", "networking", "connection refused", "could not",
+    "cannot", "can't", "unable", "blocked", "timeout", "timed out",
+)
 
 
 @dataclass(frozen=True)
@@ -101,8 +106,8 @@ def render(conn: psycopg.Connection, *, team_id: str, limit: int = 20) -> str:
     lines = [
         "## Project memory (recent, read-only)",
         *[
-            f"- [fp {r.fingerprint}] {r.outcome}: {r.finding}"
-            + (f" :: {r.note}" if r.note else "")
+            f"- [fp {r.fingerprint}] {_render_outcome(r)}: {r.finding}"
+            + (f" :: {_render_note(r)}" if r.note else "")
             for r in rows
         ],
         "Use this to avoid repeating rejected approaches and to build on prior fixes.",
@@ -119,6 +124,9 @@ def record_request_outcome(conn: psycopg.Connection, *, request_id: str,
     if outcome not in _OUTCOMES:
         raise ValueError(f"invalid memory outcome: {outcome}")
     team_id, fingerprint, finding = _request_info(conn, request_id)
+    if _is_environment_blocker(f"{finding}\n{note}") and outcome == "qa-fail":
+        outcome = "blocked"
+        note = _environment_blocker_note(note)
     append(conn, team_id=team_id, fingerprint=fingerprint, finding=finding,
            outcome=outcome, note=note)
     if outcome in _ATTR_OUTCOMES:
@@ -163,3 +171,33 @@ def _injected_fingerprints(conn: psycopg.Connection, request_id: str) -> list[st
         if isinstance(value, list):
             out.extend(str(v) for v in value if v)
     return out
+
+
+def _render_outcome(lesson: Lesson) -> str:
+    if lesson.outcome == "qa-fail" and _is_environment_blocker(
+        f"{lesson.finding}\n{lesson.note}"
+    ):
+        return "environment-blocker"
+    return lesson.outcome
+
+
+def _render_note(lesson: Lesson) -> str:
+    if lesson.outcome == "qa-fail" and _is_environment_blocker(
+        f"{lesson.finding}\n{lesson.note}"
+    ):
+        return _environment_blocker_note(lesson.note)
+    return lesson.note
+
+
+def _environment_blocker_note(note: str) -> str:
+    if note.lower().startswith("environment blocker:"):
+        return note
+    return f"Environment blocker: {note}" if note else "Environment blocker"
+
+
+def _is_environment_blocker(text: str) -> bool:
+    lowered = (text or "").lower()
+    return (
+        any(scope in lowered for scope in _ENV_BLOCKER_SCOPES)
+        and any(cause in lowered for cause in _ENV_BLOCKER_CAUSES)
+    )

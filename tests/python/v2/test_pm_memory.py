@@ -29,6 +29,36 @@ def test_render_is_empty_without_lessons(conn):
     assert memory.render(conn, team_id="dev") == ""
 
 
+def test_environment_blocker_rendering_is_pure():
+    pg_lesson = memory.Lesson(
+        "pg", "change otherwise passed", "qa-fail",
+        "Postgres check blocked by sandbox networking",
+    )
+    pypi_lesson = memory.Lesson(
+        "pkg", "package change passed", "qa-fail",
+        "PyPI check could not run because network was blocked",
+    )
+
+    assert memory._render_outcome(pg_lesson) == "environment-blocker"
+    assert memory._render_note(pg_lesson) == (
+        "Environment blocker: Postgres check blocked by sandbox networking"
+    )
+    assert memory._render_outcome(pypi_lesson) == "environment-blocker"
+    assert memory._render_note(pypi_lesson).startswith("Environment blocker: PyPI")
+
+
+def test_environment_blocker_rendering_preserves_passes():
+    lesson = memory.Lesson(
+        "pg",
+        "change otherwise passed",
+        "qa-pass",
+        "Postgres check blocked by sandbox networking",
+    )
+
+    assert memory._render_outcome(lesson) == "qa-pass"
+    assert memory._render_note(lesson) == "Postgres check blocked by sandbox networking"
+
+
 def test_render_dedups_latest_and_honors_limit(conn):
     memory.append(conn, team_id="dev", fingerprint="old", finding="old bug",
                   outcome="proposed")
@@ -61,6 +91,37 @@ def test_suppressed_fingerprints_are_not_rendered(conn):
     assert "bad idea" not in text
 
 
+def test_render_labels_sandbox_check_failures_as_environment_blockers(conn):
+    memory.append(conn, team_id="dev", fingerprint="pg", finding="change otherwise passed",
+                  outcome="qa-fail",
+                  note="Postgres check blocked by sandbox networking")
+    memory.append(conn, team_id="dev", fingerprint="pkg", finding="package change passed",
+                  outcome="qa-fail",
+                  note="PyPI check could not run because network was blocked")
+
+    text = memory.render(conn, team_id="dev")
+
+    assert "environment-blocker: change otherwise passed" in text
+    assert "environment-blocker: package change passed" in text
+    assert "Environment blocker: Postgres check blocked by sandbox networking" in text
+    assert "Environment blocker: PyPI check could not run" in text
+    assert "qa-fail: change otherwise passed" not in text
+    assert "qa-fail: package change passed" not in text
+
+
+def test_environment_blocker_does_not_override_later_pass(conn):
+    memory.append(conn, team_id="dev", fingerprint="pg", finding="change",
+                  outcome="qa-fail",
+                  note="Postgres check blocked by sandbox networking")
+    memory.append(conn, team_id="dev", fingerprint="pg", finding="change",
+                  outcome="qa-pass", note="approved")
+
+    text = memory.render(conn, team_id="dev")
+
+    assert "qa-pass: change" in text
+    assert "environment-blocker: change" not in text
+
+
 def test_record_request_outcome_writes_lesson_and_attribution(conn):
     rid = _request(conn, fingerprint="new", text="fix payment")
     memory.append(conn, team_id="dev", fingerprint="prior", finding="prior lesson",
@@ -89,3 +150,24 @@ def test_record_request_outcome_writes_lesson_and_attribution(conn):
             (rid,),
         )
         assert cur.fetchall() == [("prior", "qa-pass")]
+
+
+def test_record_request_outcome_stores_sandbox_checks_as_blocked(conn):
+    rid = _request(conn, fingerprint="pg", text="fix package check")
+
+    memory.record_request_outcome(
+        conn,
+        request_id=rid,
+        outcome="qa-fail",
+        note="PyPI check blocked by sandbox networking",
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT outcome, note FROM pm_lessons "
+            "WHERE team_id='dev' AND fingerprint='pg'"
+        )
+        assert cur.fetchone() == (
+            "blocked",
+            "Environment blocker: PyPI check blocked by sandbox networking",
+        )
