@@ -278,6 +278,10 @@ def test_notify_findings_dedups_same_low_disk_evidence_updated_at(conn, tmp_path
             "SELECT count(*) FROM actions WHERE idempotency_key LIKE 'system_health:%'"
         )
         assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT count(*) FROM alerts WHERE fingerprint='disk:low:argus-run'"
+        )
+        assert cur.fetchone()[0] == 1
 
 
 def test_notification_idempotency_key_uses_fingerprint_and_updated_at():

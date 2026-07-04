@@ -25,6 +25,7 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_DUPLICATE_SEND_WINDOW_SECONDS = 300
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -380,6 +381,11 @@ def notify_findings(
     new_findings: list[Finding] = []
     alert_ids: list[str] = []
     for finding in findings:
+        notification_key = _finding_notification_key(finding)
+        if notification_key and _recent_notification(
+            conn, notification_key, _DUPLICATE_SEND_WINDOW_SECONDS
+        ):
+            continue
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -434,10 +440,36 @@ def notify_findings(
 
 
 def _notification_idempotency_key(finding: Finding, alert_id: str) -> str:
+    finding_key = _finding_notification_key(finding)
+    if finding_key:
+        return finding_key
+    return f"system_health:{alert_id}"
+
+
+def _finding_notification_key(finding: Finding) -> str | None:
     updated_at = finding.payload.get("updated_at")
     if updated_at:
         return f"system_health:{finding.fingerprint}:{updated_at}"
-    return f"system_health:{alert_id}"
+    return None
+
+
+def _recent_notification(
+    conn: psycopg.Connection,
+    idempotency_key: str,
+    window_seconds: int,
+) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM actions
+            WHERE type='notify'
+              AND idempotency_key=%s
+              AND created_at > now() - make_interval(secs => %s)
+            LIMIT 1
+            """,
+            (idempotency_key, int(window_seconds)),
+        )
+        return cur.fetchone() is not None
 
 
 def check_and_notify(
