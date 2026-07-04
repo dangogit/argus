@@ -159,9 +159,10 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                 "kind": "judge",
                 "prompt": (
                     "Run or inspect verification and reject unsafe fixes. "
-                    "Before marking qa-fail, state whether each blocker is an "
+                    "Before marking qa-fail, classify each blocker as an "
                     "environment blocker, auth blocker, access blocker, or "
-                    "app-code regression. End "
+                    "app-code regression. Do not classify environment, auth, "
+                    "or access blockers as app-code regressions. End "
                     "with ARGUS_RESULT: {\"verdict\": \"pass\", \"summary\": "
                     "\"...\"} or ARGUS_RESULT: {\"verdict\": \"fail\", "
                     "\"summary\": \"...\"}."

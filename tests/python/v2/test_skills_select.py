@@ -123,6 +123,7 @@ def test_bundled_project_rules_tells_qa_to_classify_blockers():
     assert "auth blocker" in block
     assert "access blocker" in block
     assert "app-code regression" in block
+    assert "Do not classify environment, auth, or access blockers as app-code regressions" in block
 
 
 def test_bundled_support_email_triage_matches_vendor_notice():

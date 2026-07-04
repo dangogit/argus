@@ -94,7 +94,9 @@ def _team_from_project(project: dict) -> dict:
              "was warranted>\"} otherwise."},
             {"name": "qa", "kind": "judge", "prompt":
              "Run checks and judge the result. Before marking qa-fail, classify "
-             "each blocker as environment, auth, access, or app-code regression."},
+             "each blocker as environment, auth, access, or app-code regression. "
+             "Do not classify environment, auth, or access blockers as app-code "
+             "regressions."},
             {"name": "senior", "kind": "judge", "prompt": "Review the change before PR."},
         ],
         "pipeline": {"stages": ["researcher", "developer", "qa", "senior"], "max_iters": 2},

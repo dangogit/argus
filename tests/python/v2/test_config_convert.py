@@ -30,6 +30,7 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "auth" in qa_prompt
     assert "access" in qa_prompt
     assert "app-code regression" in qa_prompt
+    assert "Do not classify environment, auth, or access blockers as app-code regressions" in qa_prompt
 
 
 def test_convert_without_projects_creates_default_team():

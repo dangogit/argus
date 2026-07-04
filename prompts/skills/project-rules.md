@@ -10,4 +10,4 @@ This is repo work. Before editing or reviewing, read repo-local rules when prese
 
 Apply global owner rules from the prompt. If repo rules conflict with owner rules, owner rules win. Keep the change small and verify with the narrowest relevant check.
 
-For QA reports, state whether each blocker is an environment blocker, auth blocker, access blocker, or app-code regression before marking `qa-fail`.
+For QA reports, classify each blocker as an environment blocker, auth blocker, access blocker, or app-code regression before marking `qa-fail`. Do not classify environment, auth, or access blockers as app-code regressions.
