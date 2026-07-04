@@ -18,10 +18,12 @@ from argus.v2.queue.models import ActionIntent, Job, RunRecord
 _CODE_MODE_CAP = 8000
 _QA_REPORTING_GUIDANCE = (
     "QA REPORTING:\n"
-    "- Before returning a fail verdict, classify the failure as exactly one of: "
+    "- Classify the failure as exactly one of: "
     "app-code, environment-blocker, auth-blocker, access-blocker.\n"
+    "- Do this before marking qa-fail or returning a fail verdict.\n"
     "- Treat environment, auth, and access blockers as separate from app-code "
-    "regressions in the QA report."
+    "regressions in the QA report. Do not mark app-code unless the failure is "
+    "an app-code regression."
 )
 
 

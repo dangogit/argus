@@ -164,7 +164,7 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                     "\"failure_type\": \"app-code|environment-blocker|"
                     "auth-blocker|access-blocker\", \"summary\": \"...\"}. "
                     "Classify environment, auth, and access blockers separately "
-                    "from app-code regressions before failing."
+                    "from app-code regressions before marking qa-fail."
                 ),
                 "engine": {"engine": "codex"},
             },

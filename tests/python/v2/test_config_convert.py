@@ -29,6 +29,7 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "environment-blocker" in qa_prompt
     assert "auth-blocker" in qa_prompt
     assert "access-blocker" in qa_prompt
+    assert "before marking qa-fail" in qa_prompt
 
 
 def test_convert_without_projects_creates_default_team():

@@ -95,7 +95,8 @@ def _team_from_project(project: dict) -> dict:
             {"name": "qa", "kind": "judge", "prompt":
              "Run checks and judge the result. When failing, set failure_type "
              "to app-code, environment-blocker, auth-blocker, or access-blocker "
-             "and classify blockers separately from app-code regressions."},
+             "and classify blockers separately from app-code regressions before "
+             "marking qa-fail."},
             {"name": "senior", "kind": "judge", "prompt": "Review the change before PR."},
         ],
         "pipeline": {"stages": ["researcher", "developer", "qa", "senior"], "max_iters": 2},

@@ -164,6 +164,8 @@ def test_build_prompt_appends_qa_reporting_guidance_only_for_qa():
     assert "auth-blocker" in out
     assert "access-blocker" in out
     assert "app-code" in out
+    assert "before marking qa-fail" in out
+    assert "Do not mark app-code" in out
 
     dev = SimpleNamespace(
         role="developer",
