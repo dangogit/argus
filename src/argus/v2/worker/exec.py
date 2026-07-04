@@ -16,6 +16,13 @@ from argus.v2.mcp import config as mcp_config
 from argus.v2.queue.models import ActionIntent, Job, RunRecord
 
 _CODE_MODE_CAP = 8000
+_QA_REPORTING_GUIDANCE = (
+    "QA REPORTING:\n"
+    "- Before returning a fail verdict, classify the failure as exactly one of: "
+    "app-code, environment-blocker, auth-blocker, access-blocker.\n"
+    "- Treat environment, auth, and access blockers as separate from app-code "
+    "regressions in the QA report."
+)
 
 
 def build_prompt(job: Job, context: str = "") -> str:
@@ -30,6 +37,8 @@ def build_prompt(job: Job, context: str = "") -> str:
         system = f"{system}\n\n{skills}" if system else skills
     if checkpoints:
         system = f"{system}\n\n{checkpoints}" if system else checkpoints
+    if getattr(job, "role", "") == "qa":
+        system = f"{system}\n\n{_QA_REPORTING_GUIDANCE}" if system else _QA_REPORTING_GUIDANCE
     text = (job.payload or {}).get("text", "")
     head = f"{context}\n\n" if context else ""
     return f"{head}{system}\n\nTASK:\n{text}".strip()

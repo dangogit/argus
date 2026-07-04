@@ -155,6 +155,24 @@ def test_build_prompt_appends_checkpoint_guidance_after_skills():
     assert out.index("BODY") < out.index("CHECKPOINTS") < out.index("do it")
 
 
+def test_build_prompt_appends_qa_reporting_guidance_only_for_qa():
+    qa = SimpleNamespace(role="qa", exec_snapshot={"prompt": "SYS"}, payload={"text": "verify"})
+    out = job_exec.build_prompt(qa)
+
+    assert "QA REPORTING" in out
+    assert "environment-blocker" in out
+    assert "auth-blocker" in out
+    assert "access-blocker" in out
+    assert "app-code" in out
+
+    dev = SimpleNamespace(
+        role="developer",
+        exec_snapshot={"prompt": "SYS"},
+        payload={"text": "build"},
+    )
+    assert "QA REPORTING" not in job_exec.build_prompt(dev)
+
+
 def test_build_prompt_without_skills_key_is_unchanged():
     job = SimpleNamespace(exec_snapshot={"prompt": "SYS"}, payload={"text": "t"})
     assert job_exec.build_prompt(job) == "SYS\n\nTASK:\nt"
