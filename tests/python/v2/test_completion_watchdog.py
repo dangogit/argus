@@ -8,6 +8,70 @@ from argus.v2.queue import jobs
 from argus.v2.queue.models import RunRecord
 
 
+def test_content_schedule_alert_key_ignores_pipeline_position():
+    base = completion_watchdog.WatchdogFinding(
+        request_id="r1",
+        team_id="content",
+        category="stuck",
+        reason="job has no progress for >= 45 minutes",
+        source="pm:content-approval-watch",
+        fingerprint="content-approval:pr:2:schedule:1783139496.457569",
+        request_status="open",
+        current_stage=0,
+        job_id="j1",
+        job_role="developer",
+        job_stage=0,
+        job_status="pending",
+        failure_reason="",
+        retry_command="argus request retry r1 --force-live",
+        retryable=False,
+        destination_ref="fake:argus-content",
+    )
+    same_lineage_same_state = completion_watchdog.WatchdogFinding(
+        request_id="r2",
+        team_id="content",
+        category="stuck",
+        reason=base.reason,
+        source=base.source,
+        fingerprint="content-approval:pr:2:schedule:1783139798.681899",
+        request_status="open",
+        current_stage=3,
+        job_id="j2",
+        job_role="qa",
+        job_stage=2,
+        job_status="pending",
+        failure_reason="",
+        retry_command="argus request retry r2 --force-live",
+        retryable=False,
+        destination_ref=base.destination_ref,
+    )
+    blocker_changed = completion_watchdog.WatchdogFinding(
+        request_id="r3",
+        team_id="content",
+        category="failed",
+        reason="request or pipeline job failed",
+        source=base.source,
+        fingerprint="content-approval:pr:2:schedule:1783143407.541939",
+        request_status="failed",
+        current_stage=3,
+        job_id="j3",
+        job_role="qa",
+        job_stage=2,
+        job_status="failed",
+        failure_reason="scheduler guard failed",
+        retry_command="argus request retry r3 --force-live",
+        retryable=False,
+        destination_ref=base.destination_ref,
+    )
+
+    assert completion_watchdog._alert_idempotency_key(
+        base
+    ) == completion_watchdog._alert_idempotency_key(same_lineage_same_state)
+    assert completion_watchdog._alert_idempotency_key(
+        base
+    ) != completion_watchdog._alert_idempotency_key(blocker_changed)
+
+
 def _cfg(tmp_path, *, generic=False):
     repo = tmp_path / "repo"
     repo.mkdir(exist_ok=True)
@@ -126,7 +190,7 @@ def test_content_schedule_watchdog_coalesces_same_lineage(conn, tmp_path):
         "content-approval:pr:2:schedule:1783139797.782729",
     ]
     request_ids = []
-    for fingerprint in fingerprints:
+    for idx, fingerprint in enumerate(fingerprints):
         rid = _open_request(
             conn,
             cfg,
@@ -139,6 +203,16 @@ def test_content_schedule_watchdog_coalesces_same_lineage(conn, tmp_path):
         )
         request_ids.append(rid)
         _age_request(conn, rid)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE requests SET current_stage=%s WHERE id=%s",
+                (idx % 3, rid),
+            )
+            cur.execute(
+                "UPDATE jobs SET role=%s, stage=%s WHERE request_id=%s",
+                ("developer" if idx % 2 else "qa", idx % 4, rid),
+            )
+        conn.commit()
 
     assert _run_watchdog(conn, cfg) == 1
     assert _run_watchdog(conn, cfg) == 0

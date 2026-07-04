@@ -350,20 +350,21 @@ def _alert_idempotency_key(finding: WatchdogFinding) -> str:
     lineage = _content_approval_lineage(finding.fingerprint)
     if not lineage:
         return f"completion-watchdog:{finding.category}:{finding.request_id}"
-    state = "|".join(
+    state = _content_approval_alert_state(finding)
+    digest = hashlib.sha256(state.encode("utf-8")).hexdigest()[:16]
+    return f"completion-watchdog:{lineage}:{digest}"
+
+
+def _content_approval_alert_state(finding: WatchdogFinding) -> str:
+    return "|".join(
         [
             finding.category,
             finding.request_status,
-            str(finding.current_stage),
-            finding.job_role or "none",
-            str(finding.job_stage) if finding.job_stage is not None else "none",
             finding.job_status or "none",
             finding.reason,
             finding.failure_reason,
         ]
     )
-    digest = hashlib.sha256(state.encode("utf-8")).hexdigest()[:16]
-    return f"completion-watchdog:{lineage}:{digest}"
 
 
 def _content_approval_lineage(fingerprint: str) -> str:
