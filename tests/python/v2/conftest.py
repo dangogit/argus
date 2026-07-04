@@ -80,7 +80,8 @@ def _external_dsn_allowed() -> bool:
     shell env ran the gate and wiped the production DB this way. An ambient
     ARGUS_DB_DSN outside CI is treated as a leak and ignored in favor of the
     ephemeral cluster."""
-    return bool(os.environ.get("CI")) or os.environ.get("ARGUS_DB_DSN_FOR_TESTS") == "1"
+    ci = os.environ.get("CI", "").strip().lower()
+    return ci in ("1", "true", "yes") or os.environ.get("ARGUS_DB_DSN_FOR_TESTS") == "1"
 
 
 @pytest.fixture(scope="session")

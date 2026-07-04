@@ -20,6 +20,13 @@ def test_ambient_dsn_refused_outside_ci(monkeypatch):
     assert not mod._external_dsn_allowed()
 
 
+def test_ci_false_is_not_ci(monkeypatch):
+    mod = _load_conftest()
+    monkeypatch.setenv("CI", "false")
+    monkeypatch.delenv("ARGUS_DB_DSN_FOR_TESTS", raising=False)
+    assert not mod._external_dsn_allowed()
+
+
 def test_dsn_allowed_under_ci(monkeypatch):
     mod = _load_conftest()
     monkeypatch.setenv("CI", "true")
