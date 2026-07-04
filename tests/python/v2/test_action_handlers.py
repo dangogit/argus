@@ -82,6 +82,44 @@ def test_team_email_action_requires_configured_team_source(monkeypatch, cfg_proj
         handlers.run("email_list", {"limit": 1}, cfg=cfg_project, team_id="dev")
 
 
+def test_social_publish_requires_live_readiness_before_dispatch(monkeypatch):
+    monkeypatch.setenv("ARGUS_CONTENT_PUBLISH_ENABLED", "1")
+    monkeypatch.setenv("ARGUS_SOCIAL_PUBLISH_COMMAND", "echo posted")
+    calls = []
+
+    with pytest.raises(RuntimeError, match="approval proof"):
+        handlers.run(
+            "social_publish",
+            {"project": "luma", "platform": "linkedin"},
+            runner=lambda argv, cwd=None: calls.append(argv) or "posted\n",
+        )
+
+    assert calls == []
+
+
+def test_social_publish_runs_after_all_live_readiness_checks(monkeypatch):
+    monkeypatch.setenv("ARGUS_CONTENT_PUBLISH_ENABLED", "1")
+    monkeypatch.setenv("ARGUS_SOCIAL_PUBLISH_COMMAND", "echo posted")
+    calls = []
+    readiness = {
+        "approval_proof": "approval:123",
+        "durable_media": True,
+        "cta_routes": True,
+        "dm_activation": True,
+        "metricool_targets": True,
+        "connector_auth": True,
+    }
+
+    ref = handlers.run(
+        "social_publish",
+        {"project": "luma", "platform": "linkedin", "live_readiness": readiness},
+        runner=lambda argv, cwd=None: calls.append(argv) or "posted\n",
+    )
+
+    assert ref == "posted"
+    assert calls == [["bash", "-lc", "echo posted"]]
+
+
 # ---------------------------------------------------------------------------
 # New PM action handlers: close_pr, comment_pr, reopen_pr
 # ---------------------------------------------------------------------------

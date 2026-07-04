@@ -188,12 +188,53 @@ def test_draft_retryable_live_manual(conn, tmp_path):
     draft_text = next(text for text in texts if f"Request: {draft}" in text)
     live_text = next(text for text in texts if f"Request: {live}" in text)
     assert f"Suggested retry: `argus request retry {draft}`" in draft_text
-    assert f"Manual live retry only: `argus request retry {live} --force-live`" in live_text
+    assert f"Manual live retry only: `argus request retry {live} --force-live" in live_text
+    assert "--approval-proof PROOF --durable-media --cta-routes" in live_text
+    assert "--dm-activation --metricool-targets --connector-auth" in live_text
     assert "Safety: watchdog only alerts." in live_text
 
     draft_retry = completion_watchdog.retry_request(conn, cfg, draft)
     live_retry = completion_watchdog.retry_request(conn, cfg, live)
+    force_only_retry = completion_watchdog.retry_request(
+        conn, cfg, live, force_live=True)
+    ready_retry = completion_watchdog.retry_request(
+        conn,
+        cfg,
+        live,
+        force_live=True,
+        live_readiness={
+            "approval_proof": "approval:123",
+            "durable_media": True,
+            "cta_routes": True,
+            "dm_activation": True,
+            "metricool_targets": True,
+            "connector_auth": True,
+        },
+    )
     conn.rollback()
     assert draft_retry.ok is True
     assert live_retry.ok is False
     assert live_retry.status == "needs-force-live"
+    assert force_only_retry.ok is False
+    assert force_only_retry.status == "needs-live-readiness"
+    assert ready_retry.ok is True
+
+
+def test_live_content_retry_requires_readiness_for_cta_and_schedule(conn, tmp_path):
+    cfg = _cfg(tmp_path)
+    for action in ("cta", "schedule"):
+        rid = _open_request(
+            conn,
+            cfg,
+            fingerprint=f"content-approval:slug:demo:{action}:2",
+            text=(
+                "Daniel approved one content live action in argus-content.\n"
+                f"Approved action: {action}\n"
+                "Run content publishing pipeline only for this exact target and action."
+            ),
+        )
+        result = completion_watchdog.retry_request(conn, cfg, rid, force_live=True)
+        conn.rollback()
+        assert result.ok is False
+        assert result.status == "needs-live-readiness"
+        assert "approval proof" in result.reason

@@ -610,6 +610,14 @@ def cmd_request(args) -> int:
             args.request_id,
             force_live=args.force_live,
             force_stuck=args.force_stuck,
+            live_readiness={
+                "approval_proof": args.approval_proof,
+                "durable_media": args.durable_media,
+                "cta_routes": args.cta_routes,
+                "dm_activation": args.dm_activation,
+                "metricool_targets": args.metricool_targets,
+                "connector_auth": args.connector_auth,
+            },
         )
         if result.ok:
             conn.commit()
@@ -1159,6 +1167,14 @@ def cmd_content(args) -> int:
             "project": draft["project"],
             "platform": draft["platform"],
             "path": str(state.content_dir() / draft["id"]),
+            "live_readiness": {
+                "approval_proof": args.approval_proof,
+                "durable_media": args.durable_media,
+                "cta_routes": args.cta_routes,
+                "dm_activation": args.dm_activation,
+                "metricool_targets": args.metricool_targets,
+                "connector_auth": args.connector_auth,
+            },
         }
         try:
             ref = handlers.run("social_publish", payload)
@@ -1551,7 +1567,19 @@ def build_parser() -> argparse.ArgumentParser:
     r = rqs.add_parser("retry")
     r.add_argument("request_id")
     r.add_argument("--force-live", action="store_true",
-                   help="allow retry of content live approval work after manual gate check")
+                   help="allow retry of content live approval work after readiness proof")
+    r.add_argument("--approval-proof",
+                   help="approval proof for content live retry")
+    r.add_argument("--durable-media", action="store_true",
+                   help="confirm durable media for content live retry")
+    r.add_argument("--cta-routes", action="store_true",
+                   help="confirm CTA routes for content live retry")
+    r.add_argument("--dm-activation", action="store_true",
+                   help="confirm DM activation for content live retry")
+    r.add_argument("--metricool-targets", action="store_true",
+                   help="confirm Metricool targets for content live retry")
+    r.add_argument("--connector-auth", action="store_true",
+                   help="confirm connector auth for content live retry")
     r.add_argument("--force-stuck", action="store_true",
                    help="requeue a claimed/running job whose lease still appears active")
     r.set_defaults(fn=cmd_request)
@@ -1801,6 +1829,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(fn=cmd_content)
     r = cts.add_parser("publish")
     r.add_argument("draft_id")
+    r.add_argument("--approval-proof")
+    r.add_argument("--durable-media", action="store_true")
+    r.add_argument("--cta-routes", action="store_true")
+    r.add_argument("--dm-activation", action="store_true")
+    r.add_argument("--metricool-targets", action="store_true")
+    r.add_argument("--connector-auth", action="store_true")
     r.set_defaults(fn=cmd_content)
     r = cts.add_parser("drain"); r.set_defaults(fn=cmd_content)
     s = sub.add_parser("brief")

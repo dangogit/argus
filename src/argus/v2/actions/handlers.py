@@ -24,6 +24,14 @@ def _default_runner(argv, cwd=None) -> str:  # pragma: no cover
 
 
 _CONFLICT_TITLE_PREFIX = "[conflicts] "
+_LIVE_READINESS_CHECKS = {
+    "approval_proof": "approval proof",
+    "durable_media": "durable media",
+    "cta_routes": "CTA routes",
+    "dm_activation": "DM activation",
+    "metricool_targets": "Metricool targets",
+    "connector_auth": "connector auth",
+}
 
 
 def build_open_pr(*, branch, base, remote, title, body, draft=False):
@@ -271,6 +279,7 @@ def _content_queue(payload: dict) -> str:
 
 
 def _social_publish(payload: dict, runner: Callable) -> str:
+    _require_live_readiness(payload)
     if os.environ.get("ARGUS_CONTENT_PUBLISH_ENABLED") != "1":
         raise RuntimeError("social publishing not configured")
     command = os.environ.get("ARGUS_SOCIAL_PUBLISH_COMMAND")
@@ -289,6 +298,19 @@ def _social_publish(payload: dict, runner: Callable) -> str:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _require_live_readiness(payload: dict) -> None:
+    readiness = payload.get("live_readiness") or payload.get("readiness")
+    if not isinstance(readiness, dict):
+        missing = ", ".join(_LIVE_READINESS_CHECKS.values())
+        raise RuntimeError(f"live readiness checks missing: {missing}")
+    missing = [
+        label for key, label in _LIVE_READINESS_CHECKS.items()
+        if not readiness.get(key)
+    ]
+    if missing:
+        raise RuntimeError(f"live readiness checks missing: {', '.join(missing)}")
 
 
 def _required(payload: dict, key: str) -> str:

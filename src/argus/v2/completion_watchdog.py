@@ -24,6 +24,14 @@ CONTENT_SOURCES = {
 }
 CONTENT_PREFIXES = ("content-approval:", "content-team-run:")
 LIVE_CONTENT_ACTIONS = {"publish", "schedule", "media", "cta"}
+LIVE_READINESS_FLAGS = {
+    "approval_proof": "approval proof",
+    "durable_media": "durable media",
+    "cta_routes": "CTA routes",
+    "dm_activation": "DM activation",
+    "metricool_targets": "Metricool targets",
+    "connector_auth": "connector auth",
+}
 
 
 @dataclass(frozen=True)
@@ -92,7 +100,8 @@ def find(conn: psycopg.Connection, cfg, *, threshold_minutes: int | None = None,
 
 
 def retry_request(conn: psycopg.Connection, cfg, request_id: str, *,
-                  force_live: bool = False, force_stuck: bool = False) -> RetryResult:
+                  force_live: bool = False, force_stuck: bool = False,
+                  live_readiness: dict[str, Any] | None = None) -> RetryResult:
     with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(
             """
@@ -120,7 +129,13 @@ def retry_request(conn: psycopg.Connection, cfg, request_id: str, *,
                          row.get("payload") or {})
     if mode == "live" and not force_live:
         return RetryResult(False, request_id, row.get("job_id"), "needs-force-live",
-                           "live content action requires --force-live after manual gate check")
+                           "live content action requires --force-live and readiness proof")
+    if mode == "live":
+        missing = _missing_live_readiness(live_readiness)
+        if missing:
+            return RetryResult(False, request_id, row.get("job_id"), "needs-live-readiness",
+                               "live content action requires readiness proof: "
+                               + ", ".join(missing))
     job_id = row.get("job_id")
     if not job_id:
         return RetryResult(False, request_id, None, "no-job", "request has no pipeline job")
@@ -298,7 +313,10 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
     retryable = mode != "live"
     retry_command = f"argus request retry {request_id}"
     if mode == "live":
-        retry_command += " --force-live"
+        retry_command += (
+            " --force-live --approval-proof PROOF --durable-media --cta-routes "
+            "--dm-activation --metricool-targets --connector-auth"
+        )
     if job_status in {"claimed", "running"}:
         retry_command += " --force-stuck"
     dest = rule.destination_ref or _team_control_dest(cfg, str(row["team_id"])) or "cli:local"
@@ -406,6 +424,15 @@ def _content_mode(source: str, fingerprint: str, payload: dict[str, Any]) -> str
     if any(f"approved action: {action}" in lower for action in LIVE_CONTENT_ACTIONS):
         return "live"
     return "generic"
+
+
+def _missing_live_readiness(readiness: dict[str, Any] | None) -> list[str]:
+    if not isinstance(readiness, dict):
+        return list(LIVE_READINESS_FLAGS.values())
+    return [
+        label for key, label in LIVE_READINESS_FLAGS.items()
+        if not readiness.get(key)
+    ]
 
 
 def _team_control_dest(cfg, team_id: str) -> str | None:

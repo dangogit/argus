@@ -586,6 +586,7 @@ def test_content_draft_list_and_publish(conn, pg_dsn, monkeypatch, capsys):
     from argus.v2.content import state
 
     monkeypatch.setenv("ARGUS_DB_DSN", pg_dsn)
+    calls = []
 
     assert cli.main([
         "content", "draft",
@@ -594,10 +595,22 @@ def test_content_draft_list_and_publish(conn, pg_dsn, monkeypatch, capsys):
         "--request", "announce launch",
     ]) == 0
     draft_id = state.register("luma", "linkedin")
-    monkeypatch.setattr(handlers, "run", lambda action_type, payload: "posted:1")
+    monkeypatch.setattr(
+        handlers,
+        "run",
+        lambda action_type, payload: calls.append((action_type, payload)) or "posted:1",
+    )
 
     assert cli.main(["content", "list"]) == 0
-    assert cli.main(["content", "publish", draft_id]) == 0
+    assert cli.main([
+        "content", "publish", draft_id,
+        "--approval-proof", "approval:123",
+        "--durable-media",
+        "--cta-routes",
+        "--dm-activation",
+        "--metricool-targets",
+        "--connector-auth",
+    ]) == 0
 
     out = capsys.readouterr().out
     assert "content queue " in out
@@ -607,6 +620,15 @@ def test_content_draft_list_and_publish(conn, pg_dsn, monkeypatch, capsys):
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM content_drafts WHERE id=%s", (draft_id,))
         assert cur.fetchone()[0] == "published"
+    assert calls[0][0] == "social_publish"
+    assert calls[0][1]["live_readiness"] == {
+        "approval_proof": "approval:123",
+        "durable_media": True,
+        "cta_routes": True,
+        "dm_activation": True,
+        "metricool_targets": True,
+        "connector_auth": True,
+    }
 
 
 def test_ceo_brief_parser(monkeypatch):
