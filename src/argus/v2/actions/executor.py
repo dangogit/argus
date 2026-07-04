@@ -369,6 +369,7 @@ def _suppress_duplicate_low_disk_whatsapp(
     if not fingerprint:
         return None
     evidence_updated_at = str(payload.get("system_health_evidence_updated_at") or "")
+    text = str(payload.get("text") or "")
     cur.execute(
         """
         SELECT id
@@ -382,6 +383,7 @@ def _suppress_duplicate_low_disk_whatsapp(
           AND updated_at > now() - make_interval(secs => %s)
           AND payload->'system_health_fingerprints' ? %s
           AND COALESCE(payload->>'system_health_evidence_updated_at', '') = %s
+          AND COALESCE(payload->>'text', '') = %s
         ORDER BY updated_at DESC
         LIMIT 1
         """,
@@ -391,6 +393,7 @@ def _suppress_duplicate_low_disk_whatsapp(
             _LOW_DISK_NOTIFY_DEDUPE_SECONDS,
             fingerprint,
             evidence_updated_at,
+            text,
         ),
     )
     row = cur.fetchone()

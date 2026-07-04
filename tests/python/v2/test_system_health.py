@@ -347,6 +347,73 @@ def test_low_disk_whatsapp_duplicate_with_same_evidence_is_suppressed(
     assert suppression_logs == 1
 
 
+def test_low_disk_whatsapp_same_fingerprint_changed_text_is_not_suppressed(
+    conn, tmp_path, monkeypatch
+):
+    path = tmp_path / "argus.yaml"
+    path.write_text(
+        "company:\n"
+        "  name: c\n"
+        "  defaults:\n"
+        "    engine: { engine: echo }\n"
+        "    notifications: { quiet_hours: false }\n"
+        "teams:\n"
+        "  - name: general\n"
+        "    roles: [ { name: manager, kind: front, prompt: p } ]\n"
+        "    pipeline: { stages: [manager] }\n"
+        "    channels: [ { type: whatsapp, role: control, channel_id: general } ]\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(path)
+    base_payload = {
+        "text": "Argus health: system issue detected\n- low disk space",
+        "system_health_fingerprints": ["disk:low:abc123"],
+        "system_health_evidence_updated_at": "2026-07-03T10:00:00Z",
+    }
+    escalated_payload = {
+        **base_payload,
+        "text": "Argus health: system issue detected\n- low disk space (3 same-day alerts)",
+    }
+    sent = []
+    monkeypatch.setattr(
+        send,
+        "deliver",
+        lambda _cfg, destination_ref, text: sent.append((destination_ref, text))
+        or f"wa-{len(sent)}",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO actions (team_id, type, risk, destination_ref,
+                                 idempotency_key, payload)
+            VALUES ('general','notify','reversible_internal','whatsapp:general',
+                    'disk-low-1', %s),
+                   ('general','notify','reversible_internal','whatsapp:general',
+                    'disk-low-2', %s)
+            """,
+            (Json(base_payload), Json(escalated_payload)),
+        )
+
+    executor.process_proposed(conn, cfg)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT provider_ref FROM actions ORDER BY idempotency_key")
+        rows = cur.fetchall()
+        cur.execute(
+            "SELECT count(*) FROM alerts "
+            "WHERE fingerprint='low-disk-notify-suppressed:disk:low:abc123'"
+        )
+        suppression_logs = cur.fetchone()[0]
+
+    assert sent == [
+        ("whatsapp:general", base_payload["text"]),
+        ("whatsapp:general", escalated_payload["text"]),
+    ]
+    assert [row[0] for row in rows] == ["wa-1", "wa-2"]
+    assert suppression_logs == 0
+
+
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
     path = tmp_path / "argus.yaml"
     path.write_text(
