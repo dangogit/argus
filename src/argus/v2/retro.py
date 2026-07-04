@@ -671,7 +671,7 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         )
         rows = cur.fetchall()
     queued = 0
-    seen: dict[tuple[str, str, str, tuple[str, ...], str], str] = {}
+    seen = _existing_auto_change_dedupe_keys(cfg, rows)
     for item_id, team_id, typ, statement, trigger, payload in rows:
         item_id = str(item_id)
         payload = payload or {}
@@ -711,6 +711,26 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
             seen.setdefault(dedupe_key, request_id)
             queued += 1
     return queued
+
+
+def _existing_auto_change_dedupe_keys(
+    cfg,
+    rows: list[tuple[Any, str, str, str, str, dict]],
+) -> dict[tuple[str, str, str, tuple[str, ...], str], str]:
+    seen: dict[tuple[str, str, str, tuple[str, ...], str], str] = {}
+    for _item_id, team_id, typ, statement, trigger, payload in rows:
+        payload = payload or {}
+        auto_request_id = payload.get("auto_request_id")
+        if not auto_request_id:
+            continue
+        if not _auto_change_eligible(team_id, statement, trigger, payload):
+            continue
+        target_team = _auto_change_team(cfg, team_id)
+        if not target_team:
+            continue
+        dedupe_key = _auto_change_dedupe_key(target_team, typ, statement, payload)
+        seen.setdefault(dedupe_key, str(auto_request_id))
+    return seen
 
 
 def _auto_change_dedupe_key(target_team: str, typ: str, statement: str,

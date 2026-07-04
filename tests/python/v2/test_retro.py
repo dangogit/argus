@@ -242,6 +242,50 @@ def test_auto_change_dedupe_key_normalizes_task_lineage_and_theme():
     )
 
 
+def test_existing_auto_change_dedupe_keys_are_order_independent(tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    evidence = [
+        "retro-change:edd1011b21359f54becb0faf",
+        "converse:956df200-2353-4b41-a513-4bf57a1ba38d",
+        "converse:325751ff-3210-442b-a672-4fb5cd7b75dc",
+    ]
+    rows = [
+        (
+            "newer",
+            "dev",
+            "process-edit",
+            "qa-fail: Update QA reports to classify environment blockers",
+            "retro-change duplicate",
+            {
+                "evidence_run_ids": evidence,
+                "confidence": 0.9,
+                "impact": 8,
+                "theme": "qa blocker classification",
+            },
+        ),
+        (
+            "older",
+            "dev",
+            "process-edit",
+            "Update QA reports to classify environment blockers",
+            "converse duplicate",
+            {
+                "auto_request_id": "request-1",
+                "evidence_run_ids": list(reversed(evidence)),
+                "confidence": 0.9,
+                "impact": 8,
+                "theme": "QA blocker classification",
+            },
+        ),
+    ]
+
+    dedupe_key = retro._auto_change_dedupe_key(
+        "dev", "process-edit", rows[0][3], rows[0][5]
+    )
+
+    assert retro._existing_auto_change_dedupe_keys(cfg, rows)[dedupe_key] == "request-1"
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
