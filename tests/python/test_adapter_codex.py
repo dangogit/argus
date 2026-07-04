@@ -185,6 +185,17 @@ def test_network_flag_opens_workspace_write_network(tmp_path, monkeypatch):
     assert "sandbox_workspace_write.network_access=true" in result.text
 
 
+def test_config_overrides_pass_through(tmp_path, monkeypatch):
+    _fake_codex(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "ARGUS_CODEX_CONFIG_OVERRIDES",
+        'mcp_servers.metricool.url="https://ai.metricool.com/mcp"',
+    )
+    result = run_agent("codex", "check planner")
+
+    assert "-c mcp_servers.metricool.url=https://ai.metricool.com/mcp" in result.text
+
+
 def test_network_flag_off_by_default(tmp_path, monkeypatch):
     _fake_codex(tmp_path, monkeypatch)
     monkeypatch.delenv("ARGUS_CODEX_NETWORK", raising=False)
