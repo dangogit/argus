@@ -143,6 +143,30 @@ def test_looks_blocked_distinguishes_block_from_no_fix():
     assert pipeline._looks_blocked({"status": "no_fix"}, "could not find a bug") is False
 
 
+def test_live_content_dispatch_classifier_covers_retro_evidence_without_db():
+    text = (
+        "Require live-readiness proof before dispatching live content publish, "
+        "CTA, schedule, or connector work. Evidence: "
+        "retro-change:7b44e1131503b8dbddc6b1d4, "
+        "converse:b52f4367-79e1-4f8b-afbd-1de1611f76f0, "
+        "converse:3c950163-6013-40c9-b877-9778275ebcfa, "
+        "retro-change:0702b4faf58e62258776c453. Gates: approval proof, "
+        "durable media, CTA route, DM activation, Metricool target, "
+        "and connector auth."
+    )
+    assert pipeline._is_live_content_dispatch("retro", "retro-change:0702", text)
+    assert pipeline._is_live_content_dispatch(
+        "pm:content-approval-watch",
+        "content-approval:slug:launch:schedule:1",
+        "Daniel approved one content live action.\nApproved action: schedule",
+    )
+    assert not pipeline._is_live_content_dispatch(
+        "pm:content-approval-watch",
+        "content-approval:slug:launch:draft:1",
+        "Daniel approved one content draft action.\nApproved action: draft",
+    )
+
+
 def test_enqueue_stage_is_idempotent(conn, cfg):
     eid = _event(conn, cfg); conn.commit()
     rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",

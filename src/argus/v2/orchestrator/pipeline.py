@@ -42,6 +42,11 @@ _PIPELINE_CHECKPOINTS = (
     "- If interrupted, the transcript must show completed external side effects "
     "and remaining work."
 )
+_LIVE_CONTENT_ACTIONS = {"publish", "schedule", "cta", "connector"}
+_CONTENT_DISPATCH_READINESS = """Live content dispatch readiness required:
+- Before dispatching live content publish, CTA, schedule, or connector work, cite proof for every required gate: approval proof, durable media, CTA route, DM activation, Metricool target, and connector auth.
+- If any gate is missing or unverified, answer with the missing readiness proof instead of dispatching.
+- Draft-only work may continue without these live-readiness gates."""
 
 
 def is_actionable(payload: Optional[dict]) -> bool:
@@ -1209,6 +1214,9 @@ def enqueue_converse(conn: psycopg.Connection, cfg, *, event_id: str,
     snapshot.update(_role_snapshot_extra("manager"))
     # Read event text to carry in the payload.
     text = _request_text(conn, event_id)
+    dispatch_readiness = _live_content_dispatch_context(conn, event_id, text)
+    if dispatch_readiness:
+        text = f"{text}\n\n{dispatch_readiness}" if text else dispatch_readiness
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
     _add_prompt_hash(snapshot)
@@ -1285,6 +1293,9 @@ def _signal_task_text(conn: psycopg.Connection, event_id, mode: str) -> str:
     """Frame a signal event for the manager (triage) or researcher (investigate).
     Builds on _request_text (which already renders the signal payload)."""
     base = _request_text(conn, event_id)
+    dispatch_readiness = _live_content_dispatch_context(conn, event_id, base)
+    if dispatch_readiness:
+        base = f"{base}\n\n{dispatch_readiness}" if base else dispatch_readiness
     if mode == "triage":
         return ("A monitoring signal arrived. Triage it and decide exactly one "
                 "action: investigate (ask the researcher to look first when the "
@@ -1293,6 +1304,51 @@ def _signal_task_text(conn: psycopg.Connection, event_id, mode: str) -> str:
                 "expected / not actionable).\n\n" + base)
     return ("Investigate this signal read-only: find the root cause, do NOT change "
             "any files, and report a short structured brief.\n\n" + base)
+
+
+def _live_content_dispatch_context(conn: psycopg.Connection, event_id, text: str) -> str:
+    if not event_id:
+        return ""
+    source = ""
+    fingerprint = ""
+    payload_text = ""
+    with conn.cursor() as cur:
+        cur.execute("SELECT source, dedup_key, payload FROM events WHERE id=%s",
+                    (event_id,))
+        row = cur.fetchone()
+    if row:
+        source = str(row[0] or "")
+        fingerprint = str(row[1] or "")
+        payload = row[2] if isinstance(row[2], dict) else {}
+        payload_text = str(payload.get("text") or "")
+    combined = "\n".join(part for part in (text, payload_text) if part)
+    if not _is_live_content_dispatch(source, fingerprint, combined):
+        return ""
+    return _CONTENT_DISPATCH_READINESS
+
+
+def _is_live_content_dispatch(source: str, fingerprint: str, text: str) -> bool:
+    source = source.lower()
+    fingerprint = fingerprint.lower()
+    lower = text.lower()
+    if "approved action: draft" in lower or "internal draft" in lower:
+        return False
+    if (
+        source in {"pm:content-approval-watch", "content-approval-watch"}
+        or fingerprint.startswith("content-approval:")
+    ):
+        if fingerprint.startswith("content-approval:"):
+            parts = [part for part in fingerprint.split(":") if part]
+            if any(part in _LIVE_CONTENT_ACTIONS for part in parts):
+                return True
+        return any(f"approved action: {action}" in lower for action in _LIVE_CONTENT_ACTIONS)
+    readiness_terms = (
+        "approval proof", "durable media", "cta route", "dm activation",
+        "metricool", "connector auth",
+    )
+    if any(term in lower for term in readiness_terms):
+        return True
+    return "content" in lower and any(action in lower for action in _LIVE_CONTENT_ACTIONS)
 
 
 def _handle_triage(conn: psycopg.Connection, cfg, job: Job) -> None:

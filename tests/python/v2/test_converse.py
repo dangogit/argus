@@ -198,6 +198,53 @@ def test_worker_converse_job_includes_manager_state_in_prompt(
     assert "MANAGER_STATE_SENTINEL" in row[0]
 
 
+def test_worker_converse_job_includes_live_content_dispatch_readiness(
+        conn, cfg_converse, monkeypatch):
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": _converse_result("ignore")})
+
+    _ingest(
+        conn,
+        cfg_converse,
+        text="Publish the live content in Metricool after the CTA route is ready.",
+        key="content-live",
+    )
+    conn.commit()
+    reconcile.route_events(conn, cfg_converse)
+    conn.commit()
+    worker.run_once(cfg_converse, "w1")
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT prompt FROM runs WHERE role='manager'")
+        row = cur.fetchone()
+    assert row is not None, "no run row for manager"
+    assert "Live content dispatch readiness required:" in row[0]
+    assert ("approval proof, durable media, CTA route, DM activation, "
+            "Metricool target, and connector auth") in row[0]
+    assert "instead of dispatching" in row[0]
+
+
+def test_worker_converse_job_skips_live_readiness_for_content_draft(
+        conn, cfg_converse, monkeypatch):
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": _converse_result("ignore")})
+
+    _ingest(conn, cfg_converse, text="Create an internal draft for content.",
+            key="content-draft")
+    conn.commit()
+    reconcile.route_events(conn, cfg_converse)
+    conn.commit()
+    worker.run_once(cfg_converse, "w1")
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT prompt FROM runs WHERE role='manager'")
+        row = cur.fetchone()
+    assert row is not None, "no run row for manager"
+    assert "Live content dispatch readiness required:" not in row[0]
+
+
 # ---------------------------------------------------------------------------
 # C5: on_job_done answer branch
 # ---------------------------------------------------------------------------
