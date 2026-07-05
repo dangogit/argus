@@ -24,6 +24,9 @@ Candidate rules:
 - theme: kebab-case root-cause slug shared with team retros
 - company_eligible: true only when the same theme appears in at least 2 teams
   or the candidate has at least 4 evidence ids
+- Deduplicate equivalent retro and converse work before proposing internal
+  improvement work. If normalized statement, lineage, and theme match, emit one
+  candidate with combined real evidence ids.
 
 Output ONLY a single JSON object, no prose and no code fences, EXACTLY:
 

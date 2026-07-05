@@ -35,6 +35,10 @@ Produce 0 to 5 candidate improvements. Quality over quantity. Each candidate:
   existing slug when it fits; invent a new one only for a genuinely new cause.
   Example slugs: triage-fail-loud, recurring-findings, worktree-deps,
   lost-work, flaky-gatherer, noisy-alerts.
+- Before emitting a skill, prompt-edit, or process-edit candidate, collapse
+  equivalent retro and converse work into one candidate by normalized statement,
+  lineage, and theme. Keep all real evidence ids on that one candidate instead
+  of producing duplicate PM work.
 
 Output ONLY a single JSON object, no prose and no code fences, EXACTLY:
 

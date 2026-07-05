@@ -55,6 +55,9 @@ control merge, deploy, outward messages, destructive work, and secrets.
   least `7`, and there are at least 3 evidence ids.
 - Company auto-changes also need the same theme in at least 2 teams, or at
   least 4 total evidence ids.
+- Auto-change dispatch fingerprints are based on normalized task text, lineage,
+  and theme, so equivalent retro and converse work coalesces into one PM
+  request before dispatch.
 - `infra-flag`: backlog only.
 - Prompt-injection, secret, destructive, and remote shell install patterns are
   quarantined.

@@ -34,6 +34,7 @@ by project. Company retro lessons are stored in `knowledge` with
 `scope='company'`, so all teams can recall them through the normal context path.
 
 When `retro.authority` is `auto-changes`, eligible retro candidates open normal
-PM requests with `retro-change:<backlog_id>` fingerprints. They still move
-through the same developer, QA, senior, PR, and approval gates as any other PM
-work.
+PM requests with `retro-change:<hash>` fingerprints derived from normalized task
+text, lineage, and theme. Equivalent retro and converse evidence therefore
+coalesces into one PM request before dispatch. The request still moves through
+the same developer, QA, senior, PR, and approval gates as any other PM work.
