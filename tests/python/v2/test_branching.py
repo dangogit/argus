@@ -63,9 +63,12 @@ def test_exhausted_qa_records_project_memory(conn, cfg_project):
         cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
         assert cur.fetchone()[0] == "failed"
         cur.execute(
-            "SELECT finding, outcome FROM pm_lessons WHERE team_id='dev' ORDER BY created_at"
+            "SELECT finding, outcome, note FROM pm_lessons "
+            "WHERE team_id='dev' ORDER BY created_at"
         )
-        assert cur.fetchall()[-1] == ("fix payment", "qa-fail")
+        finding, outcome, note = cur.fetchall()[-1]
+        assert (finding, outcome) == ("fix payment", "qa-fail")
+        assert "Failure classification: unknown" in note
         cur.execute("SELECT lesson_fingerprint, outcome FROM pm_lesson_attributions")
         assert cur.fetchall() == [("prior", "qa-fail")]
 

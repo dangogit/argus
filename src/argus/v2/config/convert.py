@@ -92,8 +92,14 @@ def _team_from_project(project: dict) -> dict:
              "for the owner: what was wrong and what you changed>\"} when you "
              "edited code, or {\"ready\": false, \"analysis\": \"<why no change "
              "was warranted>\"} otherwise."},
-            {"name": "qa", "kind": "judge", "prompt": "Run checks and judge the result."},
-            {"name": "senior", "kind": "judge", "prompt": "Review the change before PR."},
+            {"name": "qa", "kind": "judge", "prompt":
+             "Run checks and judge the result. Before failing, classify the "
+             "failure as code regression, environment blocker, expected "
+             "cancellation, stale status, or unknown."},
+            {"name": "senior", "kind": "judge", "prompt":
+             "Review the change before PR. Before a failing PR summary, "
+             "classify the failure as code regression, environment blocker, "
+             "expected cancellation, stale status, or unknown."},
         ],
         "pipeline": {"stages": ["researcher", "developer", "qa", "senior"], "max_iters": 2},
         "channels": [{"type": "cli", "role": "control", "channel_id": "local"}],
