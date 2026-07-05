@@ -34,6 +34,24 @@ log = logging.getLogger("argus.worker")
 
 _TEST_OUTPUT_LIMIT = 12000
 _HEARTBEAT_INTERVAL = 30  # seconds; module-level so tests can shrink it
+_POSTGRES_TEST_MARKERS = (
+    "postgres",
+    "postgresql",
+    "psql",
+    "pg_isready",
+    "argus_db_dsn",
+)
+_POSTGRES_UNAVAILABLE_MARKERS = (
+    "connection refused",
+    "could not connect",
+    "couldn't connect",
+    "database unavailable",
+    "no postgres server available",
+    "postgres did not start",
+    "server closed the connection",
+    "localhost",
+    "127.0.0.1",
+)
 
 # A job may be outage-released this many times before it finalizes failed.
 # At >= 15 min per release this tolerates a 12h engine outage; past that the
@@ -130,6 +148,16 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             if test_exit is not None:
                 result["test_exit"] = test_exit
                 result["test_output"] = test_context
+                if _is_postgres_verification_blocker(project.test_cmd, test_context, test_exit):
+                    result["qa_environment_blocker"] = "postgres-unavailable"
+                    parsed = dict(result.get("parsed") or {})
+                    parsed["verdict"] = "fail"
+                    parsed["qa_environment_blocker"] = "postgres-unavailable"
+                    parsed.setdefault(
+                        "analysis",
+                        "QA blocked: Postgres-backed verification did not run.",
+                    )
+                    result["parsed"] = parsed
 
             # Commit any edits the builder made in the worktree so the work branch
             # actually contains the change before qa runs the tests.
@@ -339,6 +367,16 @@ def _format_test_context(command: str, exit_code: int, stdout: str, stderr: str)
     if len(output) > _TEST_OUTPUT_LIMIT:
         output = output[-_TEST_OUTPUT_LIMIT:]
     return f"TEST RESULT\ncommand: {command}\nexit_code: {exit_code}\noutput:\n{output}"
+
+
+def _is_postgres_verification_blocker(command: str | None, test_context: str | None,
+                                      test_exit: int | None) -> bool:
+    if test_exit in (None, 0):
+        return False
+    text = f"{command or ''}\n{test_context or ''}".lower()
+    mentions_postgres = any(marker in text for marker in _POSTGRES_TEST_MARKERS)
+    mentions_unavailable = any(marker in text for marker in _POSTGRES_UNAVAILABLE_MARKERS)
+    return mentions_postgres and mentions_unavailable
 
 
 def _start_heartbeat(job_id: str, claim_token: str | None, stop: Event) -> Thread | None:

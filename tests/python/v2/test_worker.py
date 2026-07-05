@@ -153,6 +153,59 @@ def test_worker_passes_test_output_to_qa(conn, tmp_path, monkeypatch):
     assert "boom" in result["test_output"]
 
 
+def test_worker_marks_postgres_test_failure_as_qa_blocker(conn, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "argus.yaml"
+    cfg_path.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n  - name: dev\n"
+        f"    project: {{ repo: {tmp_path}, base_branch: main, test_cmd: \"psql postgresql://localhost/argus -c select\" }}\n"
+        "    roles: [ { name: qa, kind: judge, prompt: p } ]\n"
+        "    pipeline: { stages: [qa] }\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(cfg_path)
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="qa-postgres-blocker", text="check it")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO requests (event_id, team_id) VALUES (%s,'dev') RETURNING id",
+                    (eid,))
+        rid = str(cur.fetchone()[0])
+    jobs.enqueue(conn, team_id="dev", kind="pipeline", role="qa", stage=0,
+                 idempotency_key="qa-postgres-blocker", exec_snapshot={"engine": "echo"},
+                 payload={"text": "check it"}, request_id=rid, event_id=eid)
+    conn.commit()
+
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree(str(tmp_path), "b", str(tmp_path)))
+
+    test_run = subprocess.CompletedProcess(
+        args="psql",
+        returncode=2,
+        stdout="",
+        stderr="psql: error: connection to server at \"localhost\" (::1), port 5432 failed: Connection refused",
+    )
+    monkeypatch.setattr(worker.subprocess, "run", lambda *args, **kwargs: test_run)
+
+    def fake_run_job(cfg, job, context, workdir):
+        return (
+            RunRecord(role=job.role, engine="echo", status="ok",
+                      output='ARGUS_RESULT: {"verdict": "pass"}'),
+            {},
+            [],
+        )
+
+    monkeypatch.setattr(worker.job_exec, "run_job", fake_run_job)
+
+    assert worker.run_once(cfg, "w1") is True
+    with conn.cursor() as cur:
+        cur.execute("SELECT result FROM jobs WHERE idempotency_key='qa-postgres-blocker'")
+        result = cur.fetchone()[0]
+    assert result["test_exit"] == 2
+    assert result["qa_environment_blocker"] == "postgres-unavailable"
+    assert result["parsed"]["verdict"] == "fail"
+    assert result["parsed"]["qa_environment_blocker"] == "postgres-unavailable"
+
+
 def test_worker_turns_qa_test_timeout_into_context(conn, tmp_path, monkeypatch):
     cfg_path = tmp_path / "argus.yaml"
     cfg_path.write_text(

@@ -25,6 +25,13 @@ def test_qa_verdict_prefers_structured_verdict():
     assert contracts.qa_verdict({"verdict": "fail"}, test_exit=0) == "fail"
 
 
+def test_qa_verdict_fails_postgres_environment_blocker():
+    assert contracts.qa_verdict({
+        "verdict": "pass",
+        "qa_environment_blocker": "postgres-unavailable",
+    }, test_exit=1) == "fail"
+
+
 def test_senior_decision_defaults_changes_when_unclear():
     assert contracts.senior_decision({"decision": "approve"}) == "approve"
     assert contracts.senior_decision({}) == "changes"  # fail-safe: don't ship unreviewed
