@@ -200,6 +200,70 @@ def test_signal_fingerprint_dedups_across_completion(conn, cfg):
         assert cur.fetchone()[0] == 1  # exactly one stage-0 job for the row
 
 
+def test_pm_request_text_dedups_converse_and_retro_fingerprints(conn, cfg):
+    text = (
+        "Implement minimal internal process change to coalesce equivalent PM "
+        "requests by normalized task text, lineage, and theme before creating "
+        "additional work items, using the provided converse and retro-change "
+        "fingerprints as regression evidence. Do not merge, deploy, send "
+        "messages, or change secrets."
+    )
+    e1 = events.ingest_message(
+        conn, cfg, team="dev", source="cli",
+        dedup_key="converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+        text=text,
+    )
+    r1 = pipeline.open_request(
+        conn, cfg, event_id=e1, team_id="dev", conversation_id=None,
+        fingerprint="converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+    )
+    e2 = events.ingest_message(
+        conn, cfg, team="dev", source="retro",
+        dedup_key="retro-change:68f9851dcd434eb66af49543",
+        text=f"{text}\nEvidence: converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+        metadata={"theme": "pm-request-dedupe"},
+    )
+    r2 = pipeline.open_request(
+        conn, cfg, event_id=e2, team_id="dev", conversation_id=None,
+        fingerprint="retro-change:68f9851dcd434eb66af49543",
+    )
+
+    assert r1 is not None
+    assert r2 is None
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM jobs WHERE kind='pipeline'")
+        assert cur.fetchone()[0] == 1
+
+
+def test_pm_request_text_dedup_keeps_different_lineage_and_theme(conn, cfg):
+    text = "Implement minimal internal process change."
+    e1 = events.ingest_message(
+        conn, cfg, team="dev", source="retro",
+        dedup_key="retro-change:first",
+        text=text,
+        metadata={"retro_source_team": "dev", "theme": "qa"},
+    )
+    r1 = pipeline.open_request(
+        conn, cfg, event_id=e1, team_id="dev", conversation_id=None,
+        fingerprint="retro-change:first",
+    )
+    e2 = events.ingest_message(
+        conn, cfg, team="dev", source="retro",
+        dedup_key="retro-change:second",
+        text=text,
+        metadata={"retro_source_team": "luma", "theme": "readiness"},
+    )
+    r2 = pipeline.open_request(
+        conn, cfg, event_id=e2, team_id="dev", conversation_id=None,
+        fingerprint="retro-change:second",
+    )
+
+    assert r1 is not None
+    assert r2 is not None
+
+
 def test_triage_jobs_dedup_on_fingerprint(conn, cfg):
     # The triage job key is fingerprint-derived, so two emissions of the same
     # signal collapse to a single job via ON CONFLICT.

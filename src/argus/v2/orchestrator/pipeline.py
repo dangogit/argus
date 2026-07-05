@@ -31,6 +31,7 @@ log = logging.getLogger("argus.pipeline")
 # work. Without this gate an internal "no findings" alert opened a build request,
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
+_PM_REQUEST_PREFIXES = ("converse:", "retro-change:")
 
 _PIPELINE_CHECKPOINTS = (
     "CHECKPOINTS:\n"
@@ -90,6 +91,9 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
                  conversation_id: Optional[str], fingerprint: Optional[str] = None,
                  dedup_terminal: bool = False) -> Optional[str]:
     with conn.cursor() as cur:
+        pm_key = _pm_request_key_for_event(conn, event_id, fingerprint=fingerprint)
+        if pm_key and _pm_request_duplicate(conn, team_id, pm_key):
+            return None
         if fingerprint and dedup_terminal:
             # Signal-origin work: a connector row maps to one fingerprint for its
             # whole lifetime, so a re-emitted row must NOT open a second pipeline
@@ -140,6 +144,97 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         request_id = str(row[0])
     enqueue_stage(conn, cfg, request_id=request_id, stage_index=0)
     return request_id
+
+
+def _pm_request_key_for_event(conn: psycopg.Connection, event_id,
+                              *, fingerprint: Optional[str]) -> tuple[str, str, str] | None:
+    """Equivalence key for internally generated PM work.
+
+    Fingerprints such as converse:<job> and retro-change:<backlog> are unique to
+    the producer run, not the underlying task. Collapse those by task text plus
+    optional source lineage and theme before creating another request.
+    """
+    if not fingerprint or not fingerprint.startswith(_PM_REQUEST_PREFIXES):
+        return None
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM events WHERE id=%s", (event_id,))
+        row = cur.fetchone()
+    payload = (row[0] if row else None) or {}
+    text = _normalize_pm_task_text(str(payload.get("text") or ""))
+    if not text:
+        return None
+    lineage = _normalize_pm_key_part(
+        payload.get("lineage")
+        or payload.get("original_request_id")
+        or payload.get("source_request_id")
+        or payload.get("retro_source_team")
+    )
+    theme = _normalize_pm_key_part(payload.get("theme"))
+    return text, lineage, theme
+
+
+def _pm_request_duplicate(conn: psycopg.Connection, team_id: str,
+                          key: tuple[str, str, str]) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.fingerprint, e.payload
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.team_id=%s
+              AND r.fingerprint IS NOT NULL
+              AND (r.fingerprint LIKE 'converse:%%' OR r.fingerprint LIKE 'retro-change:%%')
+            """,
+            (team_id,),
+        )
+        rows = cur.fetchall()
+    for existing_fp, payload in rows:
+        existing = _pm_request_key_from_payload(payload or {}, str(existing_fp or ""))
+        if existing and _pm_keys_equivalent(key, existing):
+            return True
+    return False
+
+
+def _pm_request_key_from_payload(payload: dict, fingerprint: str) -> tuple[str, str, str] | None:
+    if not fingerprint.startswith(_PM_REQUEST_PREFIXES):
+        return None
+    text = _normalize_pm_task_text(str(payload.get("text") or ""))
+    if not text:
+        return None
+    lineage = _normalize_pm_key_part(
+        payload.get("lineage")
+        or payload.get("original_request_id")
+        or payload.get("source_request_id")
+        or payload.get("retro_source_team")
+    )
+    theme = _normalize_pm_key_part(payload.get("theme"))
+    return text, lineage, theme
+
+
+def _pm_keys_equivalent(left: tuple[str, str, str],
+                        right: tuple[str, str, str]) -> bool:
+    if left[0] != right[0]:
+        return False
+    lineage_matches = not left[1] or not right[1] or left[1] == right[1]
+    theme_matches = not left[2] or not right[2] or left[2] == right[2]
+    return lineage_matches and theme_matches
+
+
+def _normalize_pm_task_text(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("evidence:"):
+            continue
+        lines.append(stripped)
+    text = " ".join(" ".join(lines).split()).lower()
+    text = re.sub(r"\b(converse|retro-change):[a-z0-9._:-]+\b", r"\1", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _normalize_pm_key_part(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
 
 def _bug_ref_for_event(conn: psycopg.Connection, event_id) -> Optional[str]:

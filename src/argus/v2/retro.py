@@ -673,7 +673,11 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         event_id = events.ingest_message(
             conn, cfg, team=target_team, source="retro",
             dedup_key=fingerprint, text=text,
-            metadata={"retro_backlog_id": item_id, "retro_source_team": team_id},
+            metadata={
+                "retro_backlog_id": item_id,
+                "retro_source_team": team_id,
+                "theme": payload.get("theme"),
+            },
         )
         request_id = pipeline.open_request(
             conn, cfg, event_id=event_id, team_id=target_team,
