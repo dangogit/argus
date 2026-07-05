@@ -655,3 +655,30 @@ def test_escalate_dispatch_direct_call_is_idempotent_per_thread(tmp_path, monkey
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM requests WHERE team_id='luma'")
         assert cur.fetchone()[0] == 1
+
+
+def test_customer_message_strips_quotes_and_signature():
+    thread = (
+        "Hi, I was charged twice this month.\n"
+        "Please check my account.\n"
+        "--\n"
+        "Dana Cohen\n"
+        "Sent from my iPhone\n"
+        "On Tue, Jul 1, 2026 at 9:00 AM Support <s@x.com> wrote:\n"
+        "> Thanks for reaching out\n"
+        "> We will look into it\n"
+    )
+    msg = cycle._customer_message(thread)
+    assert "charged twice" in msg
+    assert "wrote:" not in msg
+    assert ">" not in msg
+    assert "Dana Cohen" not in msg
+
+
+def test_customer_message_truncates_and_falls_back():
+    long = "word " * 300
+    msg = cycle._customer_message(long, limit=100)
+    assert len(msg) <= 104 and msg.endswith("...")
+    # All-quoted thread falls back to the generic excerpt instead of empty.
+    quoted = "> only quoted content\n> nothing else\n"
+    assert cycle._customer_message(quoted) != ""

@@ -601,6 +601,26 @@ def _thread_excerpt(thread: str, *, limit: int = 900) -> str:
     return text
 
 
+_QUOTE_MARKERS = re.compile(
+    r"^\s*(>|On .{0,120} wrote:|From: |Sent from my )", re.I)
+
+
+def _customer_message(thread: str, *, limit: int = 500) -> str:
+    """The customer's own words: cut at the first quoted-history or signature
+    marker, collapse whitespace, truncate. Falls back to the generic excerpt
+    when stripping leaves nothing (fully-quoted thread)."""
+    lines: list[str] = []
+    for line in (thread or "").replace("\r", "\n").splitlines():
+        if _QUOTE_MARKERS.match(line) or line.strip() == "--":
+            break
+        lines.append(line)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    text = re.sub(r"[ \t]+", " ", text)
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "..."
+    return text or _thread_excerpt(thread, limit=limit)
+
+
 def _send_customer_reply(source, scfg: dict, req: dict, body: str) -> None:
     transport = AppsScriptTransport(
         url=scfg["url"],
