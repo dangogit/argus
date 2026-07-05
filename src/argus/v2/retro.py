@@ -739,7 +739,7 @@ def _request_by_fingerprint(conn: psycopg.Connection, team_id: str,
 def _auto_coalesce_meta(statement: str, payload: dict) -> dict:
     task = _normalize_auto_task(statement)
     theme = _normalize_auto_task(str(payload.get("theme") or ""))
-    lineage = sorted(_evidence_ids(payload))
+    lineage = sorted(_lineage_keys(_evidence_ids(payload)))
     raw = json.dumps({
         "task": task,
         "theme": theme,
@@ -759,31 +759,56 @@ def _coalesced_auto_request(conn: psycopg.Connection, team_id: str,
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT r.id::text, e.payload
+            SELECT r.id::text, r.fingerprint, e.dedup_key, e.payload
             FROM requests r
             JOIN events e ON e.id = r.event_id
             WHERE r.team_id=%s
-              AND e.source='retro'
-              AND e.payload ? 'auto_coalesce_key'
             ORDER BY r.created_at DESC
             LIMIT 200
             """,
             (team_id,),
         )
         rows = cur.fetchall()
-    for request_id, payload in rows:
+    for request_id, fingerprint, dedup_key, payload in rows:
         payload = payload or {}
         if payload.get("auto_coalesce_key") == meta.get("auto_coalesce_key"):
             return request_id
-        if (payload.get("auto_task_text") == meta.get("auto_task_text")
-                and payload.get("auto_theme") == meta.get("auto_theme")
-                and lineage.intersection(set(payload.get("auto_lineage") or []))):
+        existing_lineage = _lineage_keys(payload.get("auto_lineage") or [])
+        existing_lineage.update(
+            _lineage_keys(item for item in (fingerprint, dedup_key) if item)
+        )
+        existing_task = payload.get("auto_task_text") or _normalize_auto_task(
+            str(payload.get("text") or "")
+        )
+        existing_theme = payload.get("auto_theme") or _normalize_auto_task(
+            str(payload.get("theme") or "")
+        )
+        theme_matches = (
+            not meta.get("auto_theme")
+            or not existing_theme
+            or existing_theme == meta.get("auto_theme")
+        )
+        if (existing_task == meta.get("auto_task_text")
+                and theme_matches
+                and lineage.intersection(existing_lineage)):
             return request_id
     return None
 
 
 def _normalize_auto_task(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _lineage_keys(values) -> set[str]:
+    keys: set[str] = set()
+    for raw in values:
+        value = str(raw).strip()
+        if not value:
+            continue
+        keys.add(value)
+        if ":" in value:
+            keys.add(value.split(":", 1)[1])
+    return keys
 
 
 def _mark_auto_queued(conn: psycopg.Connection, item_id: str, request_id: str,
