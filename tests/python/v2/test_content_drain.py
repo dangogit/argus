@@ -52,6 +52,18 @@ def test_content_drain_creates_draft_and_marks_queue(tmp_path, monkeypatch, conn
     assert notifications[0][3].name == "image.png"
 
 
+def test_content_ready_notification_requires_readiness_proof(monkeypatch):
+    sent = []
+    monkeypatch.setattr(drain, "_send_text", lambda to, text: sent.append((to, text)) or True)
+    monkeypatch.setattr(drain, "_send_media", lambda *args, **kwargs: True)
+
+    assert drain._default_notifier("draft-1", "body", "owner@s.whatsapp.net", None) is True
+
+    assert "Publish only after approval proof" in sent[0][1]
+    assert "Metricool target" in sent[0][1]
+    assert '"publish draft-1"' not in sent[0][1]
+
+
 def test_content_drain_dead_letters_after_third_failure(tmp_path, monkeypatch, conn):
     _env(monkeypatch, tmp_path)
     queue_id = state.queue_add("luma", "linkedin", "announce launch")

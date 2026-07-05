@@ -67,7 +67,7 @@ _CONVERSE_PERSONAL_ALLOWLIST = frozenset({
     "remember",
     "calendar_list", "calendar_get", "calendar_create", "calendar_update",
     "calendar_delete", "email_list", "email_search", "email_read", "email_reply",
-    "email_archive", "email_draft", "content_queue", "social_publish",
+    "email_archive", "email_draft", "content_queue",
 })
 _CONVERSE_TEAM_EMAIL_ALLOWLIST = frozenset({
     "email_list", "email_search", "email_read",
