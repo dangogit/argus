@@ -41,15 +41,17 @@ def _cfg(tmp_path, *, generic=False):
 
 
 def _open_request(conn, cfg, *, team="content", source="pm:content-approval-watch",
-                  fingerprint="content-approval:slug:demo:draft:1", text=None):
+                  fingerprint="content-approval:slug:demo:draft:1", text=None,
+                  payload=None):
     text = text or (
         "Daniel approved one content draft action in argus-content.\n"
         "Approved action: draft\n"
         "Run content desk pipeline as internal draft work only."
     )
+    event_payload = {"text": text, **(payload or {})}
     eid = events.ingest_signal(
         conn, cfg, team=team, source=source, fingerprint=fingerprint,
-        payload={"text": text},
+        payload=event_payload,
     )
     rid = pipeline.open_request(
         conn, cfg, event_id=eid, team_id=team, conversation_id=None,
@@ -124,28 +126,46 @@ def test_watchdog_dedupe_key_collapses_repeated_lineage_fingerprints():
         "converse:323e8971-0e4b-45b1-bd12-008792c37b75",
         "converse:b52f4367-79e1-4f8b-afbd-1de1611f76f0",
     ]
+    lineage = "original-request-42"
+    first = completion_watchdog._alert_dedupe_key(
+        _finding(request_id="r1", fingerprint=fingerprints[0]),
+        lineage_ref=lineage,
+    )
 
     for fingerprint in fingerprints:
-        first = completion_watchdog._alert_dedupe_key(
-            _finding(request_id="r1", fingerprint=fingerprint)
-        )
         repeated = completion_watchdog._alert_dedupe_key(
-            _finding(request_id="r2", fingerprint=fingerprint)
+            _finding(request_id="r2", fingerprint=fingerprint),
+            lineage_ref=lineage,
         )
         changed = completion_watchdog._alert_dedupe_key(
             _finding(request_id="r3", fingerprint=fingerprint,
-                     failure_reason="new blocker")
+                     failure_reason="new blocker"),
+            lineage_ref=lineage,
         )
         ready_again = completion_watchdog._alert_dedupe_key(
             _finding(request_id="r4", fingerprint=fingerprint),
+            lineage_ref=lineage,
             readiness_ref="done-request",
         )
         escalated = completion_watchdog._alert_dedupe_key(
             _finding(request_id="r5", fingerprint=fingerprint,
-                     escalation_bucket=2)
+                     escalation_bucket=2),
+            lineage_ref=lineage,
+        )
+        same_blocker_new_stage = completion_watchdog._alert_dedupe_key(
+            _finding(
+                request_id="r6",
+                fingerprint=fingerprint,
+                request_status="open",
+                current_stage=2,
+                job_status="running",
+                job_stage=2,
+            ),
+            lineage_ref=lineage,
         )
 
         assert repeated == first
+        assert same_blocker_new_stage == first
         assert changed != first
         assert ready_again != first
         assert escalated != first
@@ -198,6 +218,7 @@ def test_failed_content_approval_request_alerts(conn, tmp_path):
 def test_repeated_watchdog_alerts_collapse_by_lineage(conn, tmp_path):
     fake.SENT.clear()
     cfg = _cfg(tmp_path, generic=True)
+    lineage = "original-request-42"
     fingerprints = [
         "converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
         "converse:3c950163-6013-40c9-b877-9778275ebcfa",
@@ -215,6 +236,7 @@ def test_repeated_watchdog_alerts_collapse_by_lineage(conn, tmp_path):
                 source="manual",
                 fingerprint=fingerprint,
                 text="repeated warning/watchdog task",
+                payload={"original_request_id": lineage},
             )
             job = jobs.claim(conn, "w1")
             conn.commit()
@@ -230,8 +252,8 @@ def test_repeated_watchdog_alerts_collapse_by_lineage(conn, tmp_path):
                 cur.execute("UPDATE requests SET status='failed' WHERE id=%s", (rid,))
             conn.commit()
 
-    assert _run_watchdog(conn, cfg) == len(fingerprints)
-    assert len(fake.SENT) == len(fingerprints)
+    assert _run_watchdog(conn, cfg) == 1
+    assert len(fake.SENT) == 1
 
 
 def test_done_request_ignored(conn, tmp_path):

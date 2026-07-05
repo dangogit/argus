@@ -332,6 +332,7 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
 def _insert_alert(conn: psycopg.Connection, finding: WatchdogFinding) -> int:
     text = _alert_text(finding)
     job_id = finding.job_id
+    lineage_ref = _lineage_ref(conn, finding)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -347,7 +348,9 @@ def _insert_alert(conn: psycopg.Connection, finding: WatchdogFinding) -> int:
                 finding.destination_ref,
                 _alert_dedupe_key(
                     finding,
-                    readiness_ref=_lineage_readiness_ref(conn, finding),
+                    lineage_ref=lineage_ref,
+                    readiness_ref=_lineage_readiness_ref(conn, finding,
+                                                         lineage_ref=lineage_ref),
                 ),
                 Json({"text": text, "urgent": True, "severity": "error"}),
             ),
@@ -355,15 +358,12 @@ def _insert_alert(conn: psycopg.Connection, finding: WatchdogFinding) -> int:
         return 1 if cur.rowcount else 0
 
 
-def _alert_dedupe_key(finding: WatchdogFinding, *, readiness_ref: str = "") -> str:
-    lineage = finding.fingerprint or finding.request_id
+def _alert_dedupe_key(finding: WatchdogFinding, *, lineage_ref: str = "",
+                      readiness_ref: str = "") -> str:
+    lineage = lineage_ref or finding.fingerprint or finding.request_id
     state = "|".join((
         readiness_ref,
         finding.category,
-        finding.request_status,
-        str(finding.current_stage),
-        finding.job_status or "",
-        str(finding.job_stage or ""),
         str(finding.escalation_bucket),
         finding.failure_reason,
     ))
@@ -371,19 +371,81 @@ def _alert_dedupe_key(finding: WatchdogFinding, *, readiness_ref: str = "") -> s
     return f"completion-watchdog:{finding.team_id}:{lineage}:{digest}"
 
 
-def _lineage_readiness_ref(conn: psycopg.Connection, finding: WatchdogFinding) -> str:
-    if not finding.fingerprint:
+_LINEAGE_PAYLOAD_KEYS = (
+    "original_request_id",
+    "root_request_id",
+    "parent_request_id",
+    "request_lineage",
+    "lineage",
+)
+
+
+def _lineage_ref(conn: psycopg.Connection, finding: WatchdogFinding) -> str:
+    """Stable key for a request family. Explicit payload lineage wins, then the
+    historical fingerprint key keeps existing watchdog behavior unchanged."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT e.payload
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.id=%s
+            """,
+            (finding.request_id,),
+        )
+        row = cur.fetchone()
+    payload = row[0] if row else {}
+    lineage = _payload_lineage(payload if isinstance(payload, dict) else {})
+    return lineage or finding.fingerprint or finding.request_id
+
+
+def _payload_lineage(payload: dict[str, Any]) -> str:
+    for key in _LINEAGE_PAYLOAD_KEYS:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in _LINEAGE_PAYLOAD_KEYS:
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _lineage_readiness_ref(conn: psycopg.Connection, finding: WatchdogFinding, *,
+                           lineage_ref: str = "") -> str:
+    lineage_ref = lineage_ref or finding.fingerprint
+    if not lineage_ref:
         return ""
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id::text
-            FROM requests
-            WHERE team_id=%s AND fingerprint=%s AND status='done'
-            ORDER BY updated_at DESC, id DESC
+            SELECT r.id::text
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.team_id=%s
+              AND r.status='done'
+              AND (
+                r.fingerprint=%s
+                OR r.id::text=%s
+                OR e.payload->>'original_request_id'=%s
+                OR e.payload->>'root_request_id'=%s
+                OR e.payload->>'parent_request_id'=%s
+                OR e.payload->>'request_lineage'=%s
+                OR e.payload->>'lineage'=%s
+                OR e.payload->'metadata'->>'original_request_id'=%s
+                OR e.payload->'metadata'->>'root_request_id'=%s
+                OR e.payload->'metadata'->>'parent_request_id'=%s
+                OR e.payload->'metadata'->>'request_lineage'=%s
+                OR e.payload->'metadata'->>'lineage'=%s
+              )
+            ORDER BY r.updated_at DESC, r.id DESC
             LIMIT 1
             """,
-            (finding.team_id, finding.fingerprint),
+            (finding.team_id, lineage_ref, lineage_ref, lineage_ref, lineage_ref,
+             lineage_ref, lineage_ref, lineage_ref, lineage_ref, lineage_ref,
+             lineage_ref, lineage_ref, lineage_ref),
         )
         row = cur.fetchone()
     return str(row[0]) if row else ""
