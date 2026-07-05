@@ -46,6 +46,22 @@ def test_render_dedups_latest_and_honors_limit(conn):
     assert "first" not in text
 
 
+def test_render_labels_environment_blocker_notes(conn):
+    memory.append(
+        conn,
+        team_id="dev",
+        fingerprint="env",
+        finding="sandbox blocked check",
+        outcome="qa-fail",
+        note="Environment blocker: sandbox networking blocked PyPI check. Evidence: pip install failed.",
+    )
+
+    text = memory.render(conn, team_id="dev")
+
+    assert "environment-blocker: sandbox blocked check" in text
+    assert "qa-fail: sandbox blocked check" not in text
+
+
 def test_suppressed_fingerprints_are_not_rendered(conn):
     memory.append(conn, team_id="dev", fingerprint="bad", finding="bad idea",
                   outcome="proposed")

@@ -101,13 +101,19 @@ def render(conn: psycopg.Connection, *, team_id: str, limit: int = 20) -> str:
     lines = [
         "## Project memory (recent, read-only)",
         *[
-            f"- [fp {r.fingerprint}] {r.outcome}: {r.finding}"
+            f"- [fp {r.fingerprint}] {_rendered_outcome(r)}: {r.finding}"
             + (f" :: {r.note}" if r.note else "")
             for r in rows
         ],
         "Use this to avoid repeating rejected approaches and to build on prior fixes.",
     ]
     return "\n".join(lines)
+
+
+def _rendered_outcome(lesson: Lesson) -> str:
+    if lesson.outcome == "qa-fail" and lesson.note.startswith("Environment blocker:"):
+        return "environment-blocker"
+    return lesson.outcome
 
 
 def fingerprints(conn: psycopg.Connection, *, team_id: str, limit: int = 20) -> list[str]:
