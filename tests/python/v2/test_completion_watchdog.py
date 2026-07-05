@@ -41,7 +41,8 @@ def _cfg(tmp_path, *, generic=False):
 
 
 def _open_request(conn, cfg, *, team="content", source="pm:content-approval-watch",
-                  fingerprint="content-approval:slug:demo:draft:1", text=None):
+                  fingerprint="content-approval:slug:demo:draft:1", text=None,
+                  payload_extra=None):
     text = text or (
         "Daniel approved one content draft action in argus-content.\n"
         "Approved action: draft\n"
@@ -49,7 +50,7 @@ def _open_request(conn, cfg, *, team="content", source="pm:content-approval-watc
     )
     eid = events.ingest_signal(
         conn, cfg, team=team, source=source, fingerprint=fingerprint,
-        payload={"text": text},
+        payload={"text": text, **(payload_extra or {})},
     )
     rid = pipeline.open_request(
         conn, cfg, event_id=eid, team_id=team, conversation_id=None,
@@ -89,6 +90,47 @@ def _run_watchdog(conn, cfg):
         executor.process_proposed(conn, cfg)
     conn.commit()
     return inserted
+
+
+def test_watchdog_lineage_collapse_key_tracks_state():
+    base = {
+        "collapse_lineage": True,
+        "lineage": "retro-change:3cadf2de00d9a29b8815ea40",
+        "readiness_signal": "approval-missing",
+        "blocker": "connector-auth",
+        "escalation": "watch",
+    }
+
+    key = completion_watchdog._lineage_collapse_key(
+        team_id="general",
+        category="stuck",
+        payload=base,
+    )
+    changed = completion_watchdog._lineage_collapse_key(
+        team_id="general",
+        category="stuck",
+        payload={**base, "readiness_signal": "readiness-ok"},
+    )
+    blocker_changed = completion_watchdog._lineage_collapse_key(
+        team_id="general",
+        category="stuck",
+        payload={**base, "blocker": "durable-media"},
+    )
+    escalation_changed = completion_watchdog._lineage_collapse_key(
+        team_id="general",
+        category="stuck",
+        payload={**base, "escalation": "escalate"},
+    )
+
+    assert key
+    assert key != changed
+    assert key != blocker_changed
+    assert key != escalation_changed
+    assert completion_watchdog._lineage_collapse_key(
+        team_id="general",
+        category="stuck",
+        payload={**base, "collapse_lineage": False},
+    ) == ""
 
 
 def test_old_content_approval_request_alerts_once(conn, tmp_path):
@@ -197,3 +239,80 @@ def test_draft_retryable_live_manual(conn, tmp_path):
     assert draft_retry.ok is True
     assert live_retry.ok is False
     assert live_retry.status == "needs-force-live"
+
+
+def test_watchdog_collapses_equivalent_lineage_alerts(conn, tmp_path):
+    fake.SENT.clear()
+    cfg = _cfg(tmp_path, generic=True)
+    lineage_payload = {
+        "collapse_lineage": True,
+        "original_request_lineage": "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+        "readiness_signal": "approval-missing",
+        "blocker": "connector-auth",
+        "escalation": "watch",
+    }
+    fingerprints = [
+        "7072881ea381099c813c2fbf",
+        "4f04c60dc16c4f490917d55c",
+        "retro-change:9004fb4f30fac1dd8cbbc7b5",
+        "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+        "retro-change:3cadf2de00d9a29b8815ea40",
+        "content-approval:pr:1:cta:1783096672.050329",
+    ]
+    request_ids = [
+        _open_request(
+            conn,
+            cfg,
+            team="dev",
+            source="manual",
+            fingerprint=fingerprint,
+            text=f"stuck warning {index}",
+            payload_extra=lineage_payload,
+        )
+        for index, fingerprint in enumerate(fingerprints, start=1)
+    ]
+    for request_id in request_ids:
+        _age_request(conn, request_id)
+
+    assert _run_watchdog(conn, cfg) == 1
+    assert len(fake.SENT) == 1
+    assert "Request:" in fake.SENT[0][1]
+
+
+def test_watchdog_allows_lineage_state_changes(conn, tmp_path):
+    fake.SENT.clear()
+    cfg = _cfg(tmp_path, generic=True)
+    base = {
+        "collapse_lineage": True,
+        "lineage": "retro-change:3cadf2de00d9a29b8815ea40",
+        "readiness_signal": "approval-missing",
+        "blocker": "connector-auth",
+        "escalation": "watch",
+    }
+    changed = {
+        **base,
+        "readiness_signal": "readiness-ok",
+    }
+    first = _open_request(
+        conn,
+        cfg,
+        team="dev",
+        source="manual",
+        fingerprint="retro-change:9004fb4f30fac1dd8cbbc7b5",
+        text="initial stuck warning",
+        payload_extra=base,
+    )
+    second = _open_request(
+        conn,
+        cfg,
+        team="dev",
+        source="manual",
+        fingerprint="converse:3b272dbf:readiness-ok:connector-auth:watch",
+        text="changed stuck warning",
+        payload_extra=changed,
+    )
+    _age_request(conn, first)
+    _age_request(conn, second)
+
+    assert _run_watchdog(conn, cfg) == 2
+    assert len(fake.SENT) == 2
