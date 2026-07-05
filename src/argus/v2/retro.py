@@ -704,6 +704,10 @@ def _auto_change_metadata(*, item_id: str, team_id: str, statement: str,
         value = payload.get(key)
         if value:
             metadata[key] = value
+    if "lineage" not in metadata:
+        evidence = sorted(_evidence_ids(payload))
+        if evidence:
+            metadata["lineage"] = evidence
     return metadata
 
 

@@ -214,6 +214,26 @@ def test_auto_changes_dedup_equivalent_task_theme_and_lineage(conn, tmp_path):
         assert cur.fetchone()[0] == 2
 
 
+def test_auto_change_metadata_uses_packet_evidence_as_lineage():
+    metadata = retro._auto_change_metadata(
+        item_id="r1",
+        team_id="dev",
+        statement="Deduplicate equivalent retro and converse work before PM dispatch",
+        payload={
+            "theme": "retro-converse-dedupe",
+            "evidence_run_ids": ["argus", "tadam-agents", "general"],
+        },
+    )
+
+    assert metadata["theme"] == "retro-converse-dedupe"
+    assert metadata["lineage"] == ["argus", "general", "tadam-agents"]
+    assert pipeline._pm_work_signature(metadata) == (
+        "deduplicate equivalent retro and converse work before pm dispatch",
+        "argus general tadam agents",
+        "retro converse dedupe",
+    )
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
