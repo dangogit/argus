@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,6 +25,7 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_LOW_DISK_ESCALATE_AFTER = 3
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -380,6 +381,7 @@ def notify_findings(
     new_findings: list[Finding] = []
     alert_ids: list[str] = []
     for finding in findings:
+        finding = _escalate_recurring_low_disk(conn, finding)
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -431,6 +433,32 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _escalate_recurring_low_disk(
+    conn: psycopg.Connection,
+    finding: Finding,
+) -> Finding:
+    if not finding.fingerprint.startswith("disk:low:"):
+        return finding
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM alerts
+            WHERE project='general'
+              AND fingerprint=%s
+              AND ts >= date_trunc('day', now())
+            """,
+            (finding.fingerprint,),
+        )
+        previous_today = int(cur.fetchone()[0])
+    occurrence = previous_today + 1
+    if occurrence < _LOW_DISK_ESCALATE_AFTER or finding.severity in {"error", "critical"}:
+        return finding
+    payload = dict(finding.payload)
+    payload["same_day_occurrences"] = occurrence
+    return replace(finding, severity="error", payload=payload)
 
 
 def check_and_notify(

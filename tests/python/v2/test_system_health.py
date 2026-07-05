@@ -251,6 +251,55 @@ def test_notify_findings_creates_general_action_with_cooldown(conn, tmp_path, mo
     assert "ARGUS_TEST_SUPPORT_TOKEN" in row[2]
 
 
+def test_notify_findings_escalates_third_same_day_low_disk(conn, tmp_path, monkeypatch):
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    fingerprint = "disk:low:3cadf2de00d9"
+    for _ in range(2):
+        system_health.alerts.record(
+            conn,
+            severity="warn",
+            project="general",
+            fingerprint=fingerprint,
+            message="low disk space under /tmp: 1.0 GB free",
+            channel="whatsapp",
+        )
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint=fingerprint,
+        message="low disk space under /tmp: 1.0 GB free",
+        payload={
+            "path": "/tmp",
+            "evidence": [
+                "3cadf2de00d9a29b8815ea40",
+                "7072881ea381099c813c2fbf",
+                "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+                "4f04c60dc16c4f490917d55c",
+                "retro-change:3cadf2de00d9a29b8815ea40",
+            ],
+        },
+    )
+
+    inserted = system_health.notify_findings(conn, cfg, [finding], cooldown_seconds=0)
+    conn.commit()
+
+    assert inserted == 1
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT severity, payload->>'same_day_occurrences'
+            FROM alerts
+            WHERE fingerprint=%s
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (fingerprint,),
+        )
+        row = cur.fetchone()
+    assert row == ("error", "3")
+
+
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
     path = tmp_path / "argus.yaml"
     path.write_text(
