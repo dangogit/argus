@@ -248,7 +248,7 @@ def test_support_uncertain_reply_requests_guidance(tmp_path, monkeypatch, conn, 
         cur.execute("SELECT context_type, context_ref, payload->>'subject' "
                     "FROM conversation_contexts WHERE team_id='luma'")
         context = cur.fetchone()
-    assert "Support guidance needed (luma)" in text
+    assert "Support needs you (luma)" in text
     assert "Can we export CSV?" in text
     assert "send:" in text
     assert context is not None
@@ -279,7 +279,7 @@ def test_support_escalation_registers_guidance_context(tmp_path, monkeypatch, co
         cur.execute("SELECT status, payload->>'thread' FROM conversation_contexts "
                     "WHERE team_id='luma' AND channel_ref='cli:local'")
         context = cur.fetchone()
-    assert "Support guidance needed (luma)" in text
+    assert "Support needs you (luma)" in text
     assert "Please refund my unused subscription" in text
     assert "send:" in text
     assert context == ("active", "From: u@example.com\nPlease refund my unused subscription.")
@@ -310,6 +310,63 @@ def test_support_auto_sends_low_risk_after_guidance(tmp_path, monkeypatch, conn,
     assert result.sent == 1
     assert transport.replies == [("T2", "Use the export button.")]
     assert state.latest_action("luma", "T2") == "auto_replied"
+
+
+def test_guidance_only_routes_draft_to_guidance(tmp_path, monkeypatch, conn, cfg):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    team = type("Team", (), {"name": "luma", "project": None})()
+    source = type("Source", (), {"type": "support_apps_script"})()
+    scfg = {"notify_destination": "cli:local", "notify_level": "guidance_only"}
+    email = EmailSummary("TG1", "u@example.com", "How do I export?", "")
+    transport = FakeTransport()
+    monkeypatch.setattr(cycle, "draft_decision", lambda *a, **k: cycle.DraftDecision(
+        reply="Use the export button.", risk="low", confidence=0.9))
+
+    result = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                 cycle.SupportResult())
+    conn.commit()
+
+    assert result.proposed == 1
+    assert state.latest_action("luma", "TG1") == "guidance_requested"
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM support_drafts WHERE thread_id='TG1'")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT payload->>'text' FROM actions ORDER BY created_at DESC LIMIT 1")
+        text = cur.fetchone()[0]
+    assert "Support needs you (luma)" in text
+    assert "OK to send?" in text
+
+
+def test_guidance_only_auto_reply_logs_instead_of_notifying(tmp_path, monkeypatch, conn, cfg):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    for idx in range(2):
+        g = state.register_guidance_request("luma", f"OLDA{idx}", "u@example.com",
+                                            "Export", "q", "reply", "thread")
+        state.resolve_guidance("luma", g.id, "Use export button.", status="sent")
+    team = type("Team", (), {"name": "luma", "project": None})()
+    source = type("Source", (), {"type": "support_apps_script"})()
+    scfg = {
+        "notify_destination": "cli:local",
+        "notify_level": "guidance_only",
+        "auto_send_low_risk": True,
+        "auto_send_min_guidance": 2,
+        "auto_send_confidence": 0.85,
+    }
+    email = EmailSummary("TG2", "u@example.com", "Simple question", "help")
+    transport = FakeTransport()
+    monkeypatch.setattr(cycle, "draft_decision", lambda *a, **k: cycle.DraftDecision(
+        reply="Use the export button.", risk="low", confidence=0.95))
+
+    result = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                 cycle.SupportResult())
+    conn.commit()
+
+    assert result.sent == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE payload->>'text' LIKE '%auto-replied%'")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM alerts WHERE fingerprint LIKE 'support-auto-replied:%'")
+        assert cur.fetchone()[0] == 1
 
 
 def test_guidance_reply_learns_without_sending_by_default(tmp_path, monkeypatch, conn):
@@ -655,3 +712,63 @@ def test_escalate_dispatch_direct_call_is_idempotent_per_thread(tmp_path, monkey
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM requests WHERE team_id='luma'")
         assert cur.fetchone()[0] == 1
+
+
+def test_customer_message_strips_quotes_and_signature():
+    thread = (
+        "Hi, I was charged twice this month.\n"
+        "Please check my account.\n"
+        "--\n"
+        "Dana Cohen\n"
+        "Sent from my iPhone\n"
+        "On Tue, Jul 1, 2026 at 9:00 AM Support <s@x.com> wrote:\n"
+        "> Thanks for reaching out\n"
+        "> We will look into it\n"
+    )
+    msg = cycle._customer_message(thread)
+    assert "charged twice" in msg
+    assert "wrote:" not in msg
+    assert ">" not in msg
+    assert "Dana Cohen" not in msg
+
+
+def test_customer_message_skips_current_from_header_before_stripping_history():
+    thread = (
+        "From: dana@example.com\n"
+        "Hi, I was charged twice this month.\n"
+        "Please check my account.\n"
+        "--\n"
+        "Dana Cohen\n"
+        "On Tue, Jul 1, 2026 at 9:00 AM Support <s@x.com> wrote:\n"
+        "> Thanks for reaching out\n"
+    )
+    msg = cycle._customer_message(thread)
+    assert msg == "Hi, I was charged twice this month.\nPlease check my account."
+
+
+def test_customer_message_truncates_and_falls_back():
+    long = "word " * 300
+    msg = cycle._customer_message(long, limit=100)
+    assert len(msg) <= 104 and msg.endswith("...")
+    # All-quoted thread falls back to the generic excerpt instead of empty.
+    quoted = "> only quoted content\n> nothing else\n"
+    assert cycle._customer_message(quoted) != ""
+
+
+def test_guidance_text_is_concise_and_keeps_id():
+    email = EmailSummary("T9", "u@example.com", "Refund request", "")
+    thread = (
+        "I was charged twice this month.\n"
+        "On Tue Jul 1 Support wrote:\n"
+        "> earlier reply\n"
+    )
+    text = cycle._guidance_text("luma", "G-123", email, thread,
+                                "What should we tell this customer?",
+                                "We refunded the duplicate charge.")
+    assert text.startswith("Support needs you (luma)")
+    assert "Customer says:" in text
+    assert "charged twice" in text
+    assert "> earlier reply" not in text
+    assert "Agent suggests:" in text
+    assert "(ID G-123)" in text
+    assert "Thread:" not in text
