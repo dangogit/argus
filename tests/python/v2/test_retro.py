@@ -184,6 +184,36 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_auto_changes_dedup_equivalent_task_theme_and_lineage(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    task = "Deduplicate equivalent retro and converse work before PM dispatch"
+    for trigger in ("argus packet", "tadam-agents packet"):
+        retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+            "type": "process-edit",
+            "statement": task,
+            "trigger": trigger,
+            "evidence_run_ids": ["argus", "tadam-agents", "general"],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "retro-converse-dedupe",
+            "lineage": ["argus", "tadam-agents", "general"],
+        }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM events WHERE source='retro'")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT count(*) FROM retro_backlog "
+            "WHERE payload ? 'auto_request_id'"
+        )
+        assert cur.fetchone()[0] == 2
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

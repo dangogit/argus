@@ -670,10 +670,18 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
             continue
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
+        metadata = _auto_change_metadata(item_id=item_id, team_id=team_id,
+                                         statement=statement, payload=payload)
+        equivalent = pipeline.equivalent_pm_request(
+            conn, target_team, metadata, fingerprint,
+        )
+        if equivalent:
+            _mark_auto_queued(conn, item_id, equivalent, target_team)
+            continue
         event_id = events.ingest_message(
             conn, cfg, team=target_team, source="retro",
             dedup_key=fingerprint, text=text,
-            metadata={"retro_backlog_id": item_id, "retro_source_team": team_id},
+            metadata=metadata,
         )
         request_id = pipeline.open_request(
             conn, cfg, event_id=event_id, team_id=target_team,
@@ -683,6 +691,20 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
             _mark_auto_queued(conn, item_id, request_id, target_team)
             queued += 1
     return queued
+
+
+def _auto_change_metadata(*, item_id: str, team_id: str, statement: str,
+                          payload: dict) -> dict:
+    metadata = {
+        "retro_backlog_id": item_id,
+        "retro_source_team": team_id,
+        "task_text": statement,
+    }
+    for key in ("theme", "lineage", "request_lineage", "source_lineage"):
+        value = payload.get(key)
+        if value:
+            metadata[key] = value
+    return metadata
 
 
 def _auto_change_eligible(team_id: str, statement: str, trigger: str,

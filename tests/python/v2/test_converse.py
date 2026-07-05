@@ -299,6 +299,36 @@ def test_converse_dispatch_idempotent(conn, cfg_converse, monkeypatch):
         assert cur.fetchone()[0] == 1
 
 
+def test_converse_dispatch_dedups_equivalent_task_text(conn, cfg_converse, monkeypatch):
+    task = "Deduplicate equivalent retro and converse work before PM dispatch"
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": _converse_result(
+                            "dispatch", reply="On it!", task=task)})
+
+    _ingest(conn, cfg_converse, key="dedupe-1"); conn.commit()
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse); conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        reconcile.sweep_once(conn, cfg_converse); conn.commit()
+
+    _ingest(conn, cfg_converse, key="dedupe-2"); conn.commit()
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse); conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        reconcile.sweep_once(conn, cfg_converse); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT count(*) FROM actions "
+            "WHERE type='reply' AND idempotency_key LIKE 'converse:%%'"
+        )
+        assert cur.fetchone()[0] == 2
+
+
 def test_converse_dispatch_vague_task_asks_for_detail(conn, cfg_converse, monkeypatch):
     """A degenerate dispatch task ('fix') opens NO request; it replies asking
     for specifics instead of building a junk PR (owner-reported 2026-06-19)."""

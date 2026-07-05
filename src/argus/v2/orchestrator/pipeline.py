@@ -103,6 +103,12 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
             )
             if cur.fetchone():
                 return None
+        if _pm_equivalence_enabled(fingerprint):
+            cur.execute("SELECT payload FROM events WHERE id=%s", (event_id,))
+            row = cur.fetchone()
+            payload = dict(row[0] or {}) if row else {}
+            if equivalent_pm_request(conn, team_id, payload, fingerprint):
+                return None
         # Off by default (checked first: cheaper than the payload lookup below,
         # and keeps the common case a no-op with zero extra queries).
         dedup_on = bug_dedup.dedup_enabled(cfg, team_id)
@@ -140,6 +146,85 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         request_id = str(row[0])
     enqueue_stage(conn, cfg, request_id=request_id, stage_index=0)
     return request_id
+
+
+def equivalent_pm_request(conn: psycopg.Connection, team_id: str, payload: dict,
+                          fingerprint: Optional[str]) -> Optional[str]:
+    if not _pm_equivalence_enabled(fingerprint):
+        return None
+    target = _pm_work_signature(payload)
+    if not target:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id::text, r.fingerprint, e.payload
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.team_id=%s
+              AND r.fingerprint IS NOT NULL
+              AND r.fingerprint <> %s
+              AND (
+                r.fingerprint LIKE 'retro-change:%%'
+                OR r.fingerprint LIKE 'converse:%%'
+              )
+            ORDER BY r.created_at DESC
+            LIMIT 100
+            """,
+            (team_id, fingerprint or ""),
+        )
+        rows = cur.fetchall()
+    for request_id, _existing_fp, existing_payload in rows:
+        if _pm_signatures_match(target, _pm_work_signature(dict(existing_payload or {}))):
+            return request_id
+    return None
+
+
+def _pm_equivalence_enabled(fingerprint: Optional[str]) -> bool:
+    return bool(
+        fingerprint
+        and (fingerprint.startswith("retro-change:")
+             or fingerprint.startswith("converse:"))
+    )
+
+
+def _pm_work_signature(payload: dict) -> tuple[str, str, str] | None:
+    text = _norm_work_part(
+        payload.get("task_text")
+        or payload.get("text")
+        or payload.get("message")
+        or payload.get("title")
+    )
+    if not text:
+        return None
+    lineage = _norm_work_part(
+        payload.get("lineage")
+        or payload.get("request_lineage")
+        or payload.get("source_lineage")
+    )
+    theme = _norm_work_part(payload.get("theme") or payload.get("retro_theme"))
+    return text, lineage, theme
+
+
+def _pm_signatures_match(left: tuple[str, str, str] | None,
+                         right: tuple[str, str, str] | None) -> bool:
+    if not left or not right or left[0] != right[0]:
+        return False
+    for idx in (1, 2):
+        if left[idx] and right[idx] and left[idx] != right[idx]:
+            return False
+    return True
+
+
+def _norm_work_part(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        value = " ".join(sorted(str(item) for item in value if str(item)))
+    text = " ".join(str(value).casefold().split())
+    return " ".join(
+        "".join(ch if ch.isalnum() else " " for ch in text).split()
+    )
 
 
 def _bug_ref_for_event(conn: psycopg.Connection, event_id) -> Optional[str]:
