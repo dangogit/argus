@@ -190,10 +190,11 @@ def _needs_you(prs: list[pending.PendingPr], guidance: list[tuple[str, str, str]
 
 
 def _retro_lines(conn: psycopg.Connection, *, limit: int = 3) -> list[str]:
-    from datetime import date, timedelta
+    from datetime import timedelta
     from argus.v2 import retro
+    today = datetime.now(timezone.utc).date()
     items: list[dict] = []
-    for day in (date.today(), date.today() - timedelta(days=1)):
+    for day in (today, today - timedelta(days=1)):
         items = retro.company_digest_items(conn, day)
         if items:
             break
