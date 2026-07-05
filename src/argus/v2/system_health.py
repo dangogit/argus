@@ -25,6 +25,7 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_LOW_DISK_NOTIFY_DEDUPE_SECONDS = 300
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -380,6 +381,9 @@ def notify_findings(
     new_findings: list[Finding] = []
     alert_ids: list[str] = []
     for finding in findings:
+        finding_cooldown = _notification_cooldown_seconds(
+            finding, cooldown_seconds
+        )
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -388,11 +392,13 @@ def notify_findings(
             message=finding.message,
             channel="whatsapp",
             payload=finding.payload,
-            cooldown_seconds=cooldown_seconds,
+            cooldown_seconds=finding_cooldown,
         )
         if alert_id:
             new_findings.append(finding)
             alert_ids.append(alert_id)
+        elif _is_low_disk_finding(finding):
+            _record_low_disk_suppression(conn, finding, finding_cooldown)
     if not new_findings:
         return 0
 
@@ -431,6 +437,43 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _notification_cooldown_seconds(
+    finding: Finding,
+    cooldown_seconds: int,
+) -> int:
+    if _is_low_disk_finding(finding):
+        return max(int(cooldown_seconds), _LOW_DISK_NOTIFY_DEDUPE_SECONDS)
+    return int(cooldown_seconds)
+
+
+def _is_low_disk_finding(finding: Finding) -> bool:
+    return finding.fingerprint.startswith("disk:low:")
+
+
+def _record_low_disk_suppression(
+    conn: psycopg.Connection,
+    finding: Finding,
+    cooldown_seconds: int,
+) -> None:
+    alerts.record(
+        conn,
+        severity="info",
+        project="general",
+        fingerprint=f"disk:low:suppressed:{_digest(finding.fingerprint)}",
+        message=(
+            "suppressed duplicate low disk WhatsApp notification: "
+            f"{finding.fingerprint}"
+        ),
+        channel="log",
+        payload={
+            "suppressed_fingerprint": finding.fingerprint,
+            "dedupe_seconds": cooldown_seconds,
+            "evidence": finding.payload,
+        },
+        cooldown_seconds=cooldown_seconds,
+    )
 
 
 def check_and_notify(
