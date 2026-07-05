@@ -1,3 +1,5 @@
+from psycopg.types.json import Json
+
 from argus.v2.orchestrator import pipeline
 from argus.v2.ingress import events
 from argus.v2.pm import memory as pm_memory
@@ -141,7 +143,8 @@ def test_exhausted_qa_reconciles_latest_pass_before_recording_failure(
 
     _finish_stage(conn, "developer", {"has_diff": True, "parsed": {"ready": True}})
     pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
-    stale_qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "fail"}})
+    stale_qa = jobs.claim(conn, "w"); conn.commit()
+    assert stale_qa.role == "qa"
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO jobs "
@@ -153,6 +156,10 @@ def test_exhausted_qa_reconciles_latest_pass_before_recording_failure(
                 rid, stale_qa.event_id, Json({"parsed": {"decision": "approve"}}),
             ),
         )
+    conn.commit()
+    jobs.finalize(conn, stale_qa.id, stale_qa.claim_token, status="done",
+                  result={"parsed": {"verdict": "fail"}},
+                  run=RunRecord(role="qa", engine="scripted", status="ok"), actions=[])
     conn.commit()
 
     pipeline.on_job_done(conn, cfg_project, _reload(conn, stale_qa.id)); conn.commit()
@@ -180,7 +187,8 @@ def test_exhausted_senior_reconciles_latest_approval_before_retro_change_failure
     pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
     qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
     pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
-    stale_senior = _finish_stage(conn, "senior", {"parsed": {"decision": "reject"}})
+    stale_senior = jobs.claim(conn, "w"); conn.commit()
+    assert stale_senior.role == "senior"
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO jobs "
@@ -188,6 +196,10 @@ def test_exhausted_senior_reconciles_latest_approval_before_retro_change_failure
             "VALUES (%s,%s,'dev','pipeline','senior',2,'done',%s,'senior-latest-pass')",
             (rid, stale_senior.event_id, Json({"parsed": {"decision": "approve"}})),
         )
+    conn.commit()
+    jobs.finalize(conn, stale_senior.id, stale_senior.claim_token, status="done",
+                  result={"parsed": {"decision": "reject"}},
+                  run=RunRecord(role="senior", engine="scripted", status="ok"), actions=[])
     conn.commit()
 
     pipeline.on_job_done(conn, cfg_project, _reload(conn, stale_senior.id)); conn.commit()

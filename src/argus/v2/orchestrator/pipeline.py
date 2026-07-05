@@ -837,7 +837,7 @@ def _latest_review_outcomes(conn: psycopg.Connection, request_id: str) -> dict[s
               AND kind='pipeline'
               AND status='done'
               AND role IN ('qa', 'browser_verify', 'senior')
-            ORDER BY role, updated_at DESC, created_at DESC
+            ORDER BY role, created_at DESC, updated_at DESC
             """,
             (request_id,),
         )
