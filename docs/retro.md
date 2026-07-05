@@ -26,8 +26,10 @@ scheduled through manifest-based host jobs.
 - Team PM digest: one message to each project team's control channel with that
   team's lessons, improvement candidates, infra notices, quarantines, and
   auto-change request count.
-- CEO retro brief: one message to the `ceo-brief` team control channel with
-  company-level lessons and cross-team improvement candidates.
+
+Company-level learning is not sent as a separate message. Instead, it is
+summarized inside the daily CEO brief under a `Learned:` section listing the
+top 3 gated company retro items. Team PM digests are unchanged.
 
 Use `--no-notify` for a silent learning run. Use `argus retro notify` to queue
 digests from already-recorded retro data.
@@ -63,5 +65,6 @@ control merge, deploy, outward messages, destructive work, and secrets.
 - `retro_backlog`: gated, quarantined, infra-notice, and auto-change queue.
 - `pm_lessons`: project lessons injected into PM prompts.
 - `knowledge(scope='company')`: company lessons available to all teams.
-- `actions(type='notify')`: team PM digests and CEO retro briefs queued through
-  existing channel, quiet-hour, and approval policy.
+- `actions(type='notify')`: team PM digests queued through existing channel,
+  quiet-hour, and approval policy. Company-level learning is rendered inside
+  the daily CEO brief instead of a separate queued digest.

@@ -168,6 +168,11 @@ def summary(conn: psycopg.Connection) -> str:
 
 def notify(conn: psycopg.Connection, cfg, *, retro_day: date | None = None,
            team_id: str | None = None, company_only: bool = False) -> int:
+    """Queue team PM retro digests to each project team's control channel.
+
+    The company-level digest is no longer queued as a separate message here:
+    it is rendered inside the daily CEO brief instead (see brief/ceo.py).
+    """
     day = retro_day or datetime.now(timezone.utc).date()
     count = 0
     if not company_only:
@@ -184,15 +189,6 @@ def notify(conn: psycopg.Connection, cfg, *, retro_day: date | None = None,
                     key=f"retro-digest:{team.name}:{day}",
                     text=text,
                 )
-    if not team_id:
-        text = _company_digest_text(conn, day)
-        if text:
-            count += _queue_notify(
-                conn, cfg, team_id="ceo-brief",
-                destination_ref=_control_destination(cfg, "ceo-brief"),
-                key=f"retro-digest:{COMPANY_TEAM_ID}:{day}",
-                text=text,
-            )
     return count
 
 
@@ -235,25 +231,6 @@ def _team_digest_text(conn: psycopg.Connection, team_id: str, day: date) -> str:
     _add_section(lines, "Improvement candidates", changes)
     _add_section(lines, "Infra notices", infra)
     _add_section(lines, "Quarantined", quarantined)
-    if auto_count:
-        lines.extend(["", f"Auto-change PM requests queued: {auto_count}"])
-    return "\n".join(lines).strip()
-
-
-def _company_digest_text(conn: psycopg.Connection, day: date) -> str:
-    items = _items_for_day(conn, COMPANY_TEAM_ID, day)
-    if not items:
-        return ""
-    lessons = [item for item in items if item["type"] == "lesson" and item["status"] == "gated"]
-    changes = [item for item in items if item["type"] in _AUTO_TYPES and item["status"] == "gated"]
-    infra = [item for item in items if item["status"] == "infra-notice"]
-    quarantined = [item for item in items if item["status"] == "quarantined"]
-    auto_count = sum(1 for item in changes if item["auto_queued"])
-    lines = ["CEO Retro Brief", f"Date: {day}"]
-    _add_section(lines, "Company lessons learned", lessons)
-    _add_section(lines, "Company improvement candidates", changes)
-    _add_section(lines, "Company infra notices", infra)
-    _add_section(lines, "Company quarantined", quarantined)
     if auto_count:
         lines.extend(["", f"Auto-change PM requests queued: {auto_count}"])
     return "\n".join(lines).strip()
@@ -312,6 +289,11 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
             "auto_queued": bool((payload or {}).get("auto_request_id")),
         })
     return sorted(items, key=lambda item: (-int(item["priority"]), item["statement"]))
+
+
+def company_digest_items(conn: psycopg.Connection, day: date) -> list[dict[str, Any]]:
+    """Public accessor for the CEO brief: company-level retro items for a day."""
+    return _items_for_day(conn, COMPANY_TEAM_ID, day)
 
 
 def _add_section(lines: list[str], title: str, items: list[dict[str, Any]],
