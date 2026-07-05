@@ -509,13 +509,22 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
+        reconciled = _reconcile_failure_outcome(conn, team, job.request_id, reason)
+        if reconciled[0] != "qa-fail":
+            _record_memory_outcome(conn, job.request_id, reconciled[0], reconciled[1])
+            if reconciled[0] == "qa-pass":
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
+                                (job.request_id,))
+                status.set_status(conn, job.event_id, status.DONE)
+                return
         _record_memory_outcome(
-            conn, job.request_id, "qa-fail",
-            reason,
+            conn, job.request_id, reconciled[0],
+            reconciled[1],
         )
-        if _open_draft_pr_after_failure(conn, cfg, job, reason):
+        if _open_draft_pr_after_failure(conn, cfg, job, reconciled[1]):
             return
-        _fail(conn, cfg, job.request_id, reason)
+        _fail(conn, cfg, job.request_id, reconciled[1])
         return
     counters[key] = current + 1
     with conn.cursor() as cur:
@@ -738,6 +747,16 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
               f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}")
         return True
 
+    outcome, reconciled_reason = _reconcile_failure_outcome(conn, team, job.request_id, reason)
+    if outcome != "qa-fail":
+        _record_memory_outcome(conn, job.request_id, outcome, reconciled_reason)
+        if outcome == "qa-pass":
+            with conn.cursor() as cur:
+                cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
+                            (job.request_id,))
+            status.set_status(conn, job.event_id, status.DONE)
+        return True
+    reason = reconciled_reason
     failure_label = "QA failed" if job.role == "qa" else f"{job.role} failed"
     risk = f"needs review: {failure_label}; {reason} Opened as draft so the diff is inspectable."
     pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd, risk_summary=risk)
@@ -771,6 +790,41 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                     (job.request_id,))
     return True
+
+
+def _reconcile_failure_outcome(conn: psycopg.Connection, team, request_id: str,
+                               fallback_reason: str) -> tuple[str, str]:
+    latest = _latest_judge_statuses(conn, request_id)
+    qa_ok = latest.get("qa") == "pass"
+    senior_needed = "senior" in getattr(team.pipeline, "stages", [])
+    senior_ok = latest.get("senior") == "approve"
+    if qa_ok and (not senior_needed or senior_ok):
+        if senior_needed:
+            return "qa-pass", "Latest QA passed and latest senior approved."
+        return "qa-pass", "Latest QA passed."
+    return "qa-fail", fallback_reason
+
+
+def _latest_judge_statuses(conn: psycopg.Connection, request_id: str) -> dict[str, str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (role) role, result
+            FROM jobs
+            WHERE request_id=%s AND status='done' AND role IN ('qa', 'senior')
+            ORDER BY role, updated_at DESC, created_at DESC, id DESC
+            """,
+            (request_id,),
+        )
+        rows = cur.fetchall()
+    statuses: dict[str, str] = {}
+    for role, result in rows:
+        parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
+        if role == "qa":
+            statuses[role] = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
+        elif role == "senior":
+            statuses[role] = contracts.senior_decision(parsed)
+    return statuses
 
 
 def _record_memory_outcome(conn: psycopg.Connection, request_id: str,

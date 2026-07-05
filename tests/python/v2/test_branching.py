@@ -95,6 +95,44 @@ def test_exhausted_senior_records_blocking_detail(conn, cfg_project):
     assert "Blocking issue: Root cause still present in checkout.py" in note
 
 
+def test_stale_senior_reject_reconciles_against_latest_passes(conn, cfg_project):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(conn, cfg_project, text="fix status reconciliation"); conn.commit()
+
+    _finish_stage(conn, "developer", {"parsed": {}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+    stale_senior = _finish_stage(conn, "senior", {
+        "parsed": {"decision": "reject", "reason": "stale reject"}
+    })
+    with conn.cursor() as cur:
+        cur.execute("SELECT event_id FROM requests WHERE id=%s", (rid,))
+        event_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO jobs
+              (request_id, event_id, team_id, role, stage, kind, status,
+               idempotency_key, result, updated_at)
+            VALUES
+              (%s,%s,'dev','senior',2,'pipeline','done',
+               'fresh-senior-approve',%s,clock_timestamp())
+            """,
+            (rid, event_id, Json({"parsed": {"decision": "approve"}})),
+        )
+    conn.commit()
+
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, stale_senior.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        outcome, note = cur.fetchone()
+    assert outcome == "qa-pass"
+    assert note == "Latest QA passed and latest senior approved."
+
+
 def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, tmp_path):
     cfg_project.team("dev").pipeline.max_iters = 0
     rid = _open(conn, cfg_project, text="fix OpenClaw email lookup"); conn.commit()
