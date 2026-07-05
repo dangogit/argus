@@ -91,6 +91,66 @@ def _run_watchdog(conn, cfg):
     return inserted
 
 
+def _finding(**overrides):
+    values = {
+        "request_id": "r1",
+        "team_id": "dev",
+        "category": "failed",
+        "reason": "request or pipeline job failed",
+        "source": "manual",
+        "fingerprint": "converse:b52f4367-79e1-4f8b-afbd-1de1611f76f0",
+        "request_status": "failed",
+        "current_stage": 1,
+        "job_id": "j1",
+        "job_role": "developer",
+        "job_stage": 1,
+        "job_status": "failed",
+        "failure_reason": "same blocker",
+        "retry_command": "argus request retry r1",
+        "retryable": True,
+        "destination_ref": "fake:dev-chat",
+        "escalation_bucket": 0,
+    }
+    values.update(overrides)
+    return completion_watchdog.WatchdogFinding(**values)
+
+
+def test_watchdog_dedupe_key_collapses_repeated_lineage_fingerprints():
+    fingerprints = [
+        "converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+        "converse:3c950163-6013-40c9-b877-9778275ebcfa",
+        "converse:7b09de91-0672-445b-b12e-a91c246a0126",
+        "converse:61f70886-9a28-4607-b2b4-953bb404b4cf",
+        "converse:323e8971-0e4b-45b1-bd12-008792c37b75",
+        "converse:b52f4367-79e1-4f8b-afbd-1de1611f76f0",
+    ]
+
+    for fingerprint in fingerprints:
+        first = completion_watchdog._alert_dedupe_key(
+            _finding(request_id="r1", fingerprint=fingerprint)
+        )
+        repeated = completion_watchdog._alert_dedupe_key(
+            _finding(request_id="r2", fingerprint=fingerprint)
+        )
+        changed = completion_watchdog._alert_dedupe_key(
+            _finding(request_id="r3", fingerprint=fingerprint,
+                     failure_reason="new blocker")
+        )
+        ready_again = completion_watchdog._alert_dedupe_key(
+            _finding(request_id="r4", fingerprint=fingerprint),
+            readiness_ref="done-request",
+        )
+        escalated = completion_watchdog._alert_dedupe_key(
+            _finding(request_id="r5", fingerprint=fingerprint,
+                     escalation_bucket=2)
+        )
+
+        assert repeated == first
+        assert changed != first
+        assert ready_again != first
+        assert escalated != first
+
+
 def test_old_content_approval_request_alerts_once(conn, tmp_path):
     fake.SENT.clear()
     cfg = _cfg(tmp_path)
@@ -133,6 +193,45 @@ def test_failed_content_approval_request_alerts(conn, tmp_path):
     assert len(fake.SENT) == 1
     assert "Reason: request or pipeline job failed" in fake.SENT[0][1]
     assert "Failure: publisher guard failed" in fake.SENT[0][1]
+
+
+def test_repeated_watchdog_alerts_collapse_by_lineage(conn, tmp_path):
+    fake.SENT.clear()
+    cfg = _cfg(tmp_path, generic=True)
+    fingerprints = [
+        "converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+        "converse:3c950163-6013-40c9-b877-9778275ebcfa",
+        "converse:7b09de91-0672-445b-b12e-a91c246a0126",
+        "converse:61f70886-9a28-4607-b2b4-953bb404b4cf",
+        "converse:323e8971-0e4b-45b1-bd12-008792c37b75",
+        "converse:b52f4367-79e1-4f8b-afbd-1de1611f76f0",
+    ]
+    for fingerprint in fingerprints:
+        for _ in range(2):
+            rid = _open_request(
+                conn,
+                cfg,
+                team="dev",
+                source="manual",
+                fingerprint=fingerprint,
+                text="repeated warning/watchdog task",
+            )
+            job = jobs.claim(conn, "w1")
+            conn.commit()
+            jobs.finalize(
+                conn,
+                job.id,
+                job.claim_token,
+                status="failed",
+                result={"error": "same blocker"},
+                actions=[],
+            )
+            with conn.cursor() as cur:
+                cur.execute("UPDATE requests SET status='failed' WHERE id=%s", (rid,))
+            conn.commit()
+
+    assert _run_watchdog(conn, cfg) == len(fingerprints)
+    assert len(fake.SENT) == len(fingerprints)
 
 
 def test_done_request_ignored(conn, tmp_path):

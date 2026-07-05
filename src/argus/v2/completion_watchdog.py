@@ -5,6 +5,7 @@ retries automatically; retry is a human CLI action.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ class WatchdogFinding:
     retry_command: str
     retryable: bool
     destination_ref: str
+    escalation_bucket: int
 
 
 @dataclass(frozen=True)
@@ -263,11 +265,13 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
     job_status = str(row.get("job_status") or "")
     category = ""
     reason = ""
+    age_minutes = 0.0
     if request_status == "failed" or job_status in {"failed", "dead"}:
         category = "failed"
         reason = "request or pipeline job failed"
     elif int(row.get("job_count") or 0) == 0:
-        if _minutes_old(row.get("request_created_at"), now) < threshold_minutes:
+        age_minutes = _minutes_old(row.get("request_created_at"), now)
+        if age_minutes < threshold_minutes:
             return None
         category = "stuck"
         reason = "request has no pipeline job"
@@ -281,11 +285,13 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
         if job_status in {"pending", "claimed", "running"} and (
             _minutes_old(progress_at, now) >= threshold_minutes
         ):
+            age_minutes = _minutes_old(progress_at, now)
             category = "stuck"
             reason = f"job has no progress for >= {threshold_minutes} minutes"
         elif request_status in {"open", "awaiting_approval"} and (
             _minutes_old(row.get("request_created_at"), now) >= threshold_minutes
         ):
+            age_minutes = _minutes_old(row.get("request_created_at"), now)
             category = "slow"
             reason = f"request open for >= {threshold_minutes} minutes"
     if not category:
@@ -319,6 +325,7 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
         retry_command=retry_command,
         retryable=retryable,
         destination_ref=dest,
+        escalation_bucket=max(0, int(age_minutes // max(1, threshold_minutes))),
     )
 
 
@@ -338,11 +345,48 @@ def _insert_alert(conn: psycopg.Connection, finding: WatchdogFinding) -> int:
                 job_id,
                 finding.team_id,
                 finding.destination_ref,
-                f"completion-watchdog:{finding.category}:{finding.request_id}",
+                _alert_dedupe_key(
+                    finding,
+                    readiness_ref=_lineage_readiness_ref(conn, finding),
+                ),
                 Json({"text": text, "urgent": True, "severity": "error"}),
             ),
         )
         return 1 if cur.rowcount else 0
+
+
+def _alert_dedupe_key(finding: WatchdogFinding, *, readiness_ref: str = "") -> str:
+    lineage = finding.fingerprint or finding.request_id
+    state = "|".join((
+        readiness_ref,
+        finding.category,
+        finding.request_status,
+        str(finding.current_stage),
+        finding.job_status or "",
+        str(finding.job_stage or ""),
+        str(finding.escalation_bucket),
+        finding.failure_reason,
+    ))
+    digest = hashlib.sha1(state.encode("utf-8")).hexdigest()[:12]
+    return f"completion-watchdog:{finding.team_id}:{lineage}:{digest}"
+
+
+def _lineage_readiness_ref(conn: psycopg.Connection, finding: WatchdogFinding) -> str:
+    if not finding.fingerprint:
+        return ""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text
+            FROM requests
+            WHERE team_id=%s AND fingerprint=%s AND status='done'
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (finding.team_id, finding.fingerprint),
+        )
+        row = cur.fetchone()
+    return str(row[0]) if row else ""
 
 
 def _alert_text(finding: WatchdogFinding) -> str:
