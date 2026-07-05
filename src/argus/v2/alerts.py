@@ -46,6 +46,9 @@ def record(
 ) -> str | None:
     severity = _severity(severity)
     resolved_channel = _channel(channel or channel_for_severity(severity))
+    alert_payload = payload or {}
+    if _same_lineage_alert(conn, project, resolved_channel, alert_payload):
+        return None
     if cooldown_seconds > 0 and _recent_alert(
         conn, project, fingerprint, resolved_channel, cooldown_seconds
     ):
@@ -63,10 +66,65 @@ def record(
                 str(fingerprint),
                 str(message),
                 resolved_channel,
-                Json(payload or {}),
+                Json(alert_payload),
             ),
         )
         return str(cur.fetchone()[0])
+
+
+def _same_lineage_alert(
+    conn: psycopg.Connection,
+    project: str,
+    channel: str,
+    payload: dict[str, Any],
+) -> bool:
+    if not payload.get("collapse_lineage"):
+        return False
+    lineage = _payload_text(
+        payload, "lineage", "request_lineage", "original_request_lineage"
+    )
+    if not lineage:
+        return False
+    readiness = _payload_text(payload, "readiness_signal", "readiness_state")
+    blocker = _payload_text(payload, "blocker", "blocker_key", "blocker_state")
+    escalation = _payload_text(
+        payload, "escalation", "escalation_level", "escalation_threshold"
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT payload
+            FROM alerts
+            WHERE project=%s
+              AND channel=%s
+              AND payload->>'collapse_lineage' = 'true'
+              AND COALESCE(payload->>'lineage',
+                           payload->>'request_lineage',
+                           payload->>'original_request_lineage') = %s
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (str(project), channel, lineage),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return False
+    previous = row[0] or {}
+    return (
+        readiness == _payload_text(previous, "readiness_signal", "readiness_state")
+        and blocker == _payload_text(previous, "blocker", "blocker_key", "blocker_state")
+        and escalation == _payload_text(
+            previous, "escalation", "escalation_level", "escalation_threshold"
+        )
+    )
+
+
+def _payload_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return ""
 
 
 def _recent_alert(
