@@ -148,16 +148,7 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             if test_exit is not None:
                 result["test_exit"] = test_exit
                 result["test_output"] = test_context
-                if _is_postgres_verification_blocker(project.test_cmd, test_context, test_exit):
-                    result["qa_environment_blocker"] = "postgres-unavailable"
-                    parsed = dict(result.get("parsed") or {})
-                    parsed["verdict"] = "fail"
-                    parsed["qa_environment_blocker"] = "postgres-unavailable"
-                    parsed.setdefault(
-                        "analysis",
-                        "QA blocked: Postgres-backed verification did not run.",
-                    )
-                    result["parsed"] = parsed
+                _apply_postgres_qa_gate(result, project.test_cmd, test_context, test_exit)
 
             # Commit any edits the builder made in the worktree so the work branch
             # actually contains the change before qa runs the tests.
@@ -373,10 +364,41 @@ def _is_postgres_verification_blocker(command: str | None, test_context: str | N
                                       test_exit: int | None) -> bool:
     if test_exit in (None, 0):
         return False
+    command_text = (command or "").lower()
+    output_text = (test_context or "").lower()
+    mentions_unavailable = any(
+        marker in output_text for marker in _POSTGRES_UNAVAILABLE_MARKERS)
+    return _mentions_postgres_verification(command_text, output_text) and mentions_unavailable
+
+
+def _apply_postgres_qa_gate(result: dict, command: str | None, test_context: str | None,
+                            test_exit: int | None) -> None:
+    if test_exit in (None, 0):
+        return
+    if _is_postgres_verification_blocker(command, test_context, test_exit):
+        result["qa_environment_blocker"] = "postgres-unavailable"
+        parsed = dict(result.get("parsed") or {})
+        parsed["verdict"] = "fail"
+        parsed["qa_environment_blocker"] = "postgres-unavailable"
+        parsed.setdefault(
+            "analysis",
+            "QA blocked: Postgres-backed verification did not run.",
+        )
+        result["parsed"] = parsed
+        return
+    if _mentions_postgres_verification(command, test_context):
+        parsed = dict(result.get("parsed") or {})
+        parsed["verdict"] = "fail"
+        parsed.setdefault(
+            "analysis",
+            "QA failed: Postgres-backed verification exited non-zero.",
+        )
+        result["parsed"] = parsed
+
+
+def _mentions_postgres_verification(command: str | None, test_context: str | None) -> bool:
     text = f"{command or ''}\n{test_context or ''}".lower()
-    mentions_postgres = any(marker in text for marker in _POSTGRES_TEST_MARKERS)
-    mentions_unavailable = any(marker in text for marker in _POSTGRES_UNAVAILABLE_MARKERS)
-    return mentions_postgres and mentions_unavailable
+    return any(marker in text for marker in _POSTGRES_TEST_MARKERS)
 
 
 def _start_heartbeat(job_id: str, claim_token: str | None, stop: Event) -> Thread | None:

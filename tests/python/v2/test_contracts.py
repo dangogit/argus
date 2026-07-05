@@ -26,6 +26,7 @@ def test_qa_verdict_prefers_structured_verdict():
 
 
 def test_qa_verdict_fails_postgres_environment_blocker():
+    """Evidence: retro-change:2c008b38d14b2d7ef5e03ddc."""
     assert contracts.qa_verdict({
         "verdict": "pass",
         "qa_environment_blocker": "postgres-unavailable",

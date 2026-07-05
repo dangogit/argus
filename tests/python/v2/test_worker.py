@@ -154,6 +154,7 @@ def test_worker_passes_test_output_to_qa(conn, tmp_path, monkeypatch):
 
 
 def test_worker_marks_postgres_test_failure_as_qa_blocker(conn, tmp_path, monkeypatch):
+    """Evidence: converse:891e1171-374e-4bac-9925-eee53abafb7a."""
     cfg_path = tmp_path / "argus.yaml"
     cfg_path.write_text(
         "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
@@ -204,6 +205,28 @@ def test_worker_marks_postgres_test_failure_as_qa_blocker(conn, tmp_path, monkey
     assert result["qa_environment_blocker"] == "postgres-unavailable"
     assert result["parsed"]["verdict"] == "fail"
     assert result["parsed"]["qa_environment_blocker"] == "postgres-unavailable"
+
+
+def test_postgres_blocker_requires_unavailable_output():
+    assert worker._is_postgres_verification_blocker(
+        "psql postgresql://localhost/argus -c select",
+        "TEST RESULT\nexit_code: 1\noutput:\nERROR: expected row was missing",
+        1,
+    ) is False
+
+
+def test_postgres_qa_gate_overrides_agent_pass_on_nonzero_db_verification():
+    result = {"parsed": {"verdict": "pass"}}
+
+    worker._apply_postgres_qa_gate(
+        result,
+        "psql postgresql://localhost/argus -c select",
+        "TEST RESULT\nexit_code: 1\noutput:\nERROR: expected row was missing",
+        1,
+    )
+
+    assert "qa_environment_blocker" not in result
+    assert result["parsed"]["verdict"] == "fail"
 
 
 def test_worker_turns_qa_test_timeout_into_context(conn, tmp_path, monkeypatch):
