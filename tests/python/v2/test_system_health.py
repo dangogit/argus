@@ -300,6 +300,32 @@ def test_notify_findings_escalates_third_same_day_low_disk(conn, tmp_path, monke
     assert row == ("error", "3")
 
 
+def test_low_disk_escalation_rule_uses_same_day_third_occurrence():
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:3cadf2de00d9",
+        message="low disk space under /tmp: 1.0 GB free",
+        payload={
+            "evidence": [
+                "3cadf2de00d9a29b8815ea40",
+                "7072881ea381099c813c2fbf",
+                "converse:3b272dbf-93c6-4848-9a3a-4ef75f24054b",
+                "4f04c60dc16c4f490917d55c",
+                "retro-change:3cadf2de00d9a29b8815ea40",
+            ],
+        },
+    )
+
+    second = system_health._escalate_low_disk_finding(finding, 2)
+    third = system_health._escalate_low_disk_finding(finding, 3)
+
+    assert second.severity == "warn"
+    assert "same_day_occurrences" not in second.payload
+    assert third.severity == "error"
+    assert third.payload["same_day_occurrences"] == 3
+    assert third.payload["evidence"] == finding.payload["evidence"]
+
+
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
     path = tmp_path / "argus.yaml"
     path.write_text(

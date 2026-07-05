@@ -453,7 +453,10 @@ def _escalate_recurring_low_disk(
             (finding.fingerprint,),
         )
         previous_today = int(cur.fetchone()[0])
-    occurrence = previous_today + 1
+    return _escalate_low_disk_finding(finding, previous_today + 1)
+
+
+def _escalate_low_disk_finding(finding: Finding, occurrence: int) -> Finding:
     if occurrence < _LOW_DISK_ESCALATE_AFTER or finding.severity in {"error", "critical"}:
         return finding
     payload = dict(finding.payload)
