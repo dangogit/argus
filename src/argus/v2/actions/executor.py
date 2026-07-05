@@ -72,6 +72,7 @@ _CONVERSE_PERSONAL_ALLOWLIST = frozenset({
 _CONVERSE_TEAM_EMAIL_ALLOWLIST = frozenset({
     "email_list", "email_search", "email_read",
 })
+_LOW_DISK_NOTIFY_DEDUPE_SECONDS = 300
 
 # PR ops whose target repo + number must be set server-side (never trust the
 # model's repo/number: it could otherwise target any repo the gh token reaches).
@@ -326,6 +327,24 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                     (Json({"error": str(e)}), action_id))
                 return
         elif atype in ("reply", "notify") and cfg is not None and destination_ref:
+            suppressed_ref = _suppress_duplicate_low_disk_notify(
+                cur,
+                action_id=action_id,
+                action_type=atype,
+                destination_ref=destination_ref,
+                payload=payload or {},
+            )
+            if suppressed_ref:
+                cur.execute(
+                    "UPDATE actions SET status='done', provider_ref=%s, "
+                    "payload=payload||%s::jsonb, updated_at=now() WHERE id=%s",
+                    (
+                        suppressed_ref,
+                        Json({"suppressed_reason": "duplicate_low_disk_notify"}),
+                        action_id,
+                    ),
+                )
+                return
             from argus.v2.channels import send as _send
             text = (payload or {}).get("text", "")
             channel_ref = _send.deliver(cfg, destination_ref, text)
@@ -345,6 +364,75 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 cur, action_id=action_id, team_id=team_id,
                 destination_ref=destination_ref, action_type=atype,
                 payload=payload or {}, provider_ref=provider_ref)
+
+
+def _suppress_duplicate_low_disk_notify(
+    cur,
+    *,
+    action_id: str,
+    action_type: str,
+    destination_ref: str,
+    payload: dict,
+) -> str | None:
+    if action_type != "notify" or not str(destination_ref or "").startswith("whatsapp:"):
+        return None
+    fingerprint = _low_disk_fingerprint(payload)
+    if not fingerprint:
+        return None
+    cur.execute(
+        """
+        SELECT id::text
+        FROM actions
+        WHERE id<>%s
+          AND type='notify'
+          AND destination_ref=%s
+          AND status='done'
+          AND provider_ref IS NOT NULL
+          AND provider_ref NOT LIKE 'suppressed:%%'
+          AND payload->'system_health_fingerprints' ? %s
+          AND updated_at > now() - make_interval(secs => %s)
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (
+            action_id,
+            destination_ref,
+            fingerprint,
+            _LOW_DISK_NOTIFY_DEDUPE_SECONDS,
+        ),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    prior_action_id = str(row[0])
+    cur.execute(
+        """
+        INSERT INTO alerts (severity, project, fingerprint, message, channel, payload)
+        VALUES ('info','general',%s,%s,'log',%s)
+        """,
+        (
+            f"disk:low:send-suppressed:{action_id}",
+            f"suppressed duplicate low disk WhatsApp send: {fingerprint}",
+            Json({
+                "suppressed_fingerprint": fingerprint,
+                "suppressed_action_id": action_id,
+                "prior_action_id": prior_action_id,
+                "dedupe_seconds": _LOW_DISK_NOTIFY_DEDUPE_SECONDS,
+            }),
+        ),
+    )
+    return f"suppressed:duplicate_low_disk:{prior_action_id}"
+
+
+def _low_disk_fingerprint(payload: dict) -> str | None:
+    fingerprints = payload.get("system_health_fingerprints")
+    if not isinstance(fingerprints, list):
+        return None
+    for fingerprint in fingerprints:
+        value = str(fingerprint)
+        if value.startswith("disk:low:"):
+            return value
+    return None
 
 
 def _execute_status(cur, action_id: str, cfg, payload: dict, existing,

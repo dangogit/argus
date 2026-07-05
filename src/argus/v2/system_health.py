@@ -404,6 +404,12 @@ def notify_findings(
 
     text = _format_notification(new_findings)
     idem = f"system_health:{alert_ids[0]}"
+    action_payload = {
+        "text": text,
+        "system_health_fingerprints": [
+            finding.fingerprint for finding in new_findings
+        ],
+    }
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -412,7 +418,7 @@ def notify_findings(
             VALUES ('general','notify','reversible_internal',%s,%s,%s)
             ON CONFLICT (idempotency_key) DO NOTHING
             """,
-            (destination, idem, Json({"text": text})),
+            (destination, idem, Json(action_payload)),
         )
         inserted = int(cur.rowcount)
     if inserted:
