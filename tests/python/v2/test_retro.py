@@ -68,6 +68,39 @@ def test_scan_flags_unsafe_candidate_text():
     assert retro.scan("Prefer smaller focused diffs") == []
 
 
+def test_auto_change_fingerprint_normalizes_task_lineage_and_theme():
+    first = {
+        "theme": "duplicate-pm-work",
+        "source_team_ids": ["argus", "tadam-agents"],
+        "evidence_run_ids": [
+            "converse:323e8971-0e4b-45b1-bd12-008792c37b75",
+            "supabase-tadam-agents-bug_reports-284b2295-9309-410f-b167-8fc3a16736d6",
+            "retro-change:c51c0b6f0cc7d63c7a564594",
+        ],
+    }
+    second = {
+        "theme": "duplicate-pm-work",
+        "source_team_ids": ["tadam-agents", "argus"],
+        "evidence_run_ids": [
+            "converse:9d11d34a-f49a-4077-947e-a1f1e7cea462",
+            "supabase-tadam-agents-bug_reports-c664a210-dd41-459e-aa4e-9489b05f135f",
+            "converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+        ],
+    }
+
+    assert retro._auto_change_dispatch_fingerprint(
+        target_team="dev",
+        typ="process-edit",
+        statement="Deduplicate equivalent retro and converse work before PM dispatch",
+        payload=first,
+    ) == retro._auto_change_dispatch_fingerprint(
+        target_team="dev",
+        typ="prompt-edit",
+        statement="  deduplicate equivalent retro and converse work before PM dispatch.  ",
+        payload=second,
+    )
+
+
 def test_synthesize_and_bridge_only_gated_lessons(conn):
     retro.record(conn, team_id="dev", retro_day=date(2026, 6, 18), candidates=[
         {"type": "lesson", "statement": "Run focused tests before PR", "trigger": "qa fail",
@@ -182,6 +215,57 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert rows and len(rows) == 1
     assert rows[0][0] == "dev"
     assert event_count == 1
+
+
+def test_auto_changes_dedupe_equivalent_work_before_pm_dispatch(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    first = {
+        "type": "process-edit",
+        "statement": "Deduplicate equivalent retro and converse work before PM dispatch",
+        "trigger": "Argus and tadam-agents packets repeated the same finding",
+        "evidence_run_ids": [
+            "converse:323e8971-0e4b-45b1-bd12-008792c37b75",
+            "supabase-tadam-agents-bug_reports-284b2295-9309-410f-b167-8fc3a16736d6",
+            "retro-change:c51c0b6f0cc7d63c7a564594",
+        ],
+        "source_team_ids": ["argus", "tadam-agents"],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "duplicate-pm-work",
+    }
+    second = {
+        **first,
+        "trigger": "General packet repeated the same PM dispatch finding",
+        "evidence_run_ids": [
+            "converse:9d11d34a-f49a-4077-947e-a1f1e7cea462",
+            "supabase-tadam-agents-bug_reports-c664a210-dd41-459e-aa4e-9489b05f135f",
+            "converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+        ],
+    }
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day,
+                 candidates=[first, second])
+
+    synthesized, _bridged = retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, fingerprint FROM requests "
+            "WHERE fingerprint LIKE 'retro-change:%'"
+        )
+        requests = cur.fetchall()
+        cur.execute("SELECT count(*) FROM events WHERE source='retro'")
+        event_count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT DISTINCT payload->>'auto_request_id' "
+            "FROM retro_backlog "
+            "WHERE statement='Deduplicate equivalent retro and converse work before PM dispatch'"
+        )
+        request_ids = [row[0] for row in cur.fetchall()]
+    assert synthesized == 2
+    assert len(requests) == 1
+    assert event_count == 1
+    assert request_ids == [str(requests[0][0])]
 
 
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):

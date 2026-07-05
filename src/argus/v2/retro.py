@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -663,7 +664,10 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         target_team = _auto_change_team(cfg, team_id)
         if not target_team:
             continue
-        fingerprint = f"retro-change:{item_id}"
+        item_fingerprint = f"retro-change:{item_id}"
+        fingerprint = _auto_change_dispatch_fingerprint(
+            target_team=target_team, typ=typ, statement=statement, payload=payload,
+        )
         existing = _request_by_fingerprint(conn, target_team, fingerprint)
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
@@ -673,16 +677,71 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         event_id = events.ingest_message(
             conn, cfg, team=target_team, source="retro",
             dedup_key=fingerprint, text=text,
-            metadata={"retro_backlog_id": item_id, "retro_source_team": team_id},
+            metadata={
+                "retro_backlog_id": item_id,
+                "retro_source_team": team_id,
+                "retro_item_fingerprint": item_fingerprint,
+            },
         )
         request_id = pipeline.open_request(
             conn, cfg, event_id=event_id, team_id=target_team,
             conversation_id=None, fingerprint=fingerprint,
         )
+        created = request_id is not None
+        if request_id is None:
+            request_id = _request_by_fingerprint(conn, target_team, fingerprint)
         if request_id:
             _mark_auto_queued(conn, item_id, request_id, target_team)
-            queued += 1
+            if created:
+                queued += 1
     return queued
+
+
+def _auto_change_dispatch_fingerprint(*, target_team: str, typ: str,
+                                      statement: str, payload: dict) -> str:
+    raw = "|".join([
+        target_team,
+        _normalized_task_text(statement),
+        _normalized_lineage(payload),
+        _normalized_theme(payload, typ),
+    ])
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:24]
+    return f"retro-change:{digest}"
+
+
+def _normalized_task_text(text: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", str(text or "").lower()).split())
+
+
+def _normalized_theme(payload: dict, typ: str) -> str:
+    theme = str(payload.get("theme") or "").strip().lower()
+    return theme or str(typ).strip().lower()
+
+
+def _normalized_lineage(payload: dict) -> str:
+    parts: set[str] = set()
+    for team_id in payload.get("source_team_ids", []) or []:
+        if str(team_id):
+            parts.add(f"team:{str(team_id).strip().lower()}")
+    if parts:
+        return ",".join(sorted(parts))
+    for evidence_id in _evidence_ids(payload):
+        parts.add(_lineage_part(evidence_id))
+    return ",".join(sorted(part for part in parts if part)) or "none"
+
+
+def _lineage_part(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        "",
+        text,
+    )
+    text = re.sub(r"\b[0-9a-f]{16,}\b", "", text)
+    text = re.sub(r"\b\d+(?:\.\d+)?\b", "", text)
+    text = re.sub(r"[^a-z0-9:_-]+", "-", text)
+    text = re.sub(r"[-_:]+$", "", text)
+    return text or "unknown"
 
 
 def _auto_change_eligible(team_id: str, statement: str, trigger: str,
