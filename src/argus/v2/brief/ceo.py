@@ -1,4 +1,5 @@
-"""CEO brief: high-level Argus and repo health."""
+"""CEO brief: a short daily needs-you digest for the owner (actionable
+items with links, top company lessons, one-line FYI)."""
 from __future__ import annotations
 
 import os
