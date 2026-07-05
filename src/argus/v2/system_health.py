@@ -25,6 +25,7 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
+_LOW_DISK_SEND_WINDOW_SECONDS = 900
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -379,7 +380,12 @@ def notify_findings(
 
     new_findings: list[Finding] = []
     alert_ids: list[str] = []
+    seen_low_disk: set[str] = set()
     for finding in findings:
+        if _is_low_disk_finding(finding):
+            if finding.fingerprint in seen_low_disk:
+                continue
+            seen_low_disk.add(finding.fingerprint)
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -397,7 +403,9 @@ def notify_findings(
         return 0
 
     text = _format_notification(new_findings)
-    idem = f"system_health:{alert_ids[0]}"
+    idem = _notification_idempotency_key(
+        conn, alert_id=alert_ids[0], findings=new_findings,
+    )
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -431,6 +439,35 @@ def notify_findings(
             },
         )
     return inserted
+
+
+def _notification_idempotency_key(
+    conn: psycopg.Connection,
+    *,
+    alert_id: str,
+    findings: list[Finding],
+) -> str:
+    low_disk = sorted({
+        finding.fingerprint
+        for finding in findings
+        if _is_low_disk_finding(finding)
+    })
+    if len(low_disk) != 1 or len(findings) != 1:
+        return f"system_health:{alert_id}"
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT floor(extract(epoch from now()) / %s)::bigint",
+            (_LOW_DISK_SEND_WINDOW_SECONDS,),
+        )
+        bucket = int(cur.fetchone()[0])
+    return (
+        f"system_health:disk-low:{low_disk[0]}:"
+        f"{_LOW_DISK_SEND_WINDOW_SECONDS}:{bucket}"
+    )
+
+
+def _is_low_disk_finding(finding: Finding) -> bool:
+    return finding.fingerprint.startswith("disk:low:")
 
 
 def check_and_notify(
