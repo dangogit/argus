@@ -64,7 +64,7 @@ class PostHogConnector:
 
     def fetch(self, source, state: dict):
         # NETWORK -- not gate-run.
-        import httpx
+        from argus.v2.connectors.client import fetch_json
         cfg = source.config or {}
         base = cfg.get("host", "https://us.posthog.com")
         if cfg.get("endpoint") == "error_tracking":
@@ -72,9 +72,7 @@ class PostHogConnector:
             url = f"{base}/api/projects/{cfg['project']}/error_tracking/issues/?limit={limit}&order_by=last_seen"
         else:
             url = f"{base}/api/projects/{cfg['project']}/activity_log/"
-        r = httpx.get(url, headers={"Authorization": f"Bearer {source.secret}"}, timeout=20)
-        r.raise_for_status()
-        return r.json()
+        return fetch_json(url, headers={"Authorization": f"Bearer {source.secret}"})
 
     def poll(self, source, state: dict):
         cfg = source.config or {}

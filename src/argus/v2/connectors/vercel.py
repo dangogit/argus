@@ -94,7 +94,7 @@ class VercelConnector:
         return signals, {"last_created": newest}
 
     def fetch(self, source, state: dict):  # pragma: no cover
-        import httpx
+        from argus.v2.connectors.client import fetch_json
         cfg = source.config or {}
         params = {"limit": cfg.get("limit", 20)}
         if cfg.get("project"):
@@ -102,11 +102,9 @@ class VercelConnector:
         if cfg.get("team"):
             params["teamId"] = cfg["team"]
         token = _auth_token(source)
-        r = httpx.get("https://api.vercel.com/v6/deployments",
-                      headers={"Authorization": f"Bearer {token}"},
-                      params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
+        return fetch_json("https://api.vercel.com/v6/deployments",
+                          headers={"Authorization": f"Bearer {token}"},
+                          params=params)
 
     def poll(self, source, state: dict):
         states = tuple((source.config or {}).get("states", ["ERROR"]))
@@ -235,7 +233,7 @@ class VercelEventsConnector:
         return signals, {"last_created": newest}
 
     def _latest_deployment(self, source, token: str) -> str:
-        import httpx
+        from argus.v2.connectors.client import fetch_json
         cfg = source.config or {}
         project = cfg.get("project")
         if not project:
@@ -248,18 +246,17 @@ class VercelEventsConnector:
         }
         if cfg.get("team"):
             params["teamId"] = cfg["team"]
-        r = httpx.get("https://api.vercel.com/v6/deployments",
-                      headers={"Authorization": f"Bearer {token}"},
-                      params=params, timeout=20)
-        r.raise_for_status()
-        deployments = r.json().get("deployments", [])
+        data = fetch_json("https://api.vercel.com/v6/deployments",
+                          headers={"Authorization": f"Bearer {token}"},
+                          params=params)
+        deployments = data.get("deployments", [])
         if not deployments:
             raise RuntimeError("Vercel events connector found no READY production deployment")
         deployment = deployments[0]
         return str(deployment.get("uid") or deployment.get("id") or deployment.get("url"))
 
     def fetch(self, source, state: dict):  # pragma: no cover
-        import httpx
+        from argus.v2.connectors.client import fetch_json
         cfg = source.config or {}
         token = _auth_token(source)
         deployment = str(cfg.get("deployment") or self._latest_deployment(source, token))
@@ -274,11 +271,10 @@ class VercelEventsConnector:
         }
         if cfg.get("team"):
             params["teamId"] = cfg["team"]
-        r = httpx.get(f"https://api.vercel.com/v3/deployments/{deployment}/events",
-                      headers={"Authorization": f"Bearer {token}"},
-                      params=params, timeout=20)
-        r.raise_for_status()
-        return {"events": r.json(), "_argus_since_ms": since, "_argus_deployment": deployment}
+        events = fetch_json(f"https://api.vercel.com/v3/deployments/{deployment}/events",
+                            headers={"Authorization": f"Bearer {token}"},
+                            params=params)
+        return {"events": events, "_argus_since_ms": since, "_argus_deployment": deployment}
 
     def poll(self, source, state: dict):
         raw = self.fetch(source, state)

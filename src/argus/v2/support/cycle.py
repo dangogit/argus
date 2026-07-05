@@ -14,7 +14,9 @@ import psycopg
 from psycopg.types.json import Json
 
 from argus.engine import EngineOutageError, run_agent
+from argus.v2 import alerts
 from argus.v2.config import loader
+from argus.v2.engine_runner import run_with_fallback
 from argus.v2.rules import context as rules_context
 from argus.v2.skills import registry as skills
 from argus.v2.support.apps_script import (
@@ -211,8 +213,10 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
             question, "", thread)
         _register_support_context(conn, project, scfg, guidance.id, email, thread,
                                   question, "")
+        dispatched = _dispatch_investigation(conn, cfg, project, scfg, email, thread)
         _notify(conn, team.name, scfg,
-                _guidance_text(project, guidance.id, email, thread, question))
+                _guidance_text(project, guidance.id, email, thread, question,
+                               investigation_dispatched=dispatched))
         return _bump(result, "escalated")
 
     thread = transport.read(email.thread_id)
@@ -267,9 +271,30 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
         transport.mark_read(email.thread_id)
         transport.archive(email.thread_id)
         state.record(project, email.thread_id, "auto_replied", email.sender, email.subject)
-        _notify(conn, team.name, scfg,
-                f'Support auto-replied for {project}: "{email.subject}" from {email.sender}')
+        note = f'Support auto-replied for {project}: "{email.subject}" from {email.sender}'
+        if _notify_level(scfg) == "guidance_only":
+            alerts.record(conn, severity="info", project=project,
+                          fingerprint=f"support-auto-replied:{project}:{email.thread_id}",
+                          message=note, channel="log")
+        else:
+            _notify(conn, team.name, scfg, note)
         return _bump(result, "sent")
+
+    if _notify_level(scfg) == "guidance_only":
+        # Every owner touchpoint is one concise guidance format; a would-be
+        # draft becomes an OK-to-send guidance request so "send" works
+        # in-thread via the conversation context.
+        transport.mark_read(email.thread_id)
+        question = "Proposed reply ready. OK to send?"
+        guidance = state.register_guidance_request(
+            project, email.thread_id, email.sender, email.subject,
+            question, decision.reply, thread)
+        _register_support_context(conn, project, scfg, guidance.id, email, thread,
+                                  question, decision.reply)
+        _notify(conn, team.name, scfg,
+                _guidance_text(project, guidance.id, email, thread, question,
+                               decision.reply))
+        return _bump(result, "proposed")
 
     draft = state.register_draft(
         project, email.thread_id, email.sender, email.subject, decision.reply,
@@ -324,7 +349,9 @@ def draft_decision(conn, cfg, team_id: str, *, thread: str, sender: str, subject
         os.environ["ARGUS_AGENT_CWD"] = repo
     os.environ["ARGUS_PROJECT"] = team_id
     try:
-        output = run_agent(engine, prompt).text
+        # Support runs with no fallback engine: an outage becomes a guidance
+        # request to the owner instead of a retry on another engine.
+        output = run_with_fallback(run_agent, engine, None, prompt)
     except EngineOutageError:
         _set_failure(failure_out, "engine_outage")
         return None
@@ -392,6 +419,11 @@ def _support_prompt(role_prompt: str, tone: str, sender: str, subject: str,
     return "\n\n".join(part for part in parts if part)
 
 
+def _notify_level(scfg: dict) -> str:
+    level = str(scfg.get("notify_level", "all")).strip().lower()
+    return level if level in {"all", "guidance_only"} else "all"
+
+
 def _notify(conn: psycopg.Connection, team_id: str, scfg: dict, text: str) -> None:
     dest = scfg.get("notify_destination", "cli:local")
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
@@ -427,30 +459,28 @@ def _parse_guidance_reply(text: str) -> tuple[str, str] | None:
 
 
 def _guidance_text(project: str, guidance_id: str, email: EmailSummary,
-                   thread: str, question: str, proposed_reply: str = "") -> str:
-    preview = thread.strip().replace("\r", " ")
-    if len(preview) > 1200:
-        preview = preview[:1200] + "..."
+                   thread: str, question: str, proposed_reply: str = "",
+                   investigation_dispatched: bool = False) -> str:
     lines = [
-        f"Support guidance needed ({project})",
-        f"ID: {guidance_id}",
-        f"From: {email.sender}",
-        f"Subject: {email.subject}",
+        f"Support needs you ({project})",
+        f'From {email.sender}: "{email.subject}"',
+        "",
+        "Customer says:",
+        _customer_message(thread),
         "",
         question,
-        "",
-        "Thread:",
-        preview,
     ]
+    if investigation_dispatched:
+        lines += ["", "An investigation was auto-dispatched to the team "
+                      "pipeline; findings arrive separately."]
     if proposed_reply:
-        lines += ["", "Proposed reply:", proposed_reply, "",
-                  'Reply "send" to send the proposed reply as-is.',
-                  "Reply send: <your text> to send a different reply.",
-                  "Any other reply teaches Argus (learned, not sent)."]
+        lines += ["", "Agent suggests:", proposed_reply, "",
+                  'Reply "send" to send it, send: <your text> for a different '
+                  "reply. Anything else teaches Argus."]
     else:
-        lines += ["",
-                  "Reply send: <exact customer reply> to email the customer.",
-                  "Any other reply teaches Argus (learned, not sent)."]
+        lines += ["", "Reply send: <exact customer reply> to email the "
+                      "customer. Anything else teaches Argus."]
+    lines += ["", f"(ID {guidance_id})"]
     return "\n".join(lines)
 
 
@@ -482,6 +512,46 @@ def _register_support_context(conn: psycopg.Connection, project: str, scfg: dict
         payload=payload,
         ttl_hours=int(scfg.get("guidance_context_ttl_hours", 72)),
     )
+
+
+_INVESTIGATION_THREAD_LIMIT = 4000
+
+
+def _dispatch_investigation(conn: psycopg.Connection | None, cfg, project: str,
+                            scfg: dict, email: EmailSummary, thread: str) -> bool:
+    """Auto-dispatch a team-pipeline investigation for a high-risk escalated
+    email, opt-in via scfg escalate_dispatch (default off, unchanged behavior).
+    Reuses the same signal-ingest + open_request path as PM auto-fix dispatch
+    (see argus.v2.pm.autofix.dispatch) instead of inventing a parallel enqueue.
+    Idempotent per thread_id: ingest_signal dedupes on (source, dedup_key) and
+    open_request dedupes on (team_id, fingerprint) including terminal requests,
+    so a rerun of the same thread never opens a second investigation."""
+    if conn is None or not scfg.get("escalate_dispatch"):
+        return False
+    from argus.v2.ingress import events
+    from argus.v2.orchestrator import pipeline
+
+    truncated = thread.strip()
+    if len(truncated) > _INVESTIGATION_THREAD_LIMIT:
+        truncated = truncated[:_INVESTIGATION_THREAD_LIMIT] + "..."
+    text = (
+        "Investigate this customer complaint: check logs, database state, and "
+        "recent deploys relevant to the report; produce findings and, if a code "
+        "fix is clear, a fix.\n\n"
+        f"Subject: {email.subject}\n"
+        f"From: {email.sender}\n\n"
+        f"Thread:\n{truncated}"
+    )
+    fingerprint = f"support-escalate:{project}:{email.thread_id}"
+    event_id = events.ingest_signal(
+        conn, cfg, team=project, source="support-escalate",
+        fingerprint=fingerprint, payload={"text": text, "thread_id": email.thread_id},
+    )
+    request_id = pipeline.open_request(
+        conn, cfg, event_id=event_id, team_id=project,
+        conversation_id=None, fingerprint=fingerprint, dedup_terminal=True,
+    )
+    return request_id is not None
 
 
 def _request_from_context(team_id: str, context: dict) -> dict | None:
@@ -544,6 +614,28 @@ def _thread_excerpt(thread: str, *, limit: int = 900) -> str:
     if len(text) > limit:
         return text[:limit].rstrip() + "..."
     return text
+
+
+_QUOTE_MARKERS = re.compile(
+    r"^\s*(>|On .{0,120} wrote:|From: |Sent from my )", re.I)
+
+
+def _customer_message(thread: str, *, limit: int = 500) -> str:
+    """The customer's own words: cut at the first quoted-history or signature
+    marker, collapse whitespace, truncate. Falls back to the generic excerpt
+    when stripping leaves nothing (fully-quoted thread)."""
+    lines: list[str] = []
+    for line in (thread or "").replace("\r", "\n").splitlines():
+        if not lines and re.match(r"^\s*From: ", line, re.I):
+            continue
+        if _QUOTE_MARKERS.match(line) or line.strip() == "--":
+            break
+        lines.append(line)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    text = re.sub(r"[ \t]+", " ", text)
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "..."
+    return text or _thread_excerpt(thread, limit=limit)
 
 
 def _send_customer_reply(source, scfg: dict, req: dict, body: str) -> None:

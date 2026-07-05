@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from argus.v2 import alerts
 from argus.v2 import envfile
+from argus.v2 import logsetup
 from argus.v2.actions import approvals
 from argus.v2.config import loader
 from argus.v2.db import migrate, pool
@@ -436,6 +437,7 @@ def cmd_signal(args) -> int:
 
 
 def cmd_up(args) -> int:
+    logsetup.configure()
     cfg = _cfg()
     # Orchestrator loop. By default a single-process dev driver: sweep + drain all
     # jobs. In production pass --sweep-only so the orchestrator ONLY sweeps (route
@@ -474,6 +476,7 @@ def cmd_worker(args) -> int:
     """Standalone job worker for one lane (production runs chat + pipeline lanes
     as separate processes alongside `up --sweep-only`). Drains its lane, then
     sleeps; never sweeps."""
+    logsetup.configure()
     cfg = _cfg()
     lane = _WORKER_LANES[args.lane]
     worker_id = lane["worker_id"]
@@ -514,11 +517,12 @@ def cmd_runs(args) -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT r.role, r.engine, r.status, left(coalesce(r.output,''),60) "
+                "SELECT r.role, r.engine, r.status, r.prompt_hash, "
+                "left(coalesce(r.output,''),60) "
                 "FROM runs r JOIN jobs j ON j.id=r.job_id WHERE j.request_id=%s "
                 "ORDER BY r.started_at", (args.request_id,))
-            for role, engine, status, out in cur.fetchall():
-                print(f"{role:10} {engine:12} {status:6} {out}")
+            for role, engine, status, prompt_hash, out in cur.fetchall():
+                print(f"{role:10} {engine:12} {status:6} {prompt_hash or '':12} {out}")
         return 0
     finally:
         conn.close()
@@ -590,6 +594,32 @@ def cmd_dead_job(args) -> int:
     finally:
         conn.close()
     return 1
+
+
+def cmd_request(args) -> int:
+    if args.request_cmd != "retry":
+        return 1
+    from argus.v2 import completion_watchdog
+
+    cfg = _cfg()
+    conn = pool.connect()
+    try:
+        result = completion_watchdog.retry_request(
+            conn,
+            cfg,
+            args.request_id,
+            force_live=args.force_live,
+            force_stuck=args.force_stuck,
+        )
+        if result.ok:
+            conn.commit()
+            print(f"request retry: queued {result.request_id} job={result.job_id}")
+            return 0
+        conn.rollback()
+        print(f"request retry: {result.status}: {result.reason}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
 
 
 def cmd_poll(args) -> int:
@@ -1210,6 +1240,7 @@ def cmd_know(args) -> int:
 
 def cmd_serve(args) -> int:  # pragma: no cover
     from argus.v2.channels import receiver
+    logsetup.configure()
     cfg = _cfg()
     if args.host not in ("127.0.0.1", "localhost", "::1") and not receiver.has_inbound_auth(cfg):
         print("argus serve: refusing non-loopback host without inbound auth", file=sys.stderr)
@@ -1268,6 +1299,7 @@ def cmd_host(args) -> int:
         print(host.status())
         return 0
     if args.host_cmd == "watchdog":
+        from argus.v2 import completion_watchdog
         from argus.v2 import system_health
         from argus.v2.actions import executor
 
@@ -1289,6 +1321,10 @@ def cmd_host(args) -> int:
                 )
                 inserted = system_health.notify_findings(conn, cfg, findings)
                 if inserted:
+                    executor.process_proposed(conn, cfg)
+                    notified = True
+                completion_inserted = completion_watchdog.run(conn, cfg)
+                if completion_inserted:
                     executor.process_proposed(conn, cfg)
                     notified = True
                 # Remediate after notifying so the alert captures the live PID,
@@ -1510,6 +1546,15 @@ def build_parser() -> argparse.ArgumentParser:
     r = djs.add_parser("retry")
     r.add_argument("job_id")
     r.set_defaults(fn=cmd_dead_job)
+    s = sub.add_parser("request")
+    rqs = s.add_subparsers(dest="request_cmd", required=True)
+    r = rqs.add_parser("retry")
+    r.add_argument("request_id")
+    r.add_argument("--force-live", action="store_true",
+                   help="allow retry of content live approval work after manual gate check")
+    r.add_argument("--force-stuck", action="store_true",
+                   help="requeue a claimed/running job whose lease still appears active")
+    r.set_defaults(fn=cmd_request)
     s = sub.add_parser("poll")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--source", action="append", default=[])

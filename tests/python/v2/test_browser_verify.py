@@ -214,6 +214,31 @@ def test_bv_worker_ui_diff_runs_browser(monkeypatch):
     assert seen["changed_files"] == ["src/components/Admin.vue"]
 
 
+def test_bv_worker_falls_back_to_vercel_auth_file_token(monkeypatch, tmp_path):
+    calls = []
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"token":"good-token"}', encoding="utf-8")
+    monkeypatch.setenv("VERCEL_TOKEN", "bad-token")
+    monkeypatch.setenv("VERCEL_AUTH_FILE", str(auth))
+    monkeypatch.setattr(worker.workspace, "diff", lambda p, w: _diff("src/components/Admin.vue"))
+    monkeypatch.setattr(worker.workspace, "push", lambda *a, **k: None)
+
+    def discover(**kwargs):
+        calls.append(kwargs["token"])
+        if kwargs["token"] == "bad-token":
+            raise RuntimeError("HTTP Error 403: Forbidden")
+        return "https://arvuyot-abc.vercel.app"
+
+    monkeypatch.setattr(worker, "discover_preview_url", discover)
+    monkeypatch.setattr(worker, "run_browser_check",
+                        lambda **k: BrowserCheckResult("pass", "renders", "PASS renders"))
+
+    _run, result, _actions = worker._run_browser_verify(_job(), _project(), "/wd")
+
+    assert result["parsed"]["verdict"] == "pass"
+    assert calls == ["bad-token", "good-token"]
+
+
 def test_bv_worker_fail_closed_on_preview_error(monkeypatch):
     monkeypatch.setattr(worker.workspace, "diff", lambda p, w: _diff("src/components/Admin.vue"))
     monkeypatch.setattr(worker.workspace, "push", lambda *a, **k: None)

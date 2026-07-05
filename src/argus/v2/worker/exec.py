@@ -23,10 +23,13 @@ def build_prompt(job: Job, context: str = "") -> str:
     system = snap.get("prompt", "")
     rules = snap.get("rules", "")
     skills = snap.get("skills", "")  # frozen at enqueue; "" when nothing matched
+    checkpoints = snap.get("checkpoints", "")
     if rules:
         system = f"{system}\n\n{rules}" if system else rules
     if skills:
         system = f"{system}\n\n{skills}" if system else skills
+    if checkpoints:
+        system = f"{system}\n\n{checkpoints}" if system else checkpoints
     text = (job.payload or {}).get("text", "")
     head = f"{context}\n\n" if context else ""
     return f"{head}{system}\n\nTASK:\n{text}".strip()
@@ -48,7 +51,7 @@ def run_job(cfg, job: Job, context: str = "",
                 f.write(edit["content"])
         out = snap.get("scripted_output", "")
         run = RunRecord(role=job.role, engine="scripted", status="ok",
-                        prompt=prompt, output=out)
+                        prompt=prompt, output=out, prompt_hash=snap.get("prompt_hash"))
         return run, {"output": out}, _parse_actions(job, out)
 
     prev_cwd = os.environ.get("ARGUS_AGENT_CWD")
@@ -98,7 +101,7 @@ def run_job(cfg, job: Job, context: str = "",
         run = RunRecord(role=job.role, engine=engine, status="ok", prompt=prompt,
                         output=output_text, cost_source=result.cost_source,
                         cost_usd=getattr(result, "cost_usd", None),
-                        model=snap.get("model"))
+                        model=snap.get("model"), prompt_hash=snap.get("prompt_hash"))
         out = {"output": output_text}
         if code_mode is not None:
             out["code_mode"] = code_mode
@@ -106,7 +109,7 @@ def run_job(cfg, job: Job, context: str = "",
         return run, out, actions
     except EngineOutageError as e:
         run = RunRecord(role=job.role, engine=engine, status="outage", prompt=prompt,
-                        output=str(e))
+                        output=str(e), prompt_hash=snap.get("prompt_hash"))
         return run, {"error": str(e)}, []
     finally:
         _restore_env("ARGUS_AGENT_CWD", prev_cwd)

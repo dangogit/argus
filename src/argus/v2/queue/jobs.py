@@ -111,7 +111,10 @@ def claim(conn: psycopg.Connection, worker_id: str, *, lease_seconds: int = 120,
         if not row:
             return None
         job = _row_to_job(row)
-        log.info("claimed job %s (kind=%s role=%s) by %s", job.id, job.kind, job.role, worker_id)
+        log.info("claimed job %s (kind=%s role=%s team=%s request=%s) by %s",
+                 job.id, job.kind, job.role, job.team_id, job.request_id, worker_id,
+                 extra={"job_id": job.id, "team_id": job.team_id,
+                        "request_id": job.request_id})
         return job
 
 
@@ -149,21 +152,48 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
         )
         row = cur.fetchone()
         if not row:
-            log.warning("finalize fenced out for job %s (stale token or reclaimed)", job_id)
+            log.warning("finalize fenced out for job %s (stale token or reclaimed)", job_id,
+                        extra={"job_id": job_id})
             return False  # fenced out: stale token or already reclaimed
         attempt = row[0]
-        log.info("finalized job %s status=%s attempt=%s", job_id, status, attempt)
+        # DO UPDATE (not DO NOTHING): an outage release for this same attempt
+        # may have already inserted a placeholder run row (jobs.release does
+        # not bump attempts, so the eventual finalize reuses that attempt
+        # number). Without overwriting it here, the REAL final run -- output,
+        # cost_usd, status -- would be silently dropped behind the outage
+        # marker, corrupting cost accounting and retro learning. This is safe
+        # because we only reach this insert after the CAS UPDATE above
+        # succeeded, i.e. this call is the current lease holder.
         cur.execute(
             """
             INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
-                              prompt, output, cost_source, cost_usd, status, ended_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+                              prompt, output, cost_source, cost_usd, status,
+                              prompt_hash, ended_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+            ON CONFLICT (job_id, attempt) DO UPDATE SET
+                claim_token = EXCLUDED.claim_token,
+                role = EXCLUDED.role,
+                engine = EXCLUDED.engine,
+                model = EXCLUDED.model,
+                prompt = EXCLUDED.prompt,
+                output = EXCLUDED.output,
+                cost_source = EXCLUDED.cost_source,
+                cost_usd = EXCLUDED.cost_usd,
+                status = EXCLUDED.status,
+                prompt_hash = EXCLUDED.prompt_hash,
+                ended_at = now()
             """,
             (job_id, attempt, claim_token, run.role, run.engine, run.model,
-             run.prompt, run.output, run.cost_source, run.cost_usd, run.status),
+             run.prompt, run.output, run.cost_source, run.cost_usd, run.status,
+             run.prompt_hash),
         )
         cur.execute("SELECT request_id, team_id FROM jobs WHERE id=%s", (job_id,))
         request_id, team_id = cur.fetchone()
+        request_id = _s(request_id)
+        log.info("finalized job %s status=%s attempt=%s team=%s request=%s prompt_hash=%s",
+                 job_id, status, attempt, team_id, request_id, run.prompt_hash,
+                 extra={"job_id": str(job_id), "team_id": team_id,
+                        "request_id": request_id, "prompt_hash": run.prompt_hash})
         for a in actions:
             cur.execute(
                 """
@@ -175,6 +205,65 @@ def finalize(conn: psycopg.Connection, job_id: str, claim_token: str, *,
                 (request_id, job_id, team_id, a.type, a.risk, a.destination_ref,
                  a.idempotency_key, Json(a.payload)),
             )
+    return True
+
+
+def release(conn: psycopg.Connection, job_id: str, claim_token: str, *,
+            delay_seconds: int, run: RunRecord, reason: str) -> bool:
+    """Put a claimed/running job back to pending with a delay, WITHOUT
+    incrementing attempts. For engine outages: the failure belongs to the
+    engine, not the job, so the job's attempt budget must survive the outage
+    (2026-07-02: a codex usage limit permanently failed 14 requests in
+    minutes). Bumps payload.outage_releases so callers can cap total releases
+    for a job whose "outage" never heals (engine binary gone). CAS-fenced by
+    claim_token like finalize; records the run row for observability (the
+    (job_id, attempt) unique index keeps the first outage row per attempt)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs SET
+                status='pending',
+                claim_token=NULL, claimed_by=NULL, claimed_at=NULL,
+                lease_expires_at=NULL, heartbeat_at=NULL,
+                run_after=now() + make_interval(secs => %s),
+                payload = jsonb_set(COALESCE(payload, '{}'::jsonb),
+                                    '{outage_releases}',
+                                    to_jsonb(COALESCE(CASE
+                                        WHEN payload->>'outage_releases' ~ '^[0-9]+$'
+                                        THEN (payload->>'outage_releases')::int
+                                        ELSE NULL
+                                    END, 0) + 1)),
+                updated_at=now()
+            WHERE id=%s AND claim_token=%s AND status IN ('claimed','running')
+            RETURNING attempts, CASE
+                WHEN payload->>'outage_releases' ~ '^[0-9]+$'
+                THEN (payload->>'outage_releases')::int
+                ELSE 0
+            END
+            """,
+            (delay_seconds, job_id, claim_token),
+        )
+        row = cur.fetchone()
+        if not row:
+            log.warning("release fenced out for job %s (stale token or reclaimed)",
+                        job_id, extra={"job_id": str(job_id)})
+            return False
+        attempt, releases = row
+        cur.execute(
+            """
+            INSERT INTO runs (job_id, attempt, claim_token, role, engine, model,
+                              prompt, output, cost_source, cost_usd, status,
+                              prompt_hash, ended_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+            ON CONFLICT (job_id, attempt) DO NOTHING
+            """,
+            (job_id, attempt, claim_token, run.role, run.engine, run.model,
+             run.prompt, run.output, run.cost_source, run.cost_usd, run.status,
+             run.prompt_hash),
+        )
+    log.info("released job %s to pending (reason=%s delay=%ss releases=%s)",
+             job_id, reason, delay_seconds, releases,
+             extra={"job_id": str(job_id)})
     return True
 
 
@@ -254,9 +343,18 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
                 run_after = now(),
                 updated_at = now()
             WHERE status IN ('claimed','running') AND lease_expires_at < now()
+            RETURNING id, request_id, team_id, status
             """,
         )
-        n = cur.rowcount
+        rows = cur.fetchall()
+        n = len(rows)
         if n:
             log.warning("reclaimed %d expired job(s) (worker crash or lease timeout)", n)
+            for job_id, request_id, team_id, status in rows:
+                if status == "dead":
+                    log.warning(
+                        "job %s went dead (max attempts exhausted) team=%s request=%s",
+                        job_id, team_id, request_id,
+                        extra={"job_id": str(job_id), "team_id": team_id,
+                               "request_id": _s(request_id)})
         return n

@@ -446,27 +446,79 @@ def _enqueue_open_pr_notify(cur, *, action_id: str, request_id, team_id: str,
                             provider_ref: str) -> None:
     if not destination_ref:
         return
-    summary = str(payload.get("summary_short") or "").strip()
-    title = str(payload.get("title") or "Argus PR").strip()
-    checks = str(payload.get("checks") or "").strip()
-    risk = str(payload.get("risk_summary") or payload.get("risk") or "").strip()
-    lines = [f"PR ready: {title}"]
-    if summary:
-        lines.append(summary)
-    if checks:
-        lines.append(f"Checks: {checks}")
-    if risk:
-        lines.append(f"Risk: {risk}")
-    if provider_ref:
-        lines.append(provider_ref)
+    text = _open_pr_notice_text(payload, provider_ref)
     cur.execute(
         "INSERT INTO actions (request_id, team_id, type, risk, "
         "destination_ref, idempotency_key, payload) "
         "VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
         "ON CONFLICT (idempotency_key) DO NOTHING",
         (request_id, team_id, destination_ref,
-         f"open_pr_notify:{action_id}", Json({"text": "\n".join(lines)})),
+         f"open_pr_notify:{action_id}", Json({"text": text})),
     )
+
+
+def _open_pr_notice_text(payload: dict, provider_ref: str) -> str:
+    request = _bug_report_label(payload.get("request") or payload.get("title") or "")
+    summary = str(payload.get("summary_short") or "").strip()
+    checks = str(payload.get("checks") or "").strip()
+    risk = str(payload.get("risk_summary") or payload.get("risk") or "").strip()
+    verification = _verification_line(checks, risk)
+    status = _status_line(risk)
+    lines = [
+        f"New bug report: {_quote(_short(request or 'Argus PR', 220))}",
+        f"Fix: {_quote(_short(summary or 'See PR for fix details.', 220))}",
+    ]
+    if verification:
+        lines.append(f"Verification: {verification}")
+    if provider_ref:
+        lines.append(f"PR: {provider_ref}")
+    lines.append(f"Status: {status}")
+    return "\n".join(lines)
+
+
+def _bug_report_label(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    lowered = text.lower()
+    if lowered.startswith("argus: "):
+        text = text[7:].strip()
+        lowered = text.lower()
+    if lowered.startswith("investigate bug report "):
+        _head, sep, tail = text.partition(":")
+        if sep and tail.strip():
+            text = tail.strip()
+    elif lowered.startswith("investigate why "):
+        text = text[len("Investigate "):].strip()
+    for marker in (", identify owning", ". Identify owning", ", root cause", ". Identify root cause"):
+        if marker in text:
+            text = text.split(marker, 1)[0].strip()
+    return text
+
+
+def _quote(value: str) -> str:
+    return '"' + value.replace('"', "'") + '"'
+
+
+def _verification_line(checks: str, risk: str) -> str:
+    checks = _short(checks, 220)
+    lowered = f"{checks} {risk}".lower()
+    if not checks:
+        return ""
+    if "fail" in lowered or "no decision" in lowered or "needs review" in lowered:
+        return checks
+    return f"checked and verified ({checks})"
+
+
+def _status_line(risk: str) -> str:
+    lowered = risk.lower()
+    if not lowered or lowered.startswith("low"):
+        return "checked and verified"
+    if "browser_verify" in lowered or "browser verify" in lowered:
+        return "needs review, browser verification failed"
+    if "senior failed" in lowered:
+        return "needs review, senior did not approve"
+    if "qa failed" in lowered:
+        return "needs review, QA failed"
+    return f"needs review, {_short(risk, 160)}"
 
 
 def _enqueue_email_notify(cur, *, action_id: str, team_id: str,

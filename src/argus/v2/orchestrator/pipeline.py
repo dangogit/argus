@@ -5,6 +5,7 @@ delivery or two orchestrators."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import subprocess
 from typing import Optional
@@ -14,6 +15,7 @@ from psycopg.types.json import Json
 
 from argus.v2 import alerts
 from argus.v2.config import loader
+from argus.v2.orchestrator import bug_dedup
 from argus.v2.orchestrator import status
 from argus.v2.pm import memory as pm_memory
 from argus.v2.pm import scan as pm_scan
@@ -23,10 +25,23 @@ from argus.v2.rules import context as rules_context
 from argus.v2.roles import contracts
 from argus.v2.skills import registry as skills
 
+log = logging.getLogger("argus.pipeline")
+
 # Signal payloads whose only content is one of these is housekeeping noise, not
 # work. Without this gate an internal "no findings" alert opened a build request,
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
+
+_PIPELINE_CHECKPOINTS = (
+    "CHECKPOINTS:\n"
+    "- Send a short progress update when you start, after each risky external "
+    "side effect, and before the final response.\n"
+    "- For merge, deploy, repair, or live ops work, name completed milestones "
+    "when applicable: investigated, changed, deployed, repaired-live-state, "
+    "verified, summary-ready.\n"
+    "- If interrupted, the transcript must show completed external side effects "
+    "and remaining work."
+)
 
 
 def is_actionable(payload: Optional[dict]) -> bool:
@@ -88,17 +103,36 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
             )
             if cur.fetchone():
                 return None
+        # Off by default (checked first: cheaper than the payload lookup below,
+        # and keeps the common case a no-op with zero extra queries).
+        dedup_on = bug_dedup.dedup_enabled(cfg, team_id)
+        bug_ref = _bug_ref_for_event(conn, event_id) if dedup_on else None
+        if bug_ref:
+            # Company-wide duplicate-work guard: this choke point is shared by
+            # every dispatch path (converse dispatch, triage dispatch, research
+            # recommend-fix, PM autofix), so checking here covers signal-driven
+            # and chat-driven dispatches alike. Real incident (2026-07-01): the
+            # same bug id opened tadam PR #324 and tadam-agents PR #302.
+            dup = bug_dedup.find_duplicate(conn, bug_ref)
+            if dup:
+                dup_request_id, dup_team_id = dup
+                _notify_duplicate_skipped(conn, cfg, team_id=team_id,
+                                          conversation_id=conversation_id,
+                                          bug_ref=bug_ref,
+                                          dup_request_id=dup_request_id,
+                                          dup_team_id=dup_team_id)
+                return None
         cur.execute(
             """
-            INSERT INTO requests (event_id, team_id, conversation_id, fingerprint)
-            VALUES (%s,%s,%s,%s)
+            INSERT INTO requests (event_id, team_id, conversation_id, fingerprint, bug_ref)
+            VALUES (%s,%s,%s,%s,%s)
             ON CONFLICT (team_id, fingerprint)
               WHERE fingerprint IS NOT NULL
                 AND status IN ('open','awaiting_approval')
             DO NOTHING
             RETURNING id
             """,
-            (event_id, team_id, conversation_id, fingerprint),
+            (event_id, team_id, conversation_id, fingerprint, bug_ref),
         )
         row = cur.fetchone()
         if not row:
@@ -106,6 +140,43 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         request_id = str(row[0])
     enqueue_stage(conn, cfg, request_id=request_id, stage_index=0)
     return request_id
+
+
+def _bug_ref_for_event(conn: psycopg.Connection, event_id) -> Optional[str]:
+    if not event_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM events WHERE id=%s", (event_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    payload = row[0] or {}
+    return bug_dedup.extract_bug_ref(payload=payload, text=payload.get("text"))
+
+
+def _notify_duplicate_skipped(conn: psycopg.Connection, cfg, *, team_id: str,
+                              conversation_id: Optional[str], bug_ref: str,
+                              dup_request_id: str, dup_team_id: str) -> None:
+    """Surface the skip instead of silently dropping the dispatch: log an alert
+    for signal-origin work, or reply in the conversation for chat-origin work,
+    same channel each path already uses for a 'no fix needed' / failure note."""
+    text = (f"skipped duplicate: bug {bug_ref} already being handled by "
+            f"team {dup_team_id} (request {dup_request_id})")
+    if not conversation_id:
+        alerts.record(conn, severity="info", project=str(team_id),
+                      fingerprint=f"dup-bug-dispatch:{bug_ref}:{dup_request_id}",
+                      message=text, channel="log",
+                      payload={"bug_ref": bug_ref, "duplicate_request_id": dup_request_id,
+                               "duplicate_team_id": dup_team_id})
+        return
+    dest = _control_destination(conn, cfg, team_id, conversation_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO actions (team_id, type, risk, destination_ref, "
+            "idempotency_key, payload) VALUES (%s,'notify','reversible_internal',%s,%s,%s) "
+            "ON CONFLICT (idempotency_key) DO NOTHING",
+            (team_id, dest, f"dup_bug_dispatch:{bug_ref}:{dup_request_id}",
+             Json({"text": text})))
 
 
 def _branch_iter(conn: psycopg.Connection, request_id: str, stage_index: int) -> int:
@@ -139,6 +210,8 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
                 "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
+    _add_pipeline_checkpoints(snapshot)
+    _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
             and role.kind in ("builder", "worker"):
@@ -151,13 +224,16 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
         snapshot["network"] = True
     snapshot.update(_role_snapshot_extra(role_name))
     branch_iter = _branch_iter(conn, request_id, stage_index)
-    jobs.enqueue(
+    job_id = jobs.enqueue(
         conn, team_id=team_id, kind="pipeline", role=role_name, stage=stage_index,
         idempotency_key=_stage_key(request_id, stage_index, branch_iter),
         exec_snapshot=snapshot, payload={"text": text},
         request_id=request_id, event_id=str(event_id),
         conversation_id=str(conversation_id) if conversation_id else None,
     )
+    log.info("request %s advanced to stage %d (%s) team=%s job=%s",
+             request_id, stage_index, role_name, team_id, job_id,
+             extra={"job_id": job_id, "team_id": team_id, "request_id": request_id})
     with conn.cursor() as cur:
         cur.execute("UPDATE requests SET current_stage=%s, updated_at=now() WHERE id=%s",
                     (stage_index, request_id))
@@ -411,6 +487,8 @@ def _next(conn: psycopg.Connection, cfg, request_id: str, stage_index: int) -> N
         with conn.cursor() as cur:
             cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                         (request_id,))
+        log.info("request %s done team=%s", request_id, team_id,
+                 extra={"team_id": team_id, "request_id": request_id})
     else:
         enqueue_stage(conn, cfg, request_id=request_id, stage_index=stage_index)
 
@@ -543,6 +621,8 @@ def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:
         team_id, conv_id, origin_kind = row
         cur.execute("UPDATE requests SET status='failed', updated_at=now() WHERE id=%s",
                     (request_id,))
+        log.info("request %s failed team=%s reason=%s", request_id, team_id, reason,
+                 extra={"team_id": team_id, "request_id": str(request_id)})
         # Cancel sibling jobs in the same transaction. on_job_done early-returns
         # once the request is not 'open', and jobs.claim filters only on
         # status='pending' (never parent-request status), so any non-terminal
@@ -616,6 +696,7 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                           "draft": project.autofix.draft,
                           "title": pr_info["title"],
                           "body": pr_info["body"],
+                          "request": pr_info["request"],
                           "summary_short": pr_info["summary_short"],
                           "checks": pr_info["checks"],
                           "risk_summary": pr_info["risk_summary"],
@@ -625,6 +706,10 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
             )
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                     (job.request_id,))
+    log.info("request %s done (senior approved) team=%s job=%s",
+             job.request_id, job.team_id, job.id,
+             extra={"job_id": job.id, "team_id": job.team_id,
+                    "request_id": job.request_id})
     status.set_status(conn, job.event_id, status.DONE)
 
 
@@ -675,6 +760,7 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
                       "draft": True,
                       "title": pr_info["title"],
                       "body": pr_info["body"],
+                      "request": pr_info["request"],
                       "summary_short": pr_info["summary_short"],
                       "checks": pr_info["checks"],
                       "risk_summary": pr_info["risk_summary"],
@@ -733,7 +819,9 @@ def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
     request = _request_text_for_request(conn, request_id)
     files = _changed_files(cwd)
     checks = _checks_summary(conn, request_id)
-    title = _title(request, request_id)
+    batch_count = _batch_bug_count(conn, request_id)
+    title = (f"Argus: Investigate {batch_count} open bug reports" if batch_count
+             else _title(request, request_id))
     summary = _builder_summary(conn, request_id) or _summary_short(request)
     risk = risk_summary or "low: QA passed and senior approved"
     body = "\n".join([
@@ -752,6 +840,7 @@ def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
     ])
     return {
         "title": title,
+        "request": request,
         "summary_short": summary,
         "body": body,
         "checks": checks,
@@ -777,6 +866,27 @@ def _request_text_for_request(conn: psycopg.Connection, request_id: str) -> str:
     return _request_text(conn, row[0]) if row else ""
 
 
+def _batch_bug_count(conn: psycopg.Connection, request_id: str) -> int:
+    """Number of bugs in this request's originating batch signal, or 0 if the
+    request did not originate from a batched supabase bug_batch signal. Drives
+    the fixed 'Argus: Investigate N open bug reports' PR title (see _pr_info)
+    instead of the generic first-72-chars title, which would otherwise
+    truncate mid-sentence for a long combined bug list."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT e.payload FROM requests r JOIN events e ON e.id = r.event_id "
+            "WHERE r.id=%s AND e.kind='signal'",
+            (request_id,))
+        row = cur.fetchone()
+    if not row or not isinstance(row[0], dict):
+        return 0
+    payload = row[0]
+    if payload.get("kind") != "bug_batch":
+        return 0
+    rows = payload.get("rows")
+    return len(rows) if isinstance(rows, list) else 0
+
+
 def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
     with conn.cursor() as cur:
         cur.execute(
@@ -784,17 +894,27 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
             "ORDER BY stage, updated_at",
             (request_id,))
         rows = cur.fetchall()
-    parts = []
+    order = []
+    parts = {}
     for role, result in rows:
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
+        part = ""
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
-            parts.append(f"QA: {verdict}")
+            part = f"QA: {verdict}"
         elif role == "browser_verify":
-            parts.append(f"Browser: {parsed.get('verdict') or 'skip'}")
+            meta = (result or {}).get("browser_verify", {}) if isinstance(result, dict) else {}
+            if isinstance(meta, dict) and meta.get("skipped"):
+                part = "Browser: skipped (no UI files changed)"
+            else:
+                part = f"Browser: {parsed.get('verdict') or 'skip'}"
         elif role == "senior":
-            parts.append(f"Senior: {parsed.get('decision') or 'approve'}")
-    return "; ".join(parts) or "QA and senior approved"
+            part = f"Senior: {parsed.get('decision') or 'no decision'}"
+        if part:
+            if role not in parts:
+                order.append(role)
+            parts[role] = part
+    return "; ".join(parts[role] for role in order) or "QA and senior approved"
 
 
 def _changed_files(cwd: str) -> list[str]:
@@ -845,7 +965,48 @@ def _builder_summary(conn: psycopg.Connection, request_id: str) -> str:
     if not isinstance(parsed, dict):
         return ""
     text = str(parsed.get("summary") or parsed.get("analysis") or "").strip()
+    if not text:
+        text = _builder_output_summary(str(row[0].get("output") or ""))
     return " ".join(text.split())[:600]
+
+
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_BUILDER_FILE_REF_RE = re.compile(r"\s+in\s+[\w./-]+\.[A-Za-z]{1,8}(?::\d+)?")
+
+
+def _builder_output_summary(output: str) -> str:
+    text = _MD_LINK_RE.sub(r"\1", output or "")
+    lines = [line.strip() for line in text.splitlines()]
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        if not lower.startswith(("fix:", "smallest fix", "smallest safe fix", "change:")):
+            continue
+        inline = line.split(":", 1)[1].strip() if ":" in line else ""
+        if inline and len(inline.split()) > 3:
+            return _clean_builder_summary(inline)
+        parts = []
+        for item in lines[index + 1:]:
+            if not item:
+                if parts:
+                    break
+                continue
+            if item.lower().startswith(("verification", "verified", "notes", "risk", "pr readiness")):
+                break
+            parts.append(item.lstrip("- ").strip())
+            if len(" ".join(parts)) >= 240:
+                break
+        if parts:
+            return _clean_builder_summary(" ".join(parts))
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    return _clean_builder_summary(paragraphs[0]) if paragraphs else ""
+
+
+def _clean_builder_summary(text: str) -> str:
+    text = _BUILDER_FILE_REF_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if "." in text:
+        text = text.split(".", 1)[0].strip() + "."
+    return text
 
 
 def _summary_short(request: str) -> str:
@@ -860,16 +1021,31 @@ def _bullet_list(items: list[str]) -> str:
 
 def _failure_text(conn: psycopg.Connection, request_id: str, reason: str) -> str:
     request = _request_text_for_request(conn, request_id)
+    detail = _last_failure_detail(conn, request_id)
+    next_line = "Next: fix failing stage and rerun request."
+    if _may_have_partial_side_effects(f"{reason}\n{detail}"):
+        next_line = ("Next: inspect live state and job transcript before rerun; "
+                     "timeout or outage may have left external side effects.")
     lines = [
-        "Argus pipeline stopped without opening a PR.",
+        "Argus pipeline stopped before normal completion.",
         f"Request: {request or request_id}",
         f"Reason: {reason}",
-        "Next: fix failing stage and rerun request.",
+        next_line,
     ]
-    detail = _last_failure_detail(conn, request_id)
     if detail:
         lines += ["", "Last failure:", detail]
     return "\n".join(lines)
+
+
+def _may_have_partial_side_effects(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in (
+        "process timed out",
+        "timed out after",
+        "timeout",
+        "deadline_exceeded",
+        "outage",
+    ))
 
 
 def _last_failure_detail(conn: psycopg.Connection, request_id: str) -> str:
@@ -945,6 +1121,8 @@ def _request_text(conn: psycopg.Connection, event_id) -> str:
     if payload.get("text"):
         return payload["text"]
     if kind == "signal":
+        if payload.get("kind") == "bug_batch" and payload.get("rows"):
+            return _batch_signal_text(source, payload)
         import json
         return (f"An automated signal arrived from source '{source}'. Investigate it "
                 f"and make a minimal, focused fix if one is warranted.\n\nSignal details:\n"
@@ -952,8 +1130,49 @@ def _request_text(conn: psycopg.Connection, event_id) -> str:
     return ""
 
 
+def _batch_signal_text(source: str, payload: dict) -> str:
+    """Request text for a consolidated bug_batch signal (see the supabase
+    connector's batch mode). Starts with 'Investigate N open bug reports' so
+    _title() (first 72 chars, 'Argus: ' prefix) turns it into exactly the PR
+    title the owner asked for, with the full bug list in the body below."""
+    rows = payload.get("rows") or []
+    lines = [
+        f"Investigate {len(rows)} open bug reports",
+        "",
+        f"Source: '{source}'. For each bug below, find the root cause and make a "
+        "minimal, focused fix if one is warranted. Land all fixes as ONE combined "
+        "PR, not one PR per bug.",
+        "",
+        "Bugs:",
+    ]
+    for finding in rows:
+        row = finding.get("row") or {}
+        bug_id = row.get("id", "?")
+        title = finding.get("message") or "(no title)"
+        severity = finding.get("severity") or "warn"
+        lines.append(f"- id={bug_id} severity={severity}: {title}")
+    return "\n".join(lines)
+
+
 def _config_hash(cfg) -> str:
     return hashlib.sha256(cfg.model_dump_json().encode()).hexdigest()[:16]
+
+
+def _add_prompt_hash(snapshot: dict) -> None:
+    """Hash the fully-assembled prompt, exactly what
+    build_prompt hands the worker) so a regression can be correlated with a
+    prompt, rules, skills, or checkpoints edit later. Call after those blocks
+    are already frozen into the snapshot."""
+    assembled = "\n\n".join(
+        part for part in (snapshot.get("prompt", ""), snapshot.get("rules", ""),
+                          snapshot.get("skills", ""), snapshot.get("checkpoints", ""))
+        if part
+    )
+    snapshot["prompt_hash"] = hashlib.sha256(assembled.encode()).hexdigest()[:12]
+
+
+def _add_pipeline_checkpoints(snapshot: dict) -> None:
+    snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
 
 
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:
@@ -992,6 +1211,7 @@ def enqueue_converse(conn: psycopg.Connection, cfg, *, event_id: str,
     text = _request_text(conn, event_id)
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_prompt_hash(snapshot)
     return jobs.enqueue(
         conn,
         team_id=team_id,
@@ -1021,6 +1241,7 @@ def enqueue_triage(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("manager"))
     key = f"triage:{team_id}:{fingerprint or event_id}"
     return jobs.enqueue(conn, team_id=team_id, kind="triage", role="manager", stage=0,
@@ -1049,6 +1270,7 @@ def enqueue_research(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "researcher", role.skills, text)
+    _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("researcher"))
     key = f"research:{team_id}:{fingerprint or event_id}"
     # request_id stays NULL (FK -> requests); the worker creates a read-only

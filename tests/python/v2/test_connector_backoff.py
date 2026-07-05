@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import httpx
+
 from argus.v2.config import loader
 from argus.v2.connectors import driver
 
@@ -90,3 +92,80 @@ def test_recovery_clears_backoff(conn, tmp_path, monkeypatch):
     assert error_count == 0
     assert last_error is None
     assert poll_after is None
+
+
+def _http_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.example.test")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
+
+
+class _Unauthorized:
+    def poll(self, source, state):
+        raise _http_error(401)
+
+
+class _ServerError:
+    def poll(self, source, state):
+        raise _http_error(504)
+
+
+def _category(conn, name="src1") -> str | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT error_category FROM connector_state WHERE source_name=%s", (name,))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def test_auth_failure_jumps_straight_to_max_backoff(conn, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setitem(driver.REGISTRY, "fake", _Unauthorized)
+    driver.poll_once(conn, cfg)
+    error_count, last_error, poll_after = _state(conn)
+    assert error_count == 1
+    assert "AUTH" in last_error
+    assert _category(conn) == "auth"
+    with conn.cursor() as cur:
+        cur.execute("SELECT last_error_at FROM connector_state WHERE source_name='src1'")
+        last_error_at = cur.fetchone()[0]
+    delay = (poll_after - last_error_at).total_seconds()
+    assert delay == driver._BACKOFF_MAX
+
+
+def test_transient_5xx_failure_uses_normal_ladder(conn, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setitem(driver.REGISTRY, "fake", _ServerError)
+    driver.poll_once(conn, cfg)
+    error_count, last_error, poll_after = _state(conn)
+    assert error_count == 1
+    assert "AUTH" not in last_error
+    assert _category(conn) == "transient"
+    with conn.cursor() as cur:
+        cur.execute("SELECT last_error_at FROM connector_state WHERE source_name='src1'")
+        last_error_at = cur.fetchone()[0]
+    delay = (poll_after - last_error_at).total_seconds()
+    assert delay == driver._BACKOFF_BASE  # first failure: normal ladder, not maxed out
+
+
+def test_401_and_504_get_distinct_labels_and_backoff(conn, tmp_path, monkeypatch):
+    """A 401 (permanent, needs a human) must be treated differently from a 504
+    (transient, worth the normal retry ladder): distinct error label, and the
+    401 jumps to max backoff instead of climbing from the base delay."""
+    cfg = _cfg(tmp_path)
+
+    monkeypatch.setitem(driver.REGISTRY, "fake", _Unauthorized)
+    driver.poll_once(conn, cfg)
+    auth_count, auth_label, auth_poll_after = _state(conn)
+    assert _category(conn) == "auth"
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE connector_state SET error_count=0, poll_after=NULL WHERE source_name='src1'")
+    conn.commit()
+
+    monkeypatch.setitem(driver.REGISTRY, "fake", _ServerError)
+    driver.poll_once(conn, cfg)
+    transient_count, transient_label, transient_poll_after = _state(conn)
+    assert _category(conn) == "transient"
+
+    assert auth_label != transient_label
+    assert "AUTH" in auth_label and "AUTH" not in transient_label

@@ -28,6 +28,13 @@ class SourceRef(BaseModel):
     secret: Optional[str] = None  # filled by the loader
     team: Optional[str] = None    # which team a company-scoped source routes to
     config: dict = Field(default_factory=dict)  # connector-specific params
+    # supabase source connector-specific knobs of note (see connectors/supabase.py):
+    #   writeback: bool, default False. Append Argus's verdict to the bug row's
+    #     notes column after the request goes terminal.
+    #   batch: bool, default False. Collapse every open bug row found in one poll
+    #     into a single consolidated signal (one PM dispatch, one pipeline run,
+    #     one PR) instead of one per bug row. Opt-in, current per-bug behavior
+    #     unchanged when unset.
 
 
 class ChannelBinding(BaseModel):
@@ -81,6 +88,14 @@ class NotificationSettings(BaseModel):
     )
 
 
+class CompletionWatchdog(BaseModel):
+    enabled: bool = False
+    threshold_minutes: int = 45
+    sources: List[str] = Field(default_factory=list)
+    fingerprint_prefixes: List[str] = Field(default_factory=list)
+    destination_ref: Optional[str] = None
+
+
 class Role(BaseModel):
     name: str
     kind: RoleKind
@@ -113,6 +128,7 @@ class ProjectDefaults(BaseModel):
     base_branch: Optional[str] = None
     work_branch_prefix: Optional[str] = None
     setup_cmd: Optional[str] = None
+    setup_timeout_seconds: Optional[int] = None
     test_cmd: Optional[str] = None
     test_timeout_seconds: Optional[int] = None
     remote: Optional[str] = None
@@ -136,6 +152,14 @@ class Defaults(BaseModel):
     # orchestrator stops opening new work until spend drops; in-flight jobs
     # still finish. None disables the cap (default).
     max_daily_cost_usd: Optional[float] = None
+    # Company-wide duplicate-work guard: when a dispatch references a bug id
+    # (supabase bug_reports row id, or "bug report <uuid>" in task text) that
+    # already has a non-terminal request anywhere in the company, skip the new
+    # dispatch instead of opening a second pipeline for the same bug. Off by
+    # default so existing installs are unaffected (real incident: the same bug
+    # id opened tadam PR #324 and tadam-agents PR #302 on 2026-07-01).
+    dedup_bug_dispatch: bool = False
+    completion_watchdog: CompletionWatchdog = Field(default_factory=CompletionWatchdog)
 
 
 class Company(BaseModel):
@@ -149,6 +173,7 @@ class Project(BaseModel):
     base_branch: str = "main"
     work_branch_prefix: str = "argus"
     setup_cmd: Optional[str] = None
+    setup_timeout_seconds: int = 900
     test_cmd: Optional[str] = None
     test_timeout_seconds: int = 900
     remote: str = "origin"
@@ -248,6 +273,10 @@ class Team(BaseModel):
     # Per-team rolling 24h spend cap (USD). Overrides nothing else; when this
     # team is over it, only this team's new work pauses. None = no team cap.
     max_daily_cost_usd: Optional[float] = None
+    # Per-team override of company.defaults.dedup_bug_dispatch. None = inherit
+    # the company setting; explicit true/false wins over it either way.
+    dedup_bug_dispatch: Optional[bool] = None
+    completion_watchdog: Optional[CompletionWatchdog] = None
 
     def role(self, name: str) -> Role:
         for r in self.roles:
@@ -261,11 +290,29 @@ class RetroConfig(BaseModel):
     company_change_team: Optional[str] = None
 
 
+class HermesConfig(BaseModel):
+    """Settings for the hermes worker engine (src/argus/hermes/, engine/adapters/hermes.py).
+
+    Optional: a project with no hermes section keeps the legacy
+    argus.config.yaml `hermes:` block as a fallback (see
+    argus.hermes.settings.hermes_setting).
+    """
+    toolset: Optional[str] = None
+    pm_toolset: Optional[str] = None
+    pm_readonly_toolset: Optional[str] = None
+    model: Optional[str] = None
+    max_turns: Optional[str] = None
+    skills_dir: Optional[str] = None
+    provider: Optional[str] = None
+    home_root: Optional[str] = None
+
+
 class Config(BaseModel):
     company: Company
     teams: List[Team]
     retro: RetroConfig = Field(default_factory=RetroConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    hermes: Optional[HermesConfig] = None
 
     def team(self, name: str) -> Team:
         for t in self.teams:

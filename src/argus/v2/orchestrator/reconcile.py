@@ -349,14 +349,14 @@ def _dead_job_error_detail(conn: psycopg.Connection, job_id: str, result) -> str
     return detail[-1200:] if detail else ""
 
 
-def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
+def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> int:
     """Surface every job that exhausted max_attempts (status='dead') to its
     team's control channel. Idempotent via 'dead-job:<job_id>' so a repeat
     sweep (or reclaim_expired flipping the same row again, which it cannot
     since dead is terminal) never double-alerts. Scoped to jobs created in the
     last 7 days and capped per sweep: on a database that predates this alert,
     an unbounded scan would flood every control channel with alerts for jobs
-    that died long ago."""
+    that died long ago. Returns the number of alerts actually inserted."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, team_id, kind, attempts, max_attempts, result "
@@ -367,6 +367,7 @@ def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
             "ORDER BY created_at DESC LIMIT 50"
         )
         rows = cur.fetchall()
+    alerted = 0
     for job_id, team_id, kind, attempts, max_attempts, result in rows:
         job_id = str(job_id)
         detail = _dead_job_error_detail(conn, job_id, result)
@@ -384,20 +385,79 @@ def _notify_dead_jobs(conn: psycopg.Connection, cfg) -> None:
                 "idempotency_key, payload) VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
                 "ON CONFLICT (idempotency_key) DO NOTHING",
                 (job_id, team_id, dest, f"dead-job:{job_id}", Json({"text": text})))
+            if cur.rowcount:
+                alerted += 1
+    return alerted
 
 
-def sweep_once(conn: psycopg.Connection, cfg) -> None:
+def _source_team(cfg, source_name: str) -> str | None:
+    """Look up the team a connector source routes to (company-scoped sources
+    carry it directly; team-scoped sources belong to their team)."""
+    for s in cfg.company.sources if cfg and cfg.company else []:
+        if s.name == source_name:
+            return s.team
+    for t in cfg.teams if cfg else []:
+        for s in t.sources:
+            if s.name == source_name:
+                return t.name
+    return None
+
+
+def _notify_connector_auth_failures(conn: psycopg.Connection, cfg) -> int:
+    """Surface a connector stuck in an 'auth' failure (bad/expired key) to its
+    team's control channel. A broken key otherwise backs off silently for up to
+    an hour with nothing telling a human to go fix it. Idempotent via
+    'connector-auth:<team>:<source>' so a still-broken key alerts once, not
+    every sweep; a later success clears error_category (see driver._clear_failure)
+    so a fixed-then-broken-again key can alert a second time."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT source_name, last_error FROM connector_state "
+            "WHERE error_category='auth'")
+        rows = cur.fetchall()
+    alerted = 0
+    for source_name, last_error in rows:
+        team_id = _source_team(cfg, source_name)
+        if not team_id:
+            continue
+        dest = _team_control_dest(cfg, team_id)
+        if not dest:
+            continue
+        text = (f"Connector '{source_name}' is failing auth ({last_error or 'unauthorized'}). "
+                f"The key is likely expired or revoked; polling is paused until it's fixed.")
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO actions (team_id, type, risk, destination_ref, "
+                "idempotency_key, payload) "
+                "VALUES (%s,'notify','reversible_internal',%s,%s,%s) "
+                "ON CONFLICT (idempotency_key) DO NOTHING",
+                (team_id, dest, f"connector-auth:{team_id}:{source_name}", Json({"text": text})))
+            if cur.rowcount:
+                alerted += 1
+    return alerted
+
+
+def sweep_once(conn: psycopg.Connection, cfg) -> dict:
+    """Run one reconciliation pass. Returns a counts dict of what happened
+    (plus duration_ms) and logs a one-line summary: INFO when any work was
+    done, DEBUG when the sweep was idle."""
+    started = time.monotonic()
+    counts: dict[str, int] = {}
     # 0. Route unprocessed events (front decision: reply vs dispatch).
-    route_events(conn, cfg)
+    counts["events_routed"] = route_events(conn, cfg)
     # 1. Reclaim crashed jobs.
-    jobs.reclaim_expired(conn)
+    counts["jobs_reclaimed"] = jobs.reclaim_expired(conn)
     # 1b. Alert on jobs that just went dead (exhausted max_attempts). Kind-
     # agnostic: on_job_done/_sweep_converse only react to dead status for
     # kinds they know how to advance, so without this a dead job outside those
     # paths (or one whose downstream handling swallows it) would never surface
     # to a human. Runs before the pipeline-advance step below so the alert
     # exists even if that step also fails the request.
-    _notify_dead_jobs(conn, cfg)
+    counts["dead_jobs_alerted"] = _notify_dead_jobs(conn, cfg)
+    # 1c. Alert on connectors stuck failing auth (bad/expired key). Separate
+    # from dead-job alerting: this is polled by launchd's own com.argus.poll
+    # cadence, not a pipeline job, so it needs its own idempotent sweep here.
+    counts["connector_auth_alerted"] = _notify_connector_auth_failures(conn, cfg)
     # 2. Advance pipelines for terminal jobs not yet advanced.
     with conn.cursor() as cur:
         cur.execute(
@@ -423,23 +483,45 @@ def sweep_once(conn: psycopg.Connection, cfg) -> None:
         pipeline.on_job_done(conn, cfg, _load_job(conn, jid))
         with conn.cursor() as cur:
             cur.execute("UPDATE jobs SET advanced_at=now() WHERE id=%s", (jid,))
+    counts["pipeline_advanced"] = len(rows)
     # 2b. Handle done converse jobs not yet processed (no marker action yet).
-    _sweep_converse(conn, cfg)
+    counts["async_jobs_handled"] = _sweep_converse(conn, cfg)
     # 2c. Close the loop on supabase bug sources: write Argus's verdict back to
     # the bug row so terminal requests stop looking ignored.
-    writeback_terminal_bugs(conn, cfg)
+    counts["bug_writebacks"] = writeback_terminal_bugs(conn, cfg)
     # 3. Drain the action outbox.
-    executor.process_proposed(conn, cfg)
+    counts["actions_drained"] = executor.process_proposed(conn, cfg)
     # 4. Expire stale approvals.
-    approvals.expire_due(conn)
+    counts["approvals_expired"] = approvals.expire_due(conn)
     # 5. Prune worktree dirs for terminal requests.
     _prune_worktrees(conn, cfg)
+    counts["duration_ms"] = int((time.monotonic() - started) * 1000)
+    _log_sweep(counts)
+    return counts
+
+
+def _log_sweep(counts: dict) -> None:
+    """One line per sweep: INFO with the nonzero counts when anything happened,
+    DEBUG when idle so a healthy quiet loop does not fill the log."""
+    busy = {k: v for k, v in counts.items() if v and k != "duration_ms"}
+    if busy:
+        summary = " ".join(f"{k}={v}" for k, v in busy.items())
+        log.info("sweep did work: %s duration_ms=%d", summary,
+                 counts["duration_ms"], extra={"sweep": counts})
+    else:
+        log.debug("sweep idle duration_ms=%d", counts["duration_ms"],
+                  extra={"sweep": counts})
 
 
 def writeback_terminal_bugs(conn: psycopg.Connection, cfg) -> int:
-    """Propose a bug_writeback action for each terminal (done/failed) request
+    """Propose bug_writeback action(s) for each terminal (done/failed) request
     that originated from a writeback-enabled supabase source and has no
-    writeback action yet. Idempotent via idempotency_key bug_writeback:<rid>."""
+    writeback action yet. A normal (non-batch) signal proposes one action,
+    idempotency-keyed 'bug_writeback:<rid>' (unchanged). A batch signal
+    (payload.kind == 'bug_batch', see the supabase connector's batch mode)
+    proposes one action PER bug in the batch so every row gets its own verdict
+    note, each idempotency-keyed 'bug_writeback:<rid>:<row_id>' so a partial
+    prior write does not repeat and a missing one still gets added on resweep."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -448,7 +530,8 @@ def writeback_terminal_bugs(conn: psycopg.Connection, cfg) -> int:
             WHERE r.status IN ('done','failed') AND e.kind='signal'
               AND NOT EXISTS (
                 SELECT 1 FROM actions a
-                WHERE a.idempotency_key = 'bug_writeback:' || r.id::text)
+                WHERE a.idempotency_key = 'bug_writeback:' || r.id::text
+                   OR a.idempotency_key LIKE 'bug_writeback:' || r.id::text || ':%%')
             """
         )
         rows = cur.fetchall()
@@ -458,21 +541,40 @@ def writeback_terminal_bugs(conn: psycopg.Connection, cfg) -> int:
         if src is None:
             continue
         id_col = (src.config or {}).get("id_column", "id")
-        row_id = str(((payload or {}).get("row") or {}).get(id_col) or "")
-        if not row_id:
-            continue
         note = _bug_outcome_note(conn, str(rid), status)
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO actions (request_id, team_id, type, risk, "
-                " idempotency_key, payload) "
-                "VALUES (%s,%s,'bug_writeback','reversible_internal',%s,%s) "
-                "ON CONFLICT (idempotency_key) DO NOTHING",
-                (str(rid), team_id, f"bug_writeback:{rid}",
-                 Json({"source_name": source, "row_id": row_id, "note": note})))
-            if cur.rowcount:
-                proposed += 1
+        bug_rows = (payload or {}).get("rows") if (payload or {}).get("kind") == "bug_batch" else None
+        if bug_rows:
+            for finding in bug_rows:
+                row_id = str((finding.get("row") or {}).get(id_col) or "")
+                if not row_id:
+                    continue
+                proposed += _propose_bug_writeback(
+                    conn, request_id=str(rid), team_id=team_id, source=source,
+                    row_id=row_id, note=note,
+                    idempotency_key=f"bug_writeback:{rid}:{row_id}")
+        else:
+            row_id = str(((payload or {}).get("row") or {}).get(id_col) or "")
+            if not row_id:
+                continue
+            proposed += _propose_bug_writeback(
+                conn, request_id=str(rid), team_id=team_id, source=source,
+                row_id=row_id, note=note,
+                idempotency_key=f"bug_writeback:{rid}")
     return proposed
+
+
+def _propose_bug_writeback(conn: psycopg.Connection, *, request_id: str, team_id: str,
+                           source: str, row_id: str, note: str,
+                           idempotency_key: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO actions (request_id, team_id, type, risk, "
+            " idempotency_key, payload) "
+            "VALUES (%s,%s,'bug_writeback','reversible_internal',%s,%s) "
+            "ON CONFLICT (idempotency_key) DO NOTHING",
+            (request_id, team_id, idempotency_key,
+             Json({"source_name": source, "row_id": row_id, "note": note})))
+        return 1 if cur.rowcount else 0
 
 
 def _writeback_source(cfg, source_name: str):
@@ -498,10 +600,10 @@ def _bug_outcome_note(conn: psycopg.Connection, request_id: str, status: str) ->
     return "Argus investigated; no automated code fix was warranted."
 
 
-def _sweep_converse(conn: psycopg.Connection, cfg) -> None:
+def _sweep_converse(conn: psycopg.Connection, cfg) -> int:
     """Find terminal converse/triage/research jobs with no decision marker action
     (key '<kind>:<id>') and call pipeline.on_job_done for each. Idempotent: once
-    the marker exists, the job is skipped on re-sweep."""
+    the marker exists, the job is skipped on re-sweep. Returns jobs handled."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -520,6 +622,7 @@ def _sweep_converse(conn: psycopg.Connection, cfg) -> None:
             _mark_async_job_skipped(conn, job, "missing_team")
             continue
         pipeline.on_job_done(conn, cfg, job)
+    return len(ids)
 
 
 def _mark_async_job_skipped(conn: psycopg.Connection, job: Job, reason: str) -> None:

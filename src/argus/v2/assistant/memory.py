@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import os
-import tempfile
-from contextlib import contextmanager
 from pathlib import Path
 
-from argus.engine import EngineOutageError, run_agent
+from argus.engine import run_agent
 from argus.v2 import contracts
 from argus.v2.db import pool
+from argus.v2.engine_runner import run_with_fallback, tool_less_env
 from argus.v2.skills import registry as skills
 
 
@@ -41,8 +40,8 @@ def refresh(run_root: Path | None = None, contract_path: Path | None = None) -> 
     engine = os.environ.get("ARGUS_ASSISTANT_MEMORY_ENGINE") or os.environ.get(
         "ARGUS_CONTEXT_ENGINE") or os.environ.get("ARGUS_ENGINE") or "claude-code"
     fallback = os.environ.get("ARGUS_FALLBACK_ENGINE", "codex")
-    with _tool_less_env():
-        out = _run_with_fallback(engine, fallback, prompt)
+    with tool_less_env(prefix="argus-assistant-memory-"):
+        out = run_with_fallback(run_agent, engine, fallback, prompt)
     text = (out or "").strip()
     if len(text) < 10:
         return False
@@ -155,33 +154,3 @@ def _write_memory(text: str, watermark: int) -> None:
                 (text, int(watermark)),
             )
         conn.commit()
-
-
-def _run_with_fallback(engine: str, fallback: str, prompt: str) -> str:
-    try:
-        return run_agent(engine, prompt).text
-    except EngineOutageError:
-        if fallback and fallback != engine:
-            return run_agent(fallback, prompt).text
-        raise
-
-
-@contextmanager
-def _tool_less_env():
-    previous = {key: os.environ.get(key) for key in [
-        "ARGUS_CLAUDE_TOOLS",
-        "ARGUS_CODEX_SANDBOX",
-        "ARGUS_AGENT_CWD",
-    ]}
-    with tempfile.TemporaryDirectory(prefix="argus-assistant-memory-") as cwd:
-        os.environ["ARGUS_CLAUDE_TOOLS"] = ""
-        os.environ["ARGUS_CODEX_SANDBOX"] = "read-only"
-        os.environ["ARGUS_AGENT_CWD"] = cwd
-        try:
-            yield
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value

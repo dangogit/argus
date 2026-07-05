@@ -44,7 +44,8 @@ _BLOCKER_RE = re.compile(
     r"blocked by|i (?:cannot|can'?t|am unable to|was unable to)"
     r"|unable to (?:proceed|continue|complete|do)|i'?m stuck|stuck on"
     r"|need(?:s)? (?:access|more information|clarification|help)"
-    r"|requires? manual",
+    r"|requires? manual|process timed out|timed out after|timeout|deadline_exceeded"
+    r"|exceeded deadline",
     re.IGNORECASE,
 )
 _PLANNING_RE = re.compile(

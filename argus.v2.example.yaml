@@ -27,6 +27,18 @@ retro:
   authority: propose                    # propose | auto-changes
   # company_change_team: dev            # target team for company-level auto-change PR work
 
+# Optional: settings for the hermes worker engine (engine: hermes above).
+# Preferred over the legacy argus.config.yaml `hermes:` block, which is now a
+# fallback only (checked when a setting is unset here and env is also unset).
+# hermes:
+#   toolset: file,web,memory
+#   pm_toolset: file,web,memory,terminal
+#   pm_readonly_toolset: file,web,memory
+#   model: claude-sonnet-4-6
+#   max_turns: "30"
+#   skills_dir: ~/agent-skills
+#   provider: anthropic
+
 # Optional: external MCP servers Argus agents may call (Claude Code engine).
 # `env` lists env var NAMES to pass through; values stay in your environment.
 # `argus doctor --deep` validates each server (command on PATH, url, env set).

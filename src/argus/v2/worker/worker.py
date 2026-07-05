@@ -3,12 +3,15 @@ fencing token. The caller drives the loop (CLI `up`)."""
 from __future__ import annotations
 
 import logging
+import json
 import os
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Event, Thread
 from urllib.parse import urlparse
 
+from argus.v2 import alerts
 from argus.v2.browser import (
     PreviewError,
     diff_touches_ui,
@@ -20,7 +23,7 @@ from argus.v2.context import assemble as ctx
 from argus.v2.db import pool
 from argus.v2.front import front
 from argus.v2.pm import memory as pm_memory
-from argus.v2.queue import jobs
+from argus.v2.queue import breaker, jobs
 from argus.v2.queue.models import RunRecord
 from argus.v2.roles import contracts
 from argus.v2.worker import exec as job_exec
@@ -30,6 +33,13 @@ from argus.v2.workspace import repo as workspace
 log = logging.getLogger("argus.worker")
 
 _TEST_OUTPUT_LIMIT = 12000
+_HEARTBEAT_INTERVAL = 30  # seconds; module-level so tests can shrink it
+
+# A job may be outage-released this many times before it finalizes failed.
+# At >= 15 min per release this tolerates a 12h engine outage; past that the
+# "outage" is treated as permanent (binary gone, auth revoked) and the
+# request fails loudly like before.
+OUTAGE_RELEASE_CAP = 48
 
 
 def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> bool:
@@ -49,6 +59,23 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
         try:
             team = cfg.team(job.team_id) if job.team_id else None
             project = getattr(team, "project", None) if team else None
+
+            # Engine breaker: while the engine is known-down, do not build a
+            # worktree or call it; push the job past the breaker expiry. The
+            # release cap turns a never-healing "outage" into a real failure.
+            engine_name = str((job.exec_snapshot or {}).get("engine") or "")
+            outage_releases = _safe_int(
+                (job.payload or {}).get("outage_releases"), default=0)
+            if engine_name:
+                until = breaker.open_until(conn, engine_name)
+                if until is not None:
+                    if outage_releases >= OUTAGE_RELEASE_CAP:
+                        _finalize_outage_exhausted(conn, job, engine_name)
+                    else:
+                        _release_for_outage(conn, job, engine_name, until,
+                                            "breaker open")
+                    conn.commit()
+                    return True
 
             # Research jobs have no request_id (read-only); give them a worktree
             # keyed by the event id so the researcher can read the repo.
@@ -129,16 +156,53 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             result["liveness"] = liveness.classify(run.output or "",
                                                     has_diff=result.get("has_diff"))
             if result["liveness"] in liveness.STUCK:
-                log.info("job %s liveness=%s (no forward progress)", job.id, result["liveness"])
+                log.info("job %s liveness=%s (no forward progress) team=%s request=%s",
+                         job.id, result["liveness"], job.team_id, job.request_id,
+                         extra={"job_id": job.id, "team_id": job.team_id,
+                                "request_id": job.request_id})
 
+            if run.status == "outage":
+                detail = str((result or {}).get("error") or "engine outage")
+                until = breaker.trip(conn, run.engine, detail[:500])
+                alerts.record(
+                    conn, severity="critical", project="engine",
+                    fingerprint=f"engine-outage-{run.engine}",
+                    message=(f"Engine {run.engine} outage; breaker open until "
+                             f"{until:%Y-%m-%d %H:%M %Z}. Jobs are queued, not "
+                             f"failed. Detail: {detail[:300]}"),
+                    cooldown_seconds=3600)
+                if outage_releases < OUTAGE_RELEASE_CAP:
+                    _release_for_outage(conn, job, run.engine, until, detail)
+                    conn.commit()
+                    return True
+                # Cap exhausted: permanent failure, fall through as before.
             status = "done" if run.status == "ok" else "failed"
             jobs.finalize(conn, job.id, job.claim_token, status=status,
                           result=result, run=run, actions=actions)
+            if run.status == "ok" and run.engine:
+                # Reset by the engine that actually ran, not the snapshot
+                # engine: a browser_verify job's snapshot carries the real
+                # engine, but the job itself runs on "browser-use", so
+                # resetting by engine_name would clear a legitimately open
+                # breaker for an engine this job never called.
+                breaker.reset(conn, run.engine)
             conn.commit()
             return True
         except Exception as exc:
+            # A partial write before the raise can leave this non-autocommit
+            # connection's transaction aborted; clear it before the finalize
+            # below issues its own statements, or that finalize itself raises
+            # InFailedSqlTransaction and this exception propagates out,
+            # crash-looping the worker lane.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             message = f"Worker failed before completion: {type(exc).__name__}: {exc}"
-            log.warning("job %s failed: %s", job.id, message, exc_info=True)
+            log.warning("job %s failed: %s team=%s request=%s",
+                        job.id, message, job.team_id, job.request_id, exc_info=True,
+                        extra={"job_id": job.id, "team_id": job.team_id,
+                               "request_id": job.request_id})
             result = {
                 "error": str(exc),
                 "error_type": type(exc).__name__,
@@ -152,6 +216,7 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                 prompt=snap.get("prompt"),
                 output=message,
                 status="failed",
+                prompt_hash=snap.get("prompt_hash"),
             )
             jobs.finalize(conn, job.id, job.claim_token, status="failed",
                           result=result, run=run, actions=[])
@@ -219,6 +284,51 @@ def _has_team_email_source(cfg, team_id: str | None) -> bool:
     return False
 
 
+def _safe_int(value, *, default: int) -> int:
+    """Parse a possibly non-numeric payload value (e.g. a pre-existing
+    outage_releases key that isn't an int) without raising. A garbage value
+    is treated as the default rather than crashing the job."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _outage_delay_seconds(until) -> int:
+    """Sleep the job until the breaker expiry (never less than 60s so a clock
+    skew cannot busy-loop the queue)."""
+    remaining = (until - datetime.now(timezone.utc)).total_seconds()
+    return max(60, int(remaining) + 30)
+
+
+def _release_for_outage(conn, job, engine_name: str, until, detail: str) -> None:
+    snap = job.exec_snapshot or {}
+    run = RunRecord(role=job.role, engine=engine_name, model=snap.get("model"),
+                    prompt=None, output=f"engine outage, released until {until}: {detail}"[:2000],
+                    status="outage", prompt_hash=snap.get("prompt_hash"))
+    jobs.release(conn, job.id, job.claim_token,
+                 delay_seconds=_outage_delay_seconds(until), run=run,
+                 reason=f"engine outage: {engine_name}")
+
+
+def _finalize_outage_exhausted(conn, job, engine_name: str) -> None:
+    """Past the release cap the outage is treated as permanent: finalize
+    failed so pipeline.on_job_done fails the request loudly (pre-breaker
+    behavior)."""
+    snap = job.exec_snapshot or {}
+    message = (f"engine {engine_name} outage persisted past "
+               f"{OUTAGE_RELEASE_CAP} releases; giving up")
+    run = RunRecord(role=job.role, engine=engine_name, model=snap.get("model"),
+                    prompt=None, output=message, status="outage",
+                    prompt_hash=snap.get("prompt_hash"))
+    result = {"error": message,
+              "parsed": {"ready": False, "analysis": message}}
+    jobs.finalize(conn, job.id, job.claim_token, status="failed",
+                  result=result, run=run, actions=[])
+
+
 def _format_test_context(command: str, exit_code: int, stdout: str, stderr: str) -> str:
     parts = []
     if stdout:
@@ -236,13 +346,27 @@ def _start_heartbeat(job_id: str, claim_token: str | None, stop: Event) -> Threa
         return None
 
     def beat() -> None:
-        while not stop.wait(30):
-            conn = pool.connect()
+        conn = pool.connect()
+        while not stop.wait(_HEARTBEAT_INTERVAL):
             try:
                 jobs.heartbeat(conn, job_id, claim_token)
                 conn.commit()
-            finally:
-                conn.close()
+            except Exception as exc:
+                # The heartbeat connection can be poisoned by a server restart
+                # or network blip. Silently giving up here would let the lease
+                # expire and the job get reclaimed and re-run by another worker
+                # while this one is still working it. Reconnect and keep trying
+                # so renewal survives a transient outage.
+                log.warning("job %s heartbeat failed, reconnecting: %s", job_id, exc)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                try:
+                    conn = pool.connect()
+                except Exception as reconnect_exc:
+                    log.warning("job %s heartbeat reconnect failed: %s", job_id, reconnect_exc)
+        conn.close()
 
     thread = Thread(target=beat, name=f"argus-job-heartbeat-{job_id}", daemon=True)
     thread.start()
@@ -318,14 +442,23 @@ def _run_browser_verify(job, project, workdir):
                 build_timeout_seconds=bv.firebase_build_timeout_seconds,
             )
         else:
-            token = os.environ.get(bv.vercel_token_env, "")
             workspace.push(project, branch, workdir)
-            url = discover_preview_url(
-                project_id=bv.vercel_project_id, branch=branch, token=token,
-                team_id=bv.vercel_team_id,
-                build_timeout_seconds=bv.build_timeout_seconds,
-                poll_interval_seconds=bv.poll_interval_seconds,
-            )
+            last_exc = None
+            for token in _vercel_token_candidates(bv.vercel_token_env):
+                try:
+                    url = discover_preview_url(
+                        project_id=bv.vercel_project_id, branch=branch, token=token,
+                        team_id=bv.vercel_team_id,
+                        build_timeout_seconds=bv.build_timeout_seconds,
+                        poll_interval_seconds=bv.poll_interval_seconds,
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if not _preview_auth_error(exc):
+                        raise
+            else:
+                raise last_exc or PreviewError("no vercel token available")
         allowed = [h for h in [urlparse(url).hostname, bv.api_host] if h]
         bv_model = bv.hermes_model if bv.backend == "hermes" else bv.browser_model
         res = run_browser_check(
@@ -339,3 +472,39 @@ def _run_browser_verify(job, project, workdir):
         return _bv_result("fail", f"preview unavailable: {exc}", prompt=summary)
     except Exception as exc:  # noqa: BLE001 - fail-closed
         return _bv_result("fail", f"browser verify error: {exc}", prompt=summary)
+
+
+def _vercel_token_candidates(env_name: str):
+    seen: set[str] = set()
+    for token in (os.environ.get(env_name, ""), _vercel_auth_file_token()):
+        if token and token not in seen:
+            seen.add(token)
+            yield token
+    if not seen:
+        yield ""
+
+
+def _vercel_auth_file_token() -> str:
+    paths = []
+    if os.environ.get("VERCEL_AUTH_FILE"):
+        paths.append(Path(os.environ["VERCEL_AUTH_FILE"]).expanduser())
+    paths.append(Path.home() / ".vercel" / "auth.json")
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        token = data.get("token") or data.get("authToken")
+        if token:
+            return str(token)
+    return ""
+
+
+def _preview_auth_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "403" in text
+        or "forbidden" in text
+        or "not authorized" in text
+        or "invalidtoken" in text
+    )

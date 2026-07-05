@@ -1,3 +1,5 @@
+import logging
+
 from argus.v2.config import loader
 from argus.v2.orchestrator import reconcile
 from argus.v2.ingress import events
@@ -289,3 +291,86 @@ def test_sweep_dead_job_notify_is_idempotent_across_double_sweep(conn, tmp_path)
         cur.execute("SELECT count(*) FROM actions WHERE idempotency_key=%s",
                     (f"dead-job:{job.id}",))
         assert cur.fetchone()[0] == 1
+
+
+def _cfg_with_connector_source(tmp_path):
+    y = tmp_path / "connector-auth.yaml"
+    y.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "  sources:\n"
+        "    - { name: gh1, type: github, scope: company, team: dev, config: {} }\n"
+        "teams:\n  - name: dev\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n"
+        "    channels: [ { type: fake, role: control, channel_id: chat } ]\n",
+        encoding="utf-8",
+    )
+    return loader.load(y)
+
+
+def _mark_connector_auth_failure(conn, source_name: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO connector_state
+                   (source_name, error_count, last_error, last_error_at, error_category, updated_at)
+               VALUES (%s, 1, 'AUTH HTTPStatusError HTTP 401', now(), 'auth', now())
+               ON CONFLICT (source_name) DO UPDATE SET
+                   error_count=EXCLUDED.error_count, last_error=EXCLUDED.last_error,
+                   last_error_at=EXCLUDED.last_error_at, error_category=EXCLUDED.error_category,
+                   updated_at=now()""",
+            (source_name,))
+
+
+def test_sweep_notifies_connector_auth_failure(conn, tmp_path):
+    cfg = _cfg_with_connector_source(tmp_path)
+    _mark_connector_auth_failure(conn, "gh1")
+    conn.commit()
+
+    reconcile.sweep_once(conn, cfg); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT destination_ref, payload->>'text' FROM actions "
+            "WHERE idempotency_key='connector-auth:dev:gh1'")
+        row = cur.fetchone()
+    assert row is not None
+    dest, text = row
+    assert dest == "fake:chat"
+    assert "gh1" in text
+
+
+def test_sweep_connector_auth_notify_is_idempotent_across_double_sweep(conn, tmp_path):
+    cfg = _cfg_with_connector_source(tmp_path)
+    _mark_connector_auth_failure(conn, "gh1")
+    conn.commit()
+
+    reconcile.sweep_once(conn, cfg); conn.commit()
+    reconcile.sweep_once(conn, cfg); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM actions WHERE idempotency_key='connector-auth:dev:gh1'")
+        assert cur.fetchone()[0] == 1
+
+
+def test_sweep_returns_counts_and_logs_summary_when_work_happened(conn, cfg, caplog):
+    events.ingest_message(conn, cfg, team="dev", source="cli",
+                          dedup_key="sweep-counts", text="t"); conn.commit()
+    with caplog.at_level(logging.INFO, logger="argus.orchestrator"):
+        counts = reconcile.sweep_once(conn, cfg); conn.commit()
+    assert counts["events_routed"] == 1
+    assert isinstance(counts["duration_ms"], int)
+    summaries = [r for r in caplog.records if "sweep did work" in r.getMessage()]
+    assert len(summaries) == 1
+    assert "events_routed=1" in summaries[0].getMessage()
+    assert summaries[0].sweep == counts  # extra= carries the full dict for JSON logs
+
+
+def test_sweep_idle_logs_debug_not_info(conn, cfg, caplog):
+    with caplog.at_level(logging.DEBUG, logger="argus.orchestrator"):
+        counts = reconcile.sweep_once(conn, cfg); conn.commit()
+    assert not any(v for k, v in counts.items() if k != "duration_ms")
+    assert not any("sweep did work" in r.getMessage() for r in caplog.records)
+    idle = [r for r in caplog.records if "sweep idle" in r.getMessage()]
+    assert len(idle) == 1
+    assert idle[0].levelno == logging.DEBUG

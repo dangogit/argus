@@ -39,6 +39,73 @@ def test_enqueue_stage_sets_project_in_snapshot(conn, cfg):
     assert snap.get("project") == "dev"
 
 
+def test_enqueue_stage_sets_prompt_hash_in_snapshot(conn, cfg):
+    """Enqueue must freeze a deterministic prompt_hash into exec_snapshot so a
+    later output regression can be correlated with a prompt/rules/skills edit."""
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT exec_snapshot FROM jobs WHERE request_id=%s AND stage=0", (rid,))
+        snap = cur.fetchone()[0]
+    assert isinstance(snap.get("prompt_hash"), str)
+    assert len(snap["prompt_hash"]) == 12
+
+
+def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT exec_snapshot FROM jobs WHERE request_id=%s AND stage=0", (rid,))
+        snap = cur.fetchone()[0]
+    assert "CHECKPOINTS:" in snap.get("checkpoints", "")
+    assert "external side effects" in snap["checkpoints"]
+
+
+def test_add_prompt_hash_is_deterministic():
+    a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    pipeline._add_prompt_hash(a)
+    pipeline._add_prompt_hash(b)
+    assert a["prompt_hash"] == b["prompt_hash"]
+    assert len(a["prompt_hash"]) == 12
+
+
+def test_add_prompt_hash_changes_with_prompt():
+    base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    edited = {"prompt": "do a different thing", "rules": "rule block", "skills": "skill block"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
+def test_add_prompt_hash_changes_with_rules():
+    base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    edited = {"prompt": "do the thing", "rules": "different rule block", "skills": "skill block"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
+def test_add_prompt_hash_changes_with_skills():
+    base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
+    edited = {"prompt": "do the thing", "rules": "rule block", "skills": "different skill block"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
+def test_add_prompt_hash_changes_with_checkpoints():
+    base = {"prompt": "do the thing", "checkpoints": "CHECKPOINTS:\n- start"}
+    edited = {"prompt": "do the thing", "checkpoints": "CHECKPOINTS:\n- different"}
+    pipeline._add_prompt_hash(base)
+    pipeline._add_prompt_hash(edited)
+    assert base["prompt_hash"] != edited["prompt_hash"]
+
+
 def test_no_fix_close_routes_to_conversation_channel(conn, cfg):
     """The no-fix/blocked close must address the conversation's real channel
     (whatsapp:<jid>), not a bare 'conv:<uuid>' that deliver() drops. Regression:
@@ -262,6 +329,33 @@ def test_pr_summary_uses_builder_llm_summary(conn, cfg, tmp_path):
     assert "file(s):" not in summary_section
 
 
+def test_pr_summary_extracts_fix_from_builder_output(conn, cfg, tmp_path):
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="sum-output", text="cannot save profile")
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    output = (
+        "Investigated, changed, verified.\n\n"
+        "Root cause: save button used the old route.\n\n"
+        "Fix:\n"
+        "- Updated the submit handler in [Profile.vue](/tmp/Profile.vue:42) "
+        "to call /api/profile.\n\n"
+        "Verification:\n"
+        "- npm test\n"
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs SET result=%s WHERE request_id=%s AND role='developer'",
+            (Json({"has_diff": True, "parsed": {}, "output": output}), rid))
+    conn.commit()
+
+    summary = pipeline._builder_summary(conn, rid)
+    assert summary == "Updated the submit handler to call /api/profile."
+    info = pipeline._pr_info(conn, cfg, rid, cwd=str(tmp_path))
+    assert info["summary_short"] == summary
+
+
 def test_pr_summary_falls_back_to_request_text(conn, cfg, tmp_path):
     eid = events.ingest_message(conn, cfg, team="dev", source="cli",
                                 dedup_key="sum2", text="fix the thing")
@@ -273,6 +367,34 @@ def test_pr_summary_falls_back_to_request_text(conn, cfg, tmp_path):
     info = pipeline._pr_info(conn, cfg, rid, cwd=str(tmp_path))
     assert info["summary_short"] == "fix the thing"
     assert "file(s):" not in info["body"].split("## Changed Files")[0]
+
+
+def test_checks_summary_does_not_invent_senior_approval(conn, cfg):
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="sum-checks", text="fix thing")
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs "
+            "(request_id,event_id,team_id,kind,role,stage,status,result,idempotency_key) "
+            "VALUES (%s,%s,'dev','pipeline','browser_verify',1,'done',%s,'bv-check'), "
+            "(%s,%s,'dev','pipeline','senior',2,'done',%s,'senior-check')",
+            (
+                rid, eid, Json({
+                    "parsed": {"verdict": "pass"},
+                    "browser_verify": {"skipped": True},
+                }),
+                rid, eid, Json({"parsed": {"summary": "needs another pass"}}),
+            ),
+        )
+    conn.commit()
+
+    checks = pipeline._checks_summary(conn, rid)
+
+    assert "Browser: skipped (no UI files changed)" in checks
+    assert "Senior: no decision" in checks
+    assert "Senior: approve" not in checks
 
 
 def _developer_job(conn, rid, result: dict) -> Job:
@@ -489,6 +611,27 @@ def test_dev_ready_advances_to_qa(conn, cfg_project):
     with conn.cursor() as cur:
         cur.execute("SELECT role, stage FROM jobs WHERE request_id=%s AND role='qa'", (rid,))
         assert cur.fetchone() == ("qa", 1)
+
+
+def test_failure_text_warns_timeout_may_have_side_effects(conn, cfg_project):
+    """A Codex timeout can happen after external work landed, so the owner
+    should inspect live state before blindly rerunning."""
+    eid = events.ingest_message(conn, cfg_project, team="dev", source="cli",
+                                dedup_key="timeout-alert", text="ship prod fix")
+    rid = pipeline.open_request(conn, cfg_project, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs SET status='failed', result=%s "
+            "WHERE request_id=%s AND role='developer'",
+            (Json({"error": "codex: process timed out after 900s"}), rid),
+        )
+    text = pipeline._failure_text(conn, rid, "Pipeline job failed before completion.")
+    assert "stopped before normal completion" in text
+    assert "without opening a PR" not in text
+    assert "inspect live state" in text
+    assert "developer: codex: process timed out after 900s" in text
 
 
 def test_critical_diff_scan_blocks_open_pr(conn, cfg_project, monkeypatch, tmp_path):

@@ -110,6 +110,7 @@ def write_units(units: Iterable[Unit], out_dir: Path, *, os_name: str = "macos")
         else:
             path = out_dir / f"{unit.label}.plist"
             path.write_bytes(render(unit))
+            os.chmod(path, 0o600)  # EnvironmentVariables can carry ARGUS_DB_DSN/secrets
             written.append(path)
     return written
 
