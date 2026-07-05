@@ -82,6 +82,33 @@ def test_add_prompt_hash_changes_with_prompt():
     assert base["prompt_hash"] != edited["prompt_hash"]
 
 
+def test_pm_request_key_normalizes_fingerprints_lineage_and_theme():
+    converse_key = (
+        pipeline._normalize_pm_task_text(
+            "Implement minimal internal retro dedupe before dispatching PM runs "
+            "or draft PRs: collapse equivalent items by normalized task text, "
+            "lineage, and theme.\n"
+            "Evidence: converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6"
+        ),
+        pipeline._normalize_pm_key_part("dev"),
+        pipeline._normalize_pm_key_part("pm-request-dedupe"),
+    )
+    retro_key = (
+        pipeline._normalize_pm_task_text(
+            "Implement minimal internal retro dedupe before dispatching PM runs "
+            "or draft PRs: collapse equivalent items by normalized task text, "
+            "lineage, and theme.\n"
+            "Evidence: retro-change:68f9851dcd434eb66af49543"
+        ),
+        pipeline._normalize_pm_key_part("DEV"),
+        pipeline._normalize_pm_key_part("PM request dedupe"),
+    )
+    different_theme = (retro_key[0], retro_key[1], "readiness")
+
+    assert pipeline._pm_keys_equivalent(converse_key, retro_key) is True
+    assert pipeline._pm_keys_equivalent(converse_key, different_theme) is False
+
+
 def test_add_prompt_hash_changes_with_rules():
     base = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     edited = {"prompt": "do the thing", "rules": "different rule block", "skills": "skill block"}
