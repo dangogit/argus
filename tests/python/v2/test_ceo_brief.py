@@ -45,7 +45,7 @@ def _cfg_with_projects(tmp_path):
     return loader.load(y)
 
 
-def test_ceo_brief_reports_health_and_pending_counts(conn, tmp_path):
+def test_ceo_brief_lists_actionable_items_with_reasons(conn, tmp_path):
     cfg = _cfg(tmp_path)
     with conn.cursor() as cur:
         cur.execute(
@@ -56,12 +56,59 @@ def test_ceo_brief_reports_health_and_pending_counts(conn, tmp_path):
             "VALUES ('ceo-brief','notify','reversible_internal','proposed','a1',%s)",
             (Json({"text": "x"}),),
         )
-    brief = ceo.build(conn, cfg, health_lines=["com.argus.up loaded"])
-    assert "Overall: needs attention" in brief.text
-    assert "Recent failed/dead agents: 1" in brief.text
-    assert "- Inspect 1 recent failed/dead agent(s)" in brief.text
-    assert "Actions pending/approval: 1" in brief.text
-    assert "- com.argus.up loaded" in brief.text
+    brief = ceo.build(conn, cfg, health_lines=["attention: -\t78\tcom.argus.watchdog"])
+    assert "needs attention" in brief.text
+    assert "Needs you:" in brief.text
+    assert "- Approve 1 pending action(s)" in brief.text
+    assert "- Inspect 1 failed/dead agent(s) in last 24h" in brief.text
+    assert "- launchd attention:" in brief.text
+    assert brief.failed_jobs == 1
+    assert brief.pending_actions == 1
+
+
+def test_ceo_brief_healthy_is_short(conn, tmp_path):
+    cfg = _cfg(tmp_path)
+    brief = ceo.build(conn, cfg, health_lines=["15 Argus launchd jobs loaded"])
+    assert "all healthy, nothing needs you" in brief.text
+    assert "Needs you:" not in brief.text
+    assert "FYI:" in brief.text
+    assert len(brief.text.splitlines()) <= 4
+
+
+def test_ceo_brief_links_pending_prs(conn, tmp_path):
+    cfg = _cfg_with_projects(tmp_path)
+    pr_json = ('[{"number": 7, "title": "Fix login", '
+               '"url": "https://github.com/o/r/pull/7", "isDraft": true, '
+               '"headRefName": "argus/x", "createdAt": "2026-07-01", "body": ""}]')
+    brief = ceo.build(conn, cfg, runner=lambda _argv, _cwd: pr_json,
+                      health_lines=["ok"])
+    assert "- [dev] PR #7 (draft): Fix login" in brief.text
+    assert "https://github.com/o/r/pull/7" in brief.text
+    assert brief.pending_prs == 2  # one per project team (dev + quiet)
+
+
+def test_ceo_brief_lists_support_guidance_and_drafts(conn, tmp_path):
+    cfg = _cfg_with_projects(tmp_path)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO support_guidance (id, project, thread_id, sender, subject, question) "
+            "VALUES ('g1','dev','t1','u@example.com','Refund request','What do we do?')")
+        cur.execute(
+            "INSERT INTO support_drafts (id, project, thread_id, sender, subject) "
+            "VALUES ('d1','dev','t2','s','needs reply')")
+    brief = ceo.build(conn, cfg, runner=lambda _argv, _cwd: "[]",
+                      health_lines=["ok"])
+    assert '- [dev] support guidance pending: "Refund request"' in brief.text
+    assert "ID g1" in brief.text
+    assert "- [dev] 1 support draft(s) ready to send" in brief.text
+
+
+def test_ceo_brief_ignores_quiet_projects_and_missing_telemetry(conn, tmp_path):
+    cfg = _cfg_with_projects(tmp_path)
+    brief = ceo.build(conn, cfg, runner=lambda _argv, _cwd: "[]",
+                      health_lines=["ok"])
+    assert "no telemetry" not in brief.text
+    assert "all healthy, nothing needs you" in brief.text
 
 
 def test_ceo_brief_ignores_cancelled_and_old_failed_jobs(conn, tmp_path):
@@ -85,39 +132,16 @@ def test_ceo_brief_ignores_cancelled_and_old_failed_jobs(conn, tmp_path):
         cur.execute(
             "INSERT INTO jobs (team_id, role, kind, status, idempotency_key, updated_at) "
             "VALUES ('ceo-brief','manager','pipeline','failed','old-failed', now() - interval '3 days')")
-
-    brief = ceo.build(conn, cfg, health_lines=["com.argus.up loaded"])
-
-    assert "Overall: healthy" in brief.text
-    assert "Recent failed/dead agents: 0" in brief.text
+    brief = ceo.build(conn, cfg, health_lines=["ok"])
+    assert "all healthy, nothing needs you" in brief.text
+    assert brief.failed_jobs == 0
 
 
-def test_ceo_brief_reports_action_only_agent_visibility(conn, tmp_path):
-    cfg = _cfg_with_projects(tmp_path)
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO events (team_id, kind, source, dedup_key, payload) "
-            "VALUES ('dev','signal','test','dev1','{}')")
-        cur.execute(
-            "INSERT INTO events (team_id, kind, source, dedup_key, payload) "
-            "VALUES ('quiet','signal','test','quiet1','{}')")
-        cur.execute(
-            "INSERT INTO support_drafts (id, project, thread_id, sender, subject) "
-            "VALUES ('d1','dev','t1','s','needs reply')")
-        cur.execute(
-            "INSERT INTO actions (team_id, type, risk, status, idempotency_key, "
-            "provider_ref, updated_at) "
-            "VALUES ('quiet','open_pr','reversible_internal','done','pr1',"
-            "'https://github.com/o/r/pull/1', now() - interval '2 days')")
-
-    brief = ceo.build(conn, cfg, runner=lambda _argv, _cwd: "[]",
-                      health_lines=["com.argus.up loaded"])
-
-    assert "Overall: pending review" in brief.text
-    assert "Agent visibility:" in brief.text
-    assert "- Action: dev: 1 support draft(s) ready" in brief.text
-    assert "- Quiet: 1 project agent(s) checked, 1 PR(s) opened last 7d, no action required" in brief.text
-    assert "- Action: dev: 1 support draft(s) ready" in brief.text.split("Top priorities:", 1)[1]
+def test_ceo_brief_dashboard_link_from_env(conn, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setenv("ARGUS_DASHBOARD_URL", "https://dash.example")
+    brief = ceo.build(conn, cfg, health_lines=["ok"])
+    assert "Dashboard: https://dash.example" in brief.text
 
 
 def test_ceo_notify_inserts_whatsapp_action(conn, tmp_path):
