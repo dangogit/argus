@@ -162,6 +162,23 @@ def test_ceo_once_per_day_window(tmp_path):
     assert ceo.should_send_once(now=late, timezone="UTC", run_root=tmp_path) is False
 
 
+def test_ceo_brief_includes_top_company_lessons(conn, tmp_path):
+    from datetime import date
+    from argus.v2 import retro
+    cfg = _cfg(tmp_path)
+    day = date.today()
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day, candidates=[
+        {"type": "lesson", "statement": "Group duplicate alerts before dispatch.",
+         "trigger": "t", "priority": 2},
+        {"type": "process-edit", "statement": "Check quota headroom first.",
+         "trigger": "t", "priority": 1},
+    ], payload={"role": "company-learning-agent"})
+    retro.synthesize(conn, retro_day=day)
+    brief = ceo.build(conn, cfg, health_lines=["ok"])
+    assert "Learned:" in brief.text
+    assert "- Group duplicate alerts before dispatch." in brief.text
+
+
 def test_launchd_row_health_treats_running_jobs_as_ok():
     assert ceo._launchd_row_needs_attention("123\t1\tcom.argus.evolution") is False
     assert ceo._launchd_row_needs_attention("-\t0\tcom.argus.poll") is False

@@ -47,6 +47,9 @@ def build(conn: psycopg.Connection, cfg, *, runner: Runner | None = None,
         lines = [f"CEO Brief {today}: {overall}", "", "Needs you:", *needs]
     else:
         lines = [f"CEO Brief {today}: all healthy, nothing needs you."]
+    learned = _retro_lines(conn)
+    if learned:
+        lines += ["", "Learned:", *learned]
     lines += ["", _fyi_line(conn, reqs)]
     dash = os.environ.get("ARGUS_DASHBOARD_URL", "").strip()
     if dash:
@@ -183,6 +186,18 @@ def _needs_you(prs: list[pending.PendingPr], guidance: list[tuple[str, str, str]
     for line in bad_health:
         out.append(f"- launchd {line}")
     return out
+
+
+def _retro_lines(conn: psycopg.Connection, *, limit: int = 3) -> list[str]:
+    from datetime import date, timedelta
+    from argus.v2 import retro
+    items: list[dict] = []
+    for day in (date.today(), date.today() - timedelta(days=1)):
+        items = retro.company_digest_items(conn, day)
+        if items:
+            break
+    picked = [i for i in items if i.get("status") == "gated" and i.get("statement")]
+    return [f"- {i['statement']}" for i in picked[:limit]]
 
 
 def _fyi_line(conn: psycopg.Connection, reqs: dict[str, int]) -> str:

@@ -243,7 +243,7 @@ def test_run_company_only_skips_team_extraction(conn, tmp_path):
         assert cur.fetchone()[0] == 0
 
 
-def test_notify_routes_team_digests_to_pm_groups_and_company_to_ceo(conn, tmp_path):
+def test_notify_routes_team_digests_only(conn, tmp_path):
     cfg = _cfg_two_projects_with_channels(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
     for team, evidence in {"dev": ["d1", "d2"], "luma": ["l1", "l2"]}.items():
@@ -258,7 +258,7 @@ def test_notify_routes_team_digests_to_pm_groups_and_company_to_ceo(conn, tmp_pa
         }])
 
     retro.run(conn, cfg, retro_day=day, company_only=True)
-    assert retro.notify(conn, cfg, retro_day=day) == 3
+    assert retro.notify(conn, cfg, retro_day=day) == 2
     assert retro.notify(conn, cfg, retro_day=day) == 0
 
     with conn.cursor() as cur:
@@ -268,13 +268,11 @@ def test_notify_routes_team_digests_to_pm_groups_and_company_to_ceo(conn, tmp_pa
         )
         rows = cur.fetchall()
     assert [(row[0], row[1]) for row in rows] == [
-        ("ceo-brief", "fake:ceo-room"),
         ("dev", "fake:dev-room"),
         ("luma", "fake:luma-room"),
     ]
     texts = {team_id: text for team_id, _dest, text in rows}
-    assert "CEO Retro Brief" in texts["ceo-brief"]
-    assert "Company lessons learned" in texts["ceo-brief"]
+    assert "ceo-brief" not in texts
     assert "PM Retro Digest" in texts["dev"]
     assert "Team: dev" in texts["dev"]
     assert "PM Retro Digest" in texts["luma"]
