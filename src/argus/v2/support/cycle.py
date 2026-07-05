@@ -434,38 +434,26 @@ def _parse_guidance_reply(text: str) -> tuple[str, str] | None:
 def _guidance_text(project: str, guidance_id: str, email: EmailSummary,
                    thread: str, question: str, proposed_reply: str = "",
                    investigation_dispatched: bool = False) -> str:
-    preview = thread.strip().replace("\r", " ")
-    if len(preview) > 1200:
-        preview = preview[:1200] + "..."
     lines = [
-        f"Support guidance needed ({project})",
-        f"ID: {guidance_id}",
-        f"From: {email.sender}",
-        f"Subject: {email.subject}",
+        f"Support needs you ({project})",
+        f'From {email.sender}: "{email.subject}"',
+        "",
+        "Customer says:",
+        _customer_message(thread),
         "",
         question,
     ]
     if investigation_dispatched:
-        lines += [
-            "",
-            "An investigation was auto-dispatched to the team pipeline "
-            "(logs, database state, recent deploys). You will hear back "
-            "with findings, separately from this guidance request.",
-        ]
-    lines += [
-        "",
-        "Thread:",
-        preview,
-    ]
+        lines += ["", "An investigation was auto-dispatched to the team "
+                      "pipeline; findings arrive separately."]
     if proposed_reply:
-        lines += ["", "Proposed reply:", proposed_reply, "",
-                  'Reply "send" to send the proposed reply as-is.',
-                  "Reply send: <your text> to send a different reply.",
-                  "Any other reply teaches Argus (learned, not sent)."]
+        lines += ["", "Agent suggests:", proposed_reply, "",
+                  'Reply "send" to send it, send: <your text> for a different '
+                  "reply. Anything else teaches Argus."]
     else:
-        lines += ["",
-                  "Reply send: <exact customer reply> to email the customer.",
-                  "Any other reply teaches Argus (learned, not sent)."]
+        lines += ["", "Reply send: <exact customer reply> to email the "
+                      "customer. Anything else teaches Argus."]
+    lines += ["", f"(ID {guidance_id})"]
     return "\n".join(lines)
 
 

@@ -248,7 +248,7 @@ def test_support_uncertain_reply_requests_guidance(tmp_path, monkeypatch, conn, 
         cur.execute("SELECT context_type, context_ref, payload->>'subject' "
                     "FROM conversation_contexts WHERE team_id='luma'")
         context = cur.fetchone()
-    assert "Support guidance needed (luma)" in text
+    assert "Support needs you (luma)" in text
     assert "Can we export CSV?" in text
     assert "send:" in text
     assert context is not None
@@ -279,7 +279,7 @@ def test_support_escalation_registers_guidance_context(tmp_path, monkeypatch, co
         cur.execute("SELECT status, payload->>'thread' FROM conversation_contexts "
                     "WHERE team_id='luma' AND channel_ref='cli:local'")
         context = cur.fetchone()
-    assert "Support guidance needed (luma)" in text
+    assert "Support needs you (luma)" in text
     assert "Please refund my unused subscription" in text
     assert "send:" in text
     assert context == ("active", "From: u@example.com\nPlease refund my unused subscription.")
@@ -682,3 +682,22 @@ def test_customer_message_truncates_and_falls_back():
     # All-quoted thread falls back to the generic excerpt instead of empty.
     quoted = "> only quoted content\n> nothing else\n"
     assert cycle._customer_message(quoted) != ""
+
+
+def test_guidance_text_is_concise_and_keeps_id():
+    email = EmailSummary("T9", "u@example.com", "Refund request", "")
+    thread = (
+        "I was charged twice this month.\n"
+        "On Tue Jul 1 Support wrote:\n"
+        "> earlier reply\n"
+    )
+    text = cycle._guidance_text("luma", "G-123", email, thread,
+                                "What should we tell this customer?",
+                                "We refunded the duplicate charge.")
+    assert text.startswith("Support needs you (luma)")
+    assert "Customer says:" in text
+    assert "charged twice" in text
+    assert "> earlier reply" not in text
+    assert "Agent suggests:" in text
+    assert "(ID G-123)" in text
+    assert "Thread:" not in text
