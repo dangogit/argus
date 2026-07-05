@@ -522,6 +522,50 @@ def test_memory_outcome_note_requires_repair_action_for_known_root_cause_failure
     assert "Evidence: Senior review rejected it." in note
 
 
+def test_memory_outcome_note_classifies_sandbox_blocked_postgres_as_environment():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "argus doctor could not reach Postgres: sandbox networking blocked "
+        "127.0.0.1:5440.",
+    )
+
+    assert note.startswith(
+        "Environment blocker: sandbox networking blocked Postgres/localhost check."
+    )
+    assert "Evidence: argus doctor could not reach Postgres" in note
+
+
+def test_memory_outcome_note_classifies_sandbox_blocked_pypi_as_environment():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "pip install failed because the sandbox blocked network access to PyPI.",
+    )
+
+    assert note.startswith(
+        "Environment blocker: sandbox networking blocked PyPI check."
+    )
+
+
+def test_memory_outcome_note_classifies_sandbox_blocked_localhost_as_environment():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "localhost health check failed with connection refused inside sandbox network.",
+    )
+
+    assert note.startswith(
+        "Environment blocker: sandbox networking blocked localhost check."
+    )
+
+
+def test_memory_outcome_note_keeps_regular_qa_failure_unchanged():
+    note = pipeline._memory_outcome_note(
+        "qa-fail",
+        "pytest failed because expected total was 4 but got 5.",
+    )
+
+    assert note == "pytest failed because expected total was 4 but got 5."
+
+
 def test_memory_outcome_note_requires_repair_action_for_known_root_cause_no_change():
     note = pipeline._memory_outcome_note(
         "no-change",

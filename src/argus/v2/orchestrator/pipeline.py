@@ -784,6 +784,11 @@ def _record_memory_outcome(conn: psycopg.Connection, request_id: str,
 
 
 def _memory_outcome_note(outcome: str, note: str) -> str:
+    env_blocker = _sandbox_network_environment_blocker(note)
+    if outcome == "qa-fail" and env_blocker:
+        if "Environment blocker:" in note:
+            return note
+        return f"Environment blocker: {env_blocker}. Evidence: {note}"
     if outcome == "blocked":
         return f"Blocking issue: {note}"
     if outcome == "found-not-fixed":
@@ -804,6 +809,35 @@ def _memory_outcome_note(outcome: str, note: str) -> str:
 def _has_known_root_cause(text: str) -> bool:
     lowered = text.lower()
     return "root cause" in lowered and "no root cause" not in lowered
+
+
+def _sandbox_network_environment_blocker(text: str) -> str:
+    lowered = text.lower()
+    sandbox_blocked = (
+        "sandbox" in lowered
+        and any(marker in lowered for marker in (
+            "network",
+            "egress",
+            "blocked",
+            "permission denied",
+            "operation not permitted",
+            "connection refused",
+            "failed to establish",
+            "temporary failure",
+        ))
+    )
+    if not sandbox_blocked:
+        return ""
+    targets = []
+    if "postgres" in lowered or "pg_isready" in lowered or "argus_db_dsn" in lowered:
+        targets.append("Postgres")
+    if "pypi" in lowered or "pip install" in lowered or "pip download" in lowered:
+        targets.append("PyPI")
+    if "localhost" in lowered or "127.0.0.1" in lowered or "::1" in lowered:
+        targets.append("localhost")
+    if not targets:
+        return ""
+    return f"sandbox networking blocked {'/'.join(targets)} check"
 
 
 def _parsed_failure_detail(parsed: dict) -> str:
