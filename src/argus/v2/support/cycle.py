@@ -626,6 +626,8 @@ def _customer_message(thread: str, *, limit: int = 500) -> str:
     when stripping leaves nothing (fully-quoted thread)."""
     lines: list[str] = []
     for line in (thread or "").replace("\r", "\n").splitlines():
+        if not lines and re.match(r"^\s*From: ", line, re.I):
+            continue
         if _QUOTE_MARKERS.match(line) or line.strip() == "--":
             break
         lines.append(line)

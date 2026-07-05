@@ -732,6 +732,20 @@ def test_customer_message_strips_quotes_and_signature():
     assert "Dana Cohen" not in msg
 
 
+def test_customer_message_skips_current_from_header_before_stripping_history():
+    thread = (
+        "From: dana@example.com\n"
+        "Hi, I was charged twice this month.\n"
+        "Please check my account.\n"
+        "--\n"
+        "Dana Cohen\n"
+        "On Tue, Jul 1, 2026 at 9:00 AM Support <s@x.com> wrote:\n"
+        "> Thanks for reaching out\n"
+    )
+    msg = cycle._customer_message(thread)
+    assert msg == "Hi, I was charged twice this month.\nPlease check my account."
+
+
 def test_customer_message_truncates_and_falls_back():
     long = "word " * 300
     msg = cycle._customer_message(long, limit=100)
