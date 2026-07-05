@@ -14,6 +14,7 @@ import psycopg
 from psycopg.types.json import Json
 
 from argus.engine import EngineOutageError, run_agent
+from argus.v2 import alerts
 from argus.v2.config import loader
 from argus.v2.engine_runner import run_with_fallback
 from argus.v2.rules import context as rules_context
@@ -270,9 +271,30 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
         transport.mark_read(email.thread_id)
         transport.archive(email.thread_id)
         state.record(project, email.thread_id, "auto_replied", email.sender, email.subject)
-        _notify(conn, team.name, scfg,
-                f'Support auto-replied for {project}: "{email.subject}" from {email.sender}')
+        note = f'Support auto-replied for {project}: "{email.subject}" from {email.sender}'
+        if _notify_level(scfg) == "guidance_only":
+            alerts.record(conn, severity="info", project=project,
+                          fingerprint=f"support-auto-replied:{project}:{email.thread_id}",
+                          message=note, channel="log")
+        else:
+            _notify(conn, team.name, scfg, note)
         return _bump(result, "sent")
+
+    if _notify_level(scfg) == "guidance_only":
+        # Every owner touchpoint is one concise guidance format; a would-be
+        # draft becomes an OK-to-send guidance request so "send" works
+        # in-thread via the conversation context.
+        transport.mark_read(email.thread_id)
+        question = "Proposed reply ready. OK to send?"
+        guidance = state.register_guidance_request(
+            project, email.thread_id, email.sender, email.subject,
+            question, decision.reply, thread)
+        _register_support_context(conn, project, scfg, guidance.id, email, thread,
+                                  question, decision.reply)
+        _notify(conn, team.name, scfg,
+                _guidance_text(project, guidance.id, email, thread, question,
+                               decision.reply))
+        return _bump(result, "proposed")
 
     draft = state.register_draft(
         project, email.thread_id, email.sender, email.subject, decision.reply,
@@ -395,6 +417,11 @@ def _support_prompt(role_prompt: str, tone: str, sender: str, subject: str,
     )
     parts = [role_prompt.strip(), rules.strip(), skill_block.strip(), base]
     return "\n\n".join(part for part in parts if part)
+
+
+def _notify_level(scfg: dict) -> str:
+    level = str(scfg.get("notify_level", "all")).strip().lower()
+    return level if level in {"all", "guidance_only"} else "all"
 
 
 def _notify(conn: psycopg.Connection, team_id: str, scfg: dict, text: str) -> None:

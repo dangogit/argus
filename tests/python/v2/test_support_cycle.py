@@ -312,6 +312,63 @@ def test_support_auto_sends_low_risk_after_guidance(tmp_path, monkeypatch, conn,
     assert state.latest_action("luma", "T2") == "auto_replied"
 
 
+def test_guidance_only_routes_draft_to_guidance(tmp_path, monkeypatch, conn, cfg):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    team = type("Team", (), {"name": "luma", "project": None})()
+    source = type("Source", (), {"type": "support_apps_script"})()
+    scfg = {"notify_destination": "cli:local", "notify_level": "guidance_only"}
+    email = EmailSummary("TG1", "u@example.com", "How do I export?", "")
+    transport = FakeTransport()
+    monkeypatch.setattr(cycle, "draft_decision", lambda *a, **k: cycle.DraftDecision(
+        reply="Use the export button.", risk="low", confidence=0.9))
+
+    result = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                 cycle.SupportResult())
+    conn.commit()
+
+    assert result.proposed == 1
+    assert state.latest_action("luma", "TG1") == "guidance_requested"
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM support_drafts WHERE thread_id='TG1'")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT payload->>'text' FROM actions ORDER BY created_at DESC LIMIT 1")
+        text = cur.fetchone()[0]
+    assert "Support needs you (luma)" in text
+    assert "OK to send?" in text
+
+
+def test_guidance_only_auto_reply_logs_instead_of_notifying(tmp_path, monkeypatch, conn, cfg):
+    monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
+    for idx in range(2):
+        g = state.register_guidance_request("luma", f"OLDA{idx}", "u@example.com",
+                                            "Export", "q", "reply", "thread")
+        state.resolve_guidance("luma", g.id, "Use export button.", status="sent")
+    team = type("Team", (), {"name": "luma", "project": None})()
+    source = type("Source", (), {"type": "support_apps_script"})()
+    scfg = {
+        "notify_destination": "cli:local",
+        "notify_level": "guidance_only",
+        "auto_send_low_risk": True,
+        "auto_send_min_guidance": 2,
+        "auto_send_confidence": 0.85,
+    }
+    email = EmailSummary("TG2", "u@example.com", "Simple question", "help")
+    transport = FakeTransport()
+    monkeypatch.setattr(cycle, "draft_decision", lambda *a, **k: cycle.DraftDecision(
+        reply="Use the export button.", risk="low", confidence=0.95))
+
+    result = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
+                                 cycle.SupportResult())
+    conn.commit()
+
+    assert result.sent == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE payload->>'text' LIKE '%auto-replied%'")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM alerts WHERE fingerprint LIKE 'support-auto-replied:%'")
+        assert cur.fetchone()[0] == 1
+
+
 def test_guidance_reply_learns_without_sending_by_default(tmp_path, monkeypatch, conn):
     monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
     cfg = _support_cfg(tmp_path)
