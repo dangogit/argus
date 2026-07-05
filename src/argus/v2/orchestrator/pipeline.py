@@ -509,6 +509,12 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
+        if _review_failure_superseded(conn, job.request_id, job.role):
+            log.info("request %s ignored stale %s failure after later review pass",
+                     job.request_id, job.role,
+                     extra={"team_id": job.team_id, "request_id": job.request_id,
+                            "job_id": job.id})
+            return
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
             reason,
@@ -804,6 +810,52 @@ def _memory_outcome_note(outcome: str, note: str) -> str:
 def _has_known_root_cause(text: str) -> bool:
     lowered = text.lower()
     return "root cause" in lowered and "no root cause" not in lowered
+
+
+def _review_failure_superseded(conn: psycopg.Connection, request_id: str,
+                               failed_role: str) -> bool:
+    """True when a failure callback is older than the latest review result."""
+    latest = _latest_review_outcomes(conn, request_id)
+    if latest.get("senior") == "approve":
+        return True
+    if failed_role == "qa" and latest.get("qa") == "pass":
+        return True
+    if failed_role == "browser_verify" and latest.get("browser_verify") in ("pass", "skipped"):
+        return True
+    if failed_role == "senior" and latest.get("senior") == "approve":
+        return True
+    return False
+
+
+def _latest_review_outcomes(conn: psycopg.Connection, request_id: str) -> dict[str, str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (role) role, result
+            FROM jobs
+            WHERE request_id=%s
+              AND kind='pipeline'
+              AND status='done'
+              AND role IN ('qa', 'browser_verify', 'senior')
+            ORDER BY role, updated_at DESC, created_at DESC
+            """,
+            (request_id,),
+        )
+        rows = cur.fetchall()
+    outcomes: dict[str, str] = {}
+    for role, result in rows:
+        parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
+        if role == "qa":
+            outcomes[role] = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
+        elif role == "browser_verify":
+            meta = (result or {}).get("browser_verify", {}) if isinstance(result, dict) else {}
+            if isinstance(meta, dict) and meta.get("skipped"):
+                outcomes[role] = "skipped"
+            else:
+                outcomes[role] = str(parsed.get("verdict") or "")
+        elif role == "senior":
+            outcomes[role] = str(parsed.get("decision") or "")
+    return outcomes
 
 
 def _parsed_failure_detail(parsed: dict) -> str:
