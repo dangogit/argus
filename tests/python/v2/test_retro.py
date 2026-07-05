@@ -184,6 +184,52 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_auto_changes_coalesce_equivalent_pm_requests(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[
+        {
+            "type": "process-edit",
+            "statement": "Coalesce equivalent PM requests before creating work",
+            "trigger": "duplicate dedupe lesson recurred from converse",
+            "evidence_run_ids": [
+                "converse:323e8971-0e4b-45b1-bd12-008792c37b75",
+                "retro-change:d7df5822819cb8dbfd991a36",
+                "retro-change:68f9851dcd434eb66af49543",
+            ],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "pm-coalescing",
+        },
+        {
+            "type": "process-edit",
+            "statement": "Coalesce equivalent PM requests before creating work",
+            "trigger": "retro dedupe lesson matched an existing gated item",
+            "evidence_run_ids": [
+                "retro-change:d7df5822819cb8dbfd991a36",
+                "converse:9ab5f8d6-de94-46a4-93b3-6bd577a1c6d6",
+                "d7df5822819cb8dbfd991a36",
+            ],
+            "confidence": 0.9,
+            "impact": 8,
+            "theme": "pm-coalescing",
+        },
+    ])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT count(DISTINCT payload->>'auto_request_id') "
+            "FROM retro_backlog WHERE payload ? 'auto_request_id'"
+        )
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT payload->>'auto_coalesce_key' FROM events WHERE source='retro'")
+        assert cur.fetchone()[0]
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

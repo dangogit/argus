@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -668,12 +669,21 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
             continue
+        coalesce = _auto_coalesce_meta(statement, payload)
+        existing = _coalesced_auto_request(conn, target_team, coalesce)
+        if existing:
+            _mark_auto_queued(conn, item_id, existing, target_team)
+            continue
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
         event_id = events.ingest_message(
             conn, cfg, team=target_team, source="retro",
             dedup_key=fingerprint, text=text,
-            metadata={"retro_backlog_id": item_id, "retro_source_team": team_id},
+            metadata={
+                "retro_backlog_id": item_id,
+                "retro_source_team": team_id,
+                **coalesce,
+            },
         )
         request_id = pipeline.open_request(
             conn, cfg, event_id=event_id, team_id=target_team,
@@ -724,6 +734,56 @@ def _request_by_fingerprint(conn: psycopg.Connection, team_id: str,
         )
         row = cur.fetchone()
     return row[0] if row else None
+
+
+def _auto_coalesce_meta(statement: str, payload: dict) -> dict:
+    task = _normalize_auto_task(statement)
+    theme = _normalize_auto_task(str(payload.get("theme") or ""))
+    lineage = sorted(_evidence_ids(payload))
+    raw = json.dumps({
+        "task": task,
+        "theme": theme,
+        "lineage": lineage,
+    }, sort_keys=True, separators=(",", ":"))
+    return {
+        "auto_coalesce_key": hashlib.sha256(raw.encode()).hexdigest()[:24],
+        "auto_task_text": task,
+        "auto_theme": theme,
+        "auto_lineage": lineage,
+    }
+
+
+def _coalesced_auto_request(conn: psycopg.Connection, team_id: str,
+                            meta: dict) -> str | None:
+    lineage = set(meta.get("auto_lineage") or [])
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id::text, e.payload
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.team_id=%s
+              AND e.source='retro'
+              AND e.payload ? 'auto_coalesce_key'
+            ORDER BY r.created_at DESC
+            LIMIT 200
+            """,
+            (team_id,),
+        )
+        rows = cur.fetchall()
+    for request_id, payload in rows:
+        payload = payload or {}
+        if payload.get("auto_coalesce_key") == meta.get("auto_coalesce_key"):
+            return request_id
+        if (payload.get("auto_task_text") == meta.get("auto_task_text")
+                and payload.get("auto_theme") == meta.get("auto_theme")
+                and lineage.intersection(set(payload.get("auto_lineage") or []))):
+            return request_id
+    return None
+
+
+def _normalize_auto_task(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
 def _mark_auto_queued(conn: psycopg.Connection, item_id: str, request_id: str,
