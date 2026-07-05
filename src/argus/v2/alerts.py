@@ -45,6 +45,7 @@ def record(
     cooldown_seconds: int = 0,
 ) -> str | None:
     severity = _severity(severity)
+    severity = _escalate_disk_low_severity(conn, severity, project, fingerprint)
     resolved_channel = _channel(channel or channel_for_severity(severity))
     if cooldown_seconds > 0 and _recent_alert(
         conn, project, fingerprint, resolved_channel, cooldown_seconds
@@ -67,6 +68,28 @@ def record(
             ),
         )
         return str(cur.fetchone()[0])
+
+
+def _escalate_disk_low_severity(
+    conn: psycopg.Connection,
+    severity: str,
+    project: str,
+    fingerprint: str,
+) -> str:
+    if severity != "warn" or not str(fingerprint).startswith("disk:low:"):
+        return severity
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM alerts
+            WHERE project=%s AND fingerprint=%s
+              AND ts >= date_trunc('day', now())
+            """,
+            (str(project), str(fingerprint)),
+        )
+        prior_today = int(cur.fetchone()[0])
+    return "error" if prior_today >= 3 else severity
 
 
 def _recent_alert(
