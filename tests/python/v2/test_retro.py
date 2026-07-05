@@ -227,6 +227,58 @@ def test_auto_changes_reuse_equivalent_converse_request_from_evidence(conn, tmp_
     assert auto_request_id == existing
 
 
+def test_auto_changes_reuse_low_disk_converse_request_without_exact_evidence(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    converse_fp = "converse:cb8313d2-be1f-4fd4-9098-805913ebd9f2"
+    eid = events.ingest_message(
+        conn, cfg, team="dev", source="whatsapp", dedup_key=converse_fp,
+        text=("Implement minimal internal dedupe for same-fingerprint low-disk "
+              "WhatsApp notifications within a short send window."),
+    )
+    existing = pipeline.open_request(
+        conn, cfg, event_id=eid, team_id="dev", conversation_id=None,
+        fingerprint=converse_fp,
+    )
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": ("Collapse equivalent low-disk converse and retro-change "
+                      "items before launching PM runs or opening draft PRs."),
+        "trigger": ("The same low-disk escalation and dedupe work appeared "
+                    "under both converse and retro-change fingerprints."),
+        "evidence_run_ids": [
+            "retro-change:c51c0b6f0cc7d63c7a564594",
+            "c51c0b6f0cc7d63c7a564594",
+            "2851e16d8281fc8ab7c28e49",
+        ],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "low-disk-dedupe",
+    }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        retro_requests = cur.fetchone()[0]
+        cur.execute(
+            "SELECT payload->>'auto_request_id' FROM retro_backlog "
+            "WHERE type='process-edit'"
+        )
+        auto_request_id = cur.fetchone()[0]
+    assert retro_requests == 0
+    assert auto_request_id == existing
+
+
+def test_auto_change_equivalence_key_is_limited_to_low_disk_process_changes():
+    assert retro._auto_change_equivalence_key(
+        "Collapse equivalent low-disk converse and retro-change items",
+        "before launching PM runs",
+        {},
+    ) == "low-disk-process-change"
+    assert retro._auto_change_equivalence_key("Fix low-disk alert text", "", {}) is None
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

@@ -667,6 +667,9 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         existing = _request_by_fingerprint(conn, target_team, fingerprint)
         if not existing:
             existing = _request_by_evidence_fingerprint(conn, target_team, payload)
+        if not existing:
+            existing = _request_by_equivalent_auto_change(
+                conn, target_team, statement=statement, trigger=trigger, payload=payload)
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
             continue
@@ -751,6 +754,55 @@ def _request_by_evidence_fingerprint(conn: psycopg.Connection, team_id: str,
         )
         row = cur.fetchone()
     return row[0] if row else None
+
+
+def _request_by_equivalent_auto_change(conn: psycopg.Connection, team_id: str, *,
+                                       statement: str, trigger: str,
+                                       payload: dict) -> str | None:
+    key = _auto_change_equivalence_key(statement, trigger, payload)
+    if not key:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id::text, r.fingerprint,
+                   COALESCE(e.payload->>'text', e.payload->>'message', '')
+            FROM requests r
+            LEFT JOIN events e ON e.id=r.event_id
+            WHERE r.team_id=%s
+              AND (r.fingerprint LIKE 'converse:%%'
+                   OR r.fingerprint LIKE 'retro-change:%%')
+              AND r.updated_at >= clock_timestamp() - interval '1 day'
+            ORDER BY r.updated_at DESC
+            LIMIT 25
+            """,
+            (team_id,),
+        )
+        rows = cur.fetchall()
+    for request_id, fingerprint, text in rows:
+        if _auto_change_equivalence_key(str(text or ""), str(fingerprint or ""), {}) == key:
+            return request_id
+    return None
+
+
+def _auto_change_equivalence_key(statement: str, trigger: str,
+                                 payload: dict) -> str | None:
+    text = " ".join([
+        str(statement or ""),
+        str(trigger or ""),
+        json.dumps(payload or {}, sort_keys=True, default=str),
+    ]).lower()
+    compact = text.replace("_", "-")
+    has_low_disk = ("low-disk" in compact or "low disk" in compact
+                    or "disk:low" in compact)
+    if not has_low_disk:
+        return None
+    has_process_source = "converse" in compact or "retro-change" in compact
+    has_pm_process = ("pm run" in compact or "pm request" in compact
+                      or "draft pr" in compact or "auto-change" in compact)
+    if has_process_source or has_pm_process:
+        return "low-disk-process-change"
+    return None
 
 
 def _mark_auto_queued(conn: psycopg.Connection, item_id: str, request_id: str,
