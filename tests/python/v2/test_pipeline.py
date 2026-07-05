@@ -406,8 +406,50 @@ def test_checks_summary_does_not_invent_senior_approval(conn, cfg):
     checks = pipeline._checks_summary(conn, rid)
 
     assert "Browser: skipped (no UI files changed)" in checks
-    assert "Senior: no decision" in checks
+    assert "Senior: no decision (Failure classification: unknown)" in checks
     assert "Senior: approve" not in checks
+
+
+def test_checks_summary_classifies_failed_checks(conn, cfg):
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="sum-failed-checks", text="fix thing")
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs "
+            "(request_id,event_id,team_id,kind,role,stage,status,result,idempotency_key) "
+            "VALUES (%s,%s,'dev','pipeline','qa',1,'done',%s,'qa-check'), "
+            "(%s,%s,'dev','pipeline','browser_verify',2,'done',%s,'bv-check'), "
+            "(%s,%s,'dev','pipeline','senior',3,'done',%s,'senior-check')",
+            (
+                rid, eid, Json({
+                    "parsed": {
+                        "verdict": "fail",
+                        "summary": "sandbox networking blocked local Postgres checks",
+                    },
+                }),
+                rid, eid, Json({
+                    "parsed": {
+                        "verdict": "fail",
+                        "reason": "stale deployment served old build",
+                    },
+                }),
+                rid, eid, Json({
+                    "parsed": {
+                        "decision": "changes",
+                        "summary": "superseded cancellation from newer run",
+                    },
+                }),
+            ),
+        )
+    conn.commit()
+
+    checks = pipeline._checks_summary(conn, rid)
+
+    assert "QA: fail (Failure classification: environment blocker)" in checks
+    assert "Browser: fail (Failure classification: stale status)" in checks
+    assert "Senior: changes (Failure classification: expected cancellation)" in checks
 
 
 def _developer_job(conn, rid, result: dict) -> Job:
@@ -691,7 +733,13 @@ def test_critical_diff_scan_blocks_open_pr(conn, cfg_project, monkeypatch, tmp_p
         cur.execute("SELECT count(*) FROM actions WHERE type='open_pr'")
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT payload->>'text' FROM actions WHERE type='notify'")
-        assert "Deterministic diff scan blocked PR" in cur.fetchone()[0]
+        text = cur.fetchone()[0]
+        assert "Failure classification: unknown." in text
+        assert "blocked by deterministic diff scan" in text
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        outcome, note = cur.fetchone()
+        assert outcome == "qa-fail"
+        assert note.startswith("Failure classification: unknown.")
 
 
 def test_recommends_fix_heuristic_no_false_positives():

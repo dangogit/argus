@@ -683,12 +683,14 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                 diff_text = ""
             scan = pm_scan.scan_diff(diff_text)
             if pm_scan.has_critical(scan):
+                reason = _classified_failure_note(
+                    f"blocked by deterministic diff scan: {pm_scan.format_findings(scan)}"
+                )
                 _record_memory_outcome(
                     conn, job.request_id, "qa-fail",
-                    f"blocked by deterministic diff scan: {pm_scan.format_findings(scan)}",
+                    reason,
                 )
-                _fail(conn, cfg, job.request_id,
-                      f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}")
+                _fail(conn, cfg, job.request_id, reason)
                 return
             pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd)
             _record_memory_outcome(conn, job.request_id, "qa-pass", pr_info["summary_short"])
@@ -744,12 +746,14 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
         diff_text = ""
     scan = pm_scan.scan_diff(diff_text)
     if pm_scan.has_critical(scan):
+        reason = _classified_failure_note(
+            f"blocked by deterministic diff scan: {pm_scan.format_findings(scan)}"
+        )
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
-            f"blocked by deterministic diff scan: {pm_scan.format_findings(scan)}",
+            reason,
         )
-        _fail(conn, cfg, job.request_id,
-              f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}")
+        _fail(conn, cfg, job.request_id, reason)
         return True
 
     failure_label = "QA failed" if job.role == "qa" else f"{job.role} failed"
@@ -955,19 +959,32 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
             part = f"QA: {verdict}"
+            if verdict != "pass":
+                part = _classified_check_part(part, parsed)
         elif role == "browser_verify":
             meta = (result or {}).get("browser_verify", {}) if isinstance(result, dict) else {}
             if isinstance(meta, dict) and meta.get("skipped"):
                 part = "Browser: skipped (no UI files changed)"
             else:
-                part = f"Browser: {parsed.get('verdict') or 'skip'}"
+                verdict = parsed.get("verdict") or "skip"
+                part = f"Browser: {verdict}"
+                if verdict == "fail":
+                    part = _classified_check_part(part, parsed)
         elif role == "senior":
-            part = f"Senior: {parsed.get('decision') or 'no decision'}"
+            decision = parsed.get("decision") or "no decision"
+            part = f"Senior: {decision}"
+            if decision != "approve":
+                part = _classified_check_part(part, parsed)
         if part:
             if role not in parts:
                 order.append(role)
             parts[role] = part
     return "; ".join(parts[role] for role in order) or "QA and senior approved"
+
+
+def _classified_check_part(part: str, parsed: dict) -> str:
+    detail = _parsed_failure_detail(parsed)
+    return f"{part} (Failure classification: {_failure_classification(detail)})"
 
 
 def _changed_files(cwd: str) -> list[str]:
