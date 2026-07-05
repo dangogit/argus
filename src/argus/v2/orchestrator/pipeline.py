@@ -43,6 +43,19 @@ _PIPELINE_CHECKPOINTS = (
     "and remaining work."
 )
 
+_FAILURE_CLASSIFICATION_CHECKPOINTS = (
+    "\n\nFAILURE CLASSIFICATION:\n"
+    "- Before emitting qa-fail, senior-failed, or a draft PR risk summary, classify "
+    "the failure as exactly one of: code regression, environment blocker, "
+    "expected cancellation, stale status, unknown.\n"
+    "- Treat sandbox-blocked networking, local Postgres, PyPI, localhost, HTTP "
+    "403 access, and token 401/auth failures as environment blocker.\n"
+    "- Treat stale deployments or stale run/status data as stale status.\n"
+    "- Treat superseded or intentionally cancelled work as expected cancellation.\n"
+    "- Only use code regression when the latest QA/senior evidence points to a "
+    "defect in the proposed code change."
+)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -210,7 +223,7 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
                 "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, role_name, role.skills, text)
-    _add_pipeline_checkpoints(snapshot)
+    _add_pipeline_checkpoints(snapshot, role_name)
     _add_prompt_hash(snapshot)
     proj = team.project
     if proj is not None and getattr(proj, "allow_code_mode", False) \
@@ -509,6 +522,7 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
+        reason = _classified_failure_note(reason)
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
             reason,
@@ -795,15 +809,54 @@ def _memory_outcome_note(outcome: str, note: str) -> str:
             return f"Next repair action: address the known root cause. Evidence: {note}"
         return f"Next repair action: none, no code change warranted. Evidence: {note}"
     if outcome == "qa-fail" and _has_known_root_cause(note):
+        note = _classified_failure_note(note)
         if "Blocking issue:" in note or "Next repair action:" in note:
             return note
         return f"Next repair action: address the review failure root cause. Evidence: {note}"
+    if outcome == "qa-fail":
+        return _classified_failure_note(note)
     return note
 
 
 def _has_known_root_cause(text: str) -> bool:
     lowered = text.lower()
     return "root cause" in lowered and "no root cause" not in lowered
+
+
+def _classified_failure_note(note: str) -> str:
+    if "Failure classification:" in note:
+        return note
+    return f"Failure classification: {_failure_classification(note)}. {note}"
+
+
+def _failure_classification(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in (
+        "superseded", "expected cancellation", "expected cancelled",
+        "intentionally cancelled", "intentionally canceled", "canceled by",
+        "cancelled by", "newer run replaced", "newer request replaced",
+    )):
+        return "expected cancellation"
+    if any(marker in lowered for marker in (
+        "stale deployment", "stale deploy", "stale status", "stale run",
+        "old deployment", "outdated deployment", "deployment is stale",
+    )):
+        return "stale status"
+    if any(marker in lowered for marker in (
+        "sandbox", "networking", "network access", "blocked network",
+        "postgres", "pg_isready", "pypi", "localhost", "127.0.0.1",
+        "http 403", "403 forbidden", "forbidden", "http 401", "401 unauthorized",
+        "unauthorized", "token 401", "auth token", "permission denied",
+        "access denied", "no access",
+    )):
+        return "environment blocker"
+    if any(marker in lowered for marker in (
+        "regression", "broken by this change", "introduced by this change",
+        "failing assertion", "test failure", "tests failed", "lint failed",
+        "typecheck failed", "build failed",
+    )):
+        return "code regression"
+    return "unknown"
 
 
 def _parsed_failure_detail(parsed: dict) -> str:
@@ -1171,8 +1224,11 @@ def _add_prompt_hash(snapshot: dict) -> None:
     snapshot["prompt_hash"] = hashlib.sha256(assembled.encode()).hexdigest()[:12]
 
 
-def _add_pipeline_checkpoints(snapshot: dict) -> None:
-    snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
+def _add_pipeline_checkpoints(snapshot: dict, role_name: str | None = None) -> None:
+    checkpoints = _PIPELINE_CHECKPOINTS
+    if role_name in ("qa", "senior", "browser_verify"):
+        checkpoints += _FAILURE_CLASSIFICATION_CHECKPOINTS
+    snapshot["checkpoints"] = checkpoints
 
 
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:

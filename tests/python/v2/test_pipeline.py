@@ -65,6 +65,19 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "external side effects" in snap["checkpoints"]
 
 
+def test_enqueue_stage_adds_failure_classification_for_judges(conn, cfg):
+    eid = _event(conn, cfg); conn.commit()
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    pipeline.enqueue_stage(conn, cfg, request_id=rid, stage_index=1)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT exec_snapshot FROM jobs WHERE request_id=%s AND role='qa'", (rid,))
+        snap = cur.fetchone()[0]
+    assert "FAILURE CLASSIFICATION:" in snap["checkpoints"]
+    assert "code regression, environment blocker, expected cancellation" in snap["checkpoints"]
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
@@ -519,7 +532,8 @@ def test_memory_outcome_note_requires_repair_action_for_known_root_cause_failure
     )
 
     assert note.startswith("Next repair action: address the review failure root cause.")
-    assert "Evidence: Senior review rejected it." in note
+    assert "Evidence: Failure classification: unknown." in note
+    assert "Senior review rejected it." in note
 
 
 def test_memory_outcome_note_requires_repair_action_for_known_root_cause_no_change():
@@ -539,7 +553,26 @@ def test_memory_outcome_note_preserves_existing_blocking_marker_for_known_root_c
     )
 
     assert note == (
-        "senior did not pass. Blocking issue: Root cause still present in checkout.py."
+        "Failure classification: unknown. senior did not pass. Blocking issue: "
+        "Root cause still present in checkout.py."
+    )
+
+
+def test_failure_classification_covers_recent_blocker_patterns():
+    assert pipeline._failure_classification(
+        "sandbox networking blocked local Postgres localhost and PyPI checks"
+    ) == "environment blocker"
+    assert pipeline._failure_classification("HTTP 403 Forbidden from preview") == (
+        "environment blocker"
+    )
+    assert pipeline._failure_classification("token 401 from connector auth") == (
+        "environment blocker"
+    )
+    assert pipeline._failure_classification("stale deployment served old build") == (
+        "stale status"
+    )
+    assert pipeline._failure_classification("superseded cancellation from newer run") == (
+        "expected cancellation"
     )
 
 
