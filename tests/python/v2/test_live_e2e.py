@@ -156,4 +156,4 @@ def test_message_drives_dev_qa_senior_then_opens_ready_pr(
     with conn.cursor() as cur:
         cur.execute("SELECT payload->>'text' FROM actions WHERE type='notify'")
         notices = [row[0] for row in cur.fetchall()]
-    assert any("PR ready:" in text for text in notices)
+    assert any("New bug report:" in text and "PR:" in text for text in notices)

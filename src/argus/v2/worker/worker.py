@@ -3,9 +3,11 @@ fencing token. The caller drives the loop (CLI `up`)."""
 from __future__ import annotations
 
 import logging
+import json
 import os
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Event, Thread
 from urllib.parse import urlparse
 
@@ -440,14 +442,23 @@ def _run_browser_verify(job, project, workdir):
                 build_timeout_seconds=bv.firebase_build_timeout_seconds,
             )
         else:
-            token = os.environ.get(bv.vercel_token_env, "")
             workspace.push(project, branch, workdir)
-            url = discover_preview_url(
-                project_id=bv.vercel_project_id, branch=branch, token=token,
-                team_id=bv.vercel_team_id,
-                build_timeout_seconds=bv.build_timeout_seconds,
-                poll_interval_seconds=bv.poll_interval_seconds,
-            )
+            last_exc = None
+            for token in _vercel_token_candidates(bv.vercel_token_env):
+                try:
+                    url = discover_preview_url(
+                        project_id=bv.vercel_project_id, branch=branch, token=token,
+                        team_id=bv.vercel_team_id,
+                        build_timeout_seconds=bv.build_timeout_seconds,
+                        poll_interval_seconds=bv.poll_interval_seconds,
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if not _preview_auth_error(exc):
+                        raise
+            else:
+                raise last_exc or PreviewError("no vercel token available")
         allowed = [h for h in [urlparse(url).hostname, bv.api_host] if h]
         bv_model = bv.hermes_model if bv.backend == "hermes" else bv.browser_model
         res = run_browser_check(
@@ -461,3 +472,39 @@ def _run_browser_verify(job, project, workdir):
         return _bv_result("fail", f"preview unavailable: {exc}", prompt=summary)
     except Exception as exc:  # noqa: BLE001 - fail-closed
         return _bv_result("fail", f"browser verify error: {exc}", prompt=summary)
+
+
+def _vercel_token_candidates(env_name: str):
+    seen: set[str] = set()
+    for token in (os.environ.get(env_name, ""), _vercel_auth_file_token()):
+        if token and token not in seen:
+            seen.add(token)
+            yield token
+    if not seen:
+        yield ""
+
+
+def _vercel_auth_file_token() -> str:
+    paths = []
+    if os.environ.get("VERCEL_AUTH_FILE"):
+        paths.append(Path(os.environ["VERCEL_AUTH_FILE"]).expanduser())
+    paths.append(Path.home() / ".vercel" / "auth.json")
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        token = data.get("token") or data.get("authToken")
+        if token:
+            return str(token)
+    return ""
+
+
+def _preview_auth_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "403" in text
+        or "forbidden" in text
+        or "not authorized" in text
+        or "invalidtoken" in text
+    )
