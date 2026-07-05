@@ -13,6 +13,13 @@ from argus.v2.context import budget as ctx_budget
 DEFAULT_TOKEN_BUDGET = 12000
 
 
+def _default_token_budget() -> int:
+    try:
+        return int(os.environ.get("ARGUS_CONTEXT_TOKEN_BUDGET", ""))
+    except ValueError:
+        return DEFAULT_TOKEN_BUDGET
+
+
 @dataclass
 class ContextBundle:
     recent_messages: list = field(default_factory=list)  # [(received_at, text)]
@@ -61,5 +68,5 @@ def assemble(conn, *, team_id, conversation_id, now: datetime,
     bundle = ContextBundle(recent_messages=msgs, summaries=list(reversed(summaries)),
                            knowledge=know)
     if token_budget is None:
-        token_budget = int(os.environ.get("ARGUS_CONTEXT_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET))
+        token_budget = _default_token_budget()
     return ctx_budget.fit_to_budget(bundle, token_budget)

@@ -95,3 +95,12 @@ def test_assemble_default_budget_is_noop_for_small_context(conn, cfg):
     bundle = assemble(conn, team_id="dev", conversation_id=None,
                       now=datetime.now(timezone.utc))
     assert len(bundle.recent_messages) == 1
+
+
+def test_assemble_invalid_env_budget_falls_back(monkeypatch, conn, cfg):
+    monkeypatch.setenv("ARGUS_CONTEXT_TOKEN_BUDGET", "not-a-number")
+    events.ingest_message(conn, cfg, team="dev", source="cli", dedup_key="m1", text="hello team")
+    conn.commit()
+    bundle = assemble(conn, team_id="dev", conversation_id=None,
+                      now=datetime.now(timezone.utc))
+    assert len(bundle.recent_messages) == 1
