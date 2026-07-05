@@ -51,6 +51,7 @@ def test_alert_record_escalates_same_day_low_disk_after_third_occurrence(conn):
         payload={"evidence_fingerprint": LOW_DISK_ESCALATION_EVIDENCE[3]},
     )
     conn.commit()
+
     alerts.record(
         conn,
         severity="warn",
@@ -76,6 +77,9 @@ def test_alert_record_escalates_same_day_low_disk_after_third_occurrence(conn):
         "warn",
         "error",
     ]
+    assert [row.payload["evidence_fingerprint"] for row in reversed(rows)] == (
+        LOW_DISK_ESCALATION_EVIDENCE[:4]
+    )
     assert other[0].severity == "warn"
 
 
