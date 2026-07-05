@@ -257,7 +257,7 @@ def test_notify_findings_dedupes_low_disk_send_window(conn, tmp_path, monkeypatc
     cfg = loader.load(path)
     finding = system_health.Finding(
         severity="warn",
-        fingerprint="disk:low:2851e16d8281",
+        fingerprint="disk:low:2851e16d8281fc8ab7c28e49",
         message="low disk space under /tmp: 1.0 GB free",
         payload={
             "path": "/tmp",
@@ -279,7 +279,46 @@ def test_notify_findings_dedupes_low_disk_send_window(conn, tmp_path, monkeypatc
         )
         count, key = cur.fetchone()
     assert count == 1
-    assert "disk:low:2851e16d8281" in key
+    assert "disk:low:2851e16d8281fc8ab7c28e49" in key
+
+
+def test_low_disk_notification_key_uses_send_window_bucket():
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, _sql, _params):
+            return None
+
+        def fetchone(self):
+            return (12345,)
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:2851e16d8281fc8ab7c28e49",
+        message="low disk space under /tmp: 1.0 GB free",
+        payload={
+            "updated_at": "converse:cb8313d2-be1f-4fd4-9098-805913ebd9f2",
+        },
+    )
+
+    key = system_health._notification_idempotency_key(
+        Conn(),
+        alert_id="ignored",
+        findings=[finding],
+    )
+
+    assert key == (
+        "system_health:disk-low:disk:low:2851e16d8281fc8ab7c28e49:"
+        "900:12345"
+    )
 
 
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
