@@ -68,6 +68,49 @@ def test_scan_flags_unsafe_candidate_text():
     assert retro.scan("Prefer smaller focused diffs") == []
 
 
+def test_auto_change_text_adds_live_readiness_instruction():
+    text = retro._auto_change_text(
+        team_id=retro.COMPANY_TEAM_ID,
+        typ="process-edit",
+        statement=(
+            "Require live-readiness proof before dispatching content publish, "
+            "CTA, schedule, connector, or approval-dependent work."
+        ),
+        trigger=(
+            "Repeated blockers around approval proof, durable media, CTA routes, "
+            "DM activation, Metricool targets, and connector auth."
+        ),
+        payload={
+            "evidence_run_ids": [
+                "converse:3c950163-6013-40c9-b877-9778275ebcfa",
+                "retro-change:681031979c634573e43a8d97",
+                "converse:b52f4367-79e1-4f8b-afbd-1de1611f76f0",
+                "content-approval:pr:1:cta:1783096672.050329",
+                "retro-change:67aa9f7f0aae5c32ce5a528d",
+                "content-approval:pr:2:publish:1783099493.667819",
+                "retro-change:0702b4faf58e62258776c453",
+            ],
+            "theme": "live-readiness",
+        },
+    )
+
+    assert "Before dispatching content publish, CTA, schedule, connector" in text
+    assert "approval proof, durable media, CTA route, DM activation" in text
+    assert "Metricool target, and connector auth" in text
+
+
+def test_auto_change_text_does_not_add_live_readiness_for_plain_approval():
+    text = retro._auto_change_text(
+        team_id=retro.COMPANY_TEAM_ID,
+        typ="process-edit",
+        statement="Require approval before changing reviewer prompts.",
+        trigger="Reviewer prompt edits need owner approval.",
+        payload={"evidence_run_ids": ["a", "b", "c"], "theme": "prompt-review"},
+    )
+
+    assert "live-readiness proof" not in text
+
+
 def test_synthesize_and_bridge_only_gated_lessons(conn):
     retro.record(conn, team_id="dev", retro_day=date(2026, 6, 18), candidates=[
         {"type": "lesson", "statement": "Run focused tests before PR", "trigger": "qa fail",
@@ -182,6 +225,41 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert rows and len(rows) == 1
     assert rows[0][0] == "dev"
     assert event_count == 1
+
+
+def test_company_auto_change_live_work_requires_readiness_proof(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": (
+            "Require live-readiness proof before dispatching content publish, "
+            "CTA, schedule, connector, or approval-dependent work."
+        ),
+        "trigger": (
+            "Repeated blockers around approval proof, durable media, CTA routes, "
+            "DM activation, Metricool targets, and connector auth."
+        ),
+        "evidence_run_ids": [
+            "converse:3c950163-6013-40c9-b877-9778275ebcfa",
+            "retro-change:681031979c634573e43a8d97",
+            "converse:b52f4367-79e1-4f8b-afbd-1de1611f76f0",
+            "content-approval:pr:1:cta:1783096672.050329",
+        ],
+        "source_team_ids": ["argus", "content"],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "live-readiness",
+    }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT text FROM events WHERE source='retro'")
+        text = cur.fetchone()[0]
+    assert "Before dispatching content publish, CTA, schedule, connector" in text
+    assert "approval proof, durable media, CTA route, DM activation" in text
+    assert "Metricool target, and connector auth" in text
 
 
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
