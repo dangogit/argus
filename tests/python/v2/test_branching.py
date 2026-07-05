@@ -118,8 +118,10 @@ def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, t
         payload = cur.fetchone()[0]
         assert payload["draft"] is True
         assert payload["changed_files"] == ["src/email.ts"]
-        assert payload["checks"] == "QA: fail"
+        assert "QA: fail" in payload["checks"]
+        assert "Failure classification: unknown" in payload["checks"]
         assert "needs review" in payload["risk_summary"]
+        assert "failure classification: unknown" in payload["risk_summary"]
         assert "QA failed" in payload["body"]
 
 
