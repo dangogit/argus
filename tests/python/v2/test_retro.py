@@ -184,6 +184,49 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def test_auto_changes_reuse_equivalent_converse_request_from_evidence(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    converse_fp = "converse:9d11d34a-f49a-4077-947e-a1f1e7cea462"
+    eid = events.ingest_message(
+        conn, cfg, team="dev", source="whatsapp", dedup_key=converse_fp,
+        text=("Implement a minimal Argus process guard that normalizes and "
+              "collapses equivalent low-disk retro-change and converse items."),
+    )
+    existing = pipeline.open_request(
+        conn, cfg, event_id=eid, team_id="dev", conversation_id=None,
+        fingerprint=converse_fp,
+    )
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": ("Collapse equivalent low-disk converse and retro-change "
+                      "items before launching PM runs or opening draft PRs."),
+        "trigger": ("The same low-disk escalation and dedupe work appeared "
+                    "under both converse and retro-change fingerprints."),
+        "evidence_run_ids": [
+            "retro-change:c51c0b6f0cc7d63c7a564594",
+            converse_fp,
+            "c51c0b6f0cc7d63c7a564594",
+        ],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "low-disk-dedupe",
+    }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        retro_requests = cur.fetchone()[0]
+        cur.execute(
+            "SELECT payload->>'auto_request_id' FROM retro_backlog "
+            "WHERE type='process-edit'"
+        )
+        auto_request_id = cur.fetchone()[0]
+    assert retro_requests == 0
+    assert auto_request_id == existing
+
+
 def test_unsafe_auto_change_is_quarantined_and_not_enqueued(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

@@ -665,6 +665,8 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
             continue
         fingerprint = f"retro-change:{item_id}"
         existing = _request_by_fingerprint(conn, target_team, fingerprint)
+        if not existing:
+            existing = _request_by_evidence_fingerprint(conn, target_team, payload)
         if existing:
             _mark_auto_queued(conn, item_id, existing, target_team)
             continue
@@ -721,6 +723,31 @@ def _request_by_fingerprint(conn: psycopg.Connection, team_id: str,
         cur.execute(
             "SELECT id::text FROM requests WHERE team_id=%s AND fingerprint=%s LIMIT 1",
             (team_id, fingerprint),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _request_by_evidence_fingerprint(conn: psycopg.Connection, team_id: str,
+                                     payload: dict) -> str | None:
+    fingerprints = sorted(
+        fp for fp in _evidence_ids(payload)
+        if fp.startswith("converse:") or fp.startswith("retro-change:")
+    )
+    if not fingerprints:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text
+            FROM requests
+            WHERE team_id=%s
+              AND fingerprint=ANY(%s)
+              AND updated_at >= clock_timestamp() - interval '1 day'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (team_id, fingerprints),
         )
         row = cur.fetchone()
     return row[0] if row else None
