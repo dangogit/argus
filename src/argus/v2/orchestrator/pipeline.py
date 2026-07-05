@@ -509,19 +509,17 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
-        reconciled = _reconcile_failure_outcome(conn, team, job.request_id, reason)
+        reconciled = _record_memory_outcome(
+            conn, job.request_id, "qa-fail", reason,
+            team=team, reconcile_review_status=True,
+        )
         if reconciled[0] != "qa-fail":
-            _record_memory_outcome(conn, job.request_id, reconciled[0], reconciled[1])
             if reconciled[0] == "qa-pass":
                 with conn.cursor() as cur:
                     cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                                 (job.request_id,))
                 status.set_status(conn, job.event_id, status.DONE)
                 return
-        _record_memory_outcome(
-            conn, job.request_id, reconciled[0],
-            reconciled[1],
-        )
         if _open_draft_pr_after_failure(conn, cfg, job, reconciled[1]):
             return
         _fail(conn, cfg, job.request_id, reconciled[1])
@@ -828,13 +826,17 @@ def _latest_judge_statuses(conn: psycopg.Connection, request_id: str) -> dict[st
 
 
 def _record_memory_outcome(conn: psycopg.Connection, request_id: str,
-                           outcome: str, note: str) -> None:
+                           outcome: str, note: str, *, team=None,
+                           reconcile_review_status: bool = False) -> tuple[str, str]:
+    if outcome == "qa-fail" and reconcile_review_status and team is not None:
+        outcome, note = _reconcile_failure_outcome(conn, team, request_id, note)
     try:
         pm_memory.record_request_outcome(conn, request_id=request_id,
                                          outcome=outcome,
                                          note=_memory_outcome_note(outcome, note))
     except Exception:
         pass
+    return outcome, note
 
 
 def _memory_outcome_note(outcome: str, note: str) -> str:

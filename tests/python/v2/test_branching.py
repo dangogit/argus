@@ -1,3 +1,5 @@
+from psycopg.types.json import Json
+
 from argus.v2.orchestrator import pipeline
 from argus.v2.ingress import events
 from argus.v2.pm import memory as pm_memory
@@ -131,6 +133,94 @@ def test_stale_senior_reject_reconciles_against_latest_passes(conn, cfg_project)
         outcome, note = cur.fetchone()
     assert outcome == "qa-pass"
     assert note == "Latest QA passed and latest senior approved."
+
+
+def test_review_memory_recording_reconciles_stale_qa_fail(conn, cfg_project):
+    rid = _open(
+        conn,
+        cfg_project,
+        text="retro-change b1a990d7 converse b25a21be reconcile status",
+    )
+    conn.commit()
+
+    _finish_stage(conn, "developer", {"parsed": {}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+    _finish_stage(conn, "senior", {"parsed": {"decision": "approve"}})
+
+    outcome, note = pipeline._record_memory_outcome(
+        conn,
+        rid,
+        "qa-fail",
+        "stale converse evidence recorded qa-fail after latest approval",
+        team=cfg_project.team("dev"),
+        reconcile_review_status=True,
+    )
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        recorded = cur.fetchone()
+
+    assert (outcome, note) == ("qa-pass", "Latest QA passed and latest senior approved.")
+    assert recorded == ("qa-pass", "Latest QA passed and latest senior approved.")
+
+
+def test_failure_draft_pr_risk_reconciles_stale_status(conn, cfg_project, monkeypatch, tmp_path):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(
+        conn,
+        cfg_project,
+        text="retro-change b1a990d7 converse b25a21be stale PR risk",
+    )
+    conn.commit()
+
+    monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
+    monkeypatch.setattr(workspace, "diff", lambda project, cwd: "+fixed\n")
+    monkeypatch.setattr(pipeline, "_changed_files", lambda cwd: ["src/status.py"])
+
+    _finish_stage(conn, "developer", {"has_diff": True, "parsed": {}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+    stale_senior = _finish_stage(conn, "senior", {
+        "parsed": {"decision": "reject", "reason": "stale status"}
+    })
+    with conn.cursor() as cur:
+        cur.execute("SELECT event_id FROM requests WHERE id=%s", (rid,))
+        event_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO jobs
+              (request_id, event_id, team_id, role, stage, kind, status,
+               idempotency_key, result, updated_at)
+            VALUES
+              (%s,%s,'dev','senior',2,'pipeline','done',
+               'fresh-senior-approve-for-risk',%s,clock_timestamp())
+            """,
+            (rid, event_id, Json({"parsed": {"decision": "approve"}})),
+        )
+    conn.commit()
+
+    assert pipeline._open_draft_pr_after_failure(
+        conn,
+        cfg_project,
+        _reload(conn, stale_senior.id),
+        "stale converse evidence recorded qa-fail after latest approval",
+    )
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE team_id='dev'")
+        assert cur.fetchone() == (
+            "qa-pass",
+            "Latest QA passed and latest senior approved.",
+        )
+        cur.execute("SELECT count(*) FROM actions WHERE type='open_pr'")
+        assert cur.fetchone()[0] == 0
 
 
 def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, tmp_path):
