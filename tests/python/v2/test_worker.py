@@ -2,9 +2,12 @@ import subprocess
 import time
 from threading import Event
 
+import pytest
+
 from argus.v2.queue import jobs
 from argus.v2.ingress import events
 from argus.v2.config import loader
+from argus.v2.orchestrator import pipeline
 from argus.v2.pm import memory as pm_memory
 from argus.v2.queue.models import RunRecord
 from argus.v2.worker import worker
@@ -289,6 +292,113 @@ def test_worker_injects_project_memory_into_builder(conn, tmp_path, monkeypatch)
         cur.execute("SELECT result FROM jobs WHERE idempotency_key='builder-memory'")
         result = cur.fetchone()[0]
     assert result["memory_fingerprints"] == ["prior"]
+
+
+@pytest.mark.parametrize(
+    ("fingerprint", "text"),
+    [
+        (
+            "content-approval:slug:launch:publish:1",
+            "Daniel approved one content live action.\nApproved action: publish",
+        ),
+        (
+            "content-approval:slug:launch:cta:1",
+            "Daniel approved one content live action.\nApproved action: cta",
+        ),
+        (
+            "content-approval:slug:launch:schedule:1",
+            "Daniel approved one content live action.\nApproved action: schedule",
+        ),
+        (
+            "content-approval:slug:launch:connector:1",
+            "Daniel approved one content live action.\nApproved action: connector",
+        ),
+    ],
+)
+def test_worker_requires_readiness_proof_for_live_content_requests(
+        conn, tmp_path, monkeypatch, fingerprint, text):
+    cfg_path = tmp_path / "argus.yaml"
+    cfg_path.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n  - name: content\n"
+        f"    project: {{ repo: {tmp_path}, base_branch: main }}\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(cfg_path)
+    eid = events.ingest_signal(
+        conn, cfg, team="content", source="pm:content-approval-watch",
+        fingerprint=fingerprint, payload={"text": text},
+    )
+    pipeline.open_request(conn, cfg, event_id=eid, team_id="content",
+                          conversation_id=None, fingerprint=fingerprint)
+    conn.commit()
+
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree(str(tmp_path), "b", str(tmp_path)))
+    monkeypatch.setattr(worker.workspace, "commit_all", lambda path, message: True)
+    monkeypatch.setattr(worker.workspace, "diff", lambda project, path: "diff")
+    seen = {}
+
+    def fake_run_job(cfg, job, context, workdir):
+        seen["context"] = context
+        return (
+            RunRecord(role=job.role, engine="echo", status="ok",
+                      output='ARGUS_RESULT: {"ready": false}'),
+            {},
+            [],
+        )
+
+    monkeypatch.setattr(worker.job_exec, "run_job", fake_run_job)
+
+    assert worker.run_once(cfg, "w1") is True
+    assert "Live content readiness proof required:" in seen["context"]
+    assert "approval proof, durable media, CTA route, DM activation, Metricool target, and connector auth" in seen["context"]
+    assert "do not perform live work" in seen["context"]
+
+
+def test_worker_does_not_require_live_readiness_for_content_draft(
+        conn, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "argus.yaml"
+    cfg_path.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "teams:\n  - name: content\n"
+        f"    project: {{ repo: {tmp_path}, base_branch: main }}\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(cfg_path)
+    eid = events.ingest_signal(
+        conn, cfg, team="content", source="pm:content-approval-watch",
+        fingerprint="content-approval:slug:launch:draft:1",
+        payload={"text": "Daniel approved one content draft action.\nApproved action: draft"},
+    )
+    pipeline.open_request(conn, cfg, event_id=eid, team_id="content",
+                          conversation_id=None,
+                          fingerprint="content-approval:slug:launch:draft:1")
+    conn.commit()
+
+    monkeypatch.setattr(worker.workspace, "create_worktree",
+                        lambda project, request_id: Worktree(str(tmp_path), "b", str(tmp_path)))
+    monkeypatch.setattr(worker.workspace, "commit_all", lambda path, message: True)
+    monkeypatch.setattr(worker.workspace, "diff", lambda project, path: "diff")
+    seen = {}
+
+    def fake_run_job(cfg, job, context, workdir):
+        seen["context"] = context
+        return (
+            RunRecord(role=job.role, engine="echo", status="ok",
+                      output='ARGUS_RESULT: {"ready": true}'),
+            {},
+            [],
+        )
+
+    monkeypatch.setattr(worker.job_exec, "run_job", fake_run_job)
+
+    assert worker.run_once(cfg, "w1") is True
+    assert "Live content readiness proof required:" not in seen["context"]
 
 
 def test_heartbeat_reconnects_after_poisoned_connection(conn, cfg, pg_dsn, monkeypatch):

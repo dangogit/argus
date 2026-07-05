@@ -34,6 +34,11 @@ log = logging.getLogger("argus.worker")
 
 _TEST_OUTPUT_LIMIT = 12000
 _HEARTBEAT_INTERVAL = 30  # seconds; module-level so tests can shrink it
+_LIVE_CONTENT_ACTIONS = {"publish", "schedule", "cta", "connector"}
+_CONTENT_LIVE_READINESS = """Live content readiness proof required:
+- Before dispatching or performing live publish, CTA, schedule, or connector work, cite proof for every required gate: approval proof, durable media, CTA route, DM activation, Metricool target, and connector auth.
+- If any gate is missing or unverified, do not perform live work. Mark the run blocked and name the missing readiness proof.
+- Draft-only work may continue without these live-readiness gates."""
 
 # A job may be outage-released this many times before it finalizes failed.
 # At >= 15 min per release this tolerates a 12h engine outage; past that the
@@ -103,6 +108,9 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                                   now=datetime.now(timezone.utc), cfg=cfg,
                                   query=(job.payload or {}).get("text", ""))
             context = bundle.as_prompt()
+            live_readiness = _live_content_readiness_context(conn, job)
+            if live_readiness:
+                context = f"{context}\n\n{live_readiness}" if context else live_readiness
             if test_context:
                 context = f"{context}\n\n{test_context}" if context else test_context
             if job.kind in ("converse", "triage"):
@@ -282,6 +290,54 @@ def _has_team_email_source(cfg, team_id: str | None) -> bool:
         if source.type in email_types and (source.scope == "team" or source.team in (None, team_id)):
             return True
     return False
+
+
+def _live_content_readiness_context(conn, job) -> str:
+    if job.kind != "pipeline":
+        return ""
+    payload = job.payload or {}
+    text = str(payload.get("text") or "")
+    source = ""
+    fingerprint = ""
+    if job.event_id:
+        with conn.cursor() as cur:
+            cur.execute("SELECT source, dedup_key, payload FROM events WHERE id=%s",
+                        (job.event_id,))
+            row = cur.fetchone()
+        if row:
+            source = str(row[0] or "")
+            fingerprint = str(row[1] or "")
+            event_payload = row[2] if isinstance(row[2], dict) else {}
+            text = "\n".join(
+                part for part in (text, str(event_payload.get("text") or ""))
+                if part
+            )
+    if not _is_live_content_request(source, fingerprint, text):
+        return ""
+    return _CONTENT_LIVE_READINESS
+
+
+def _is_live_content_request(source: str, fingerprint: str, text: str) -> bool:
+    source = source.lower()
+    fingerprint = fingerprint.lower()
+    lower = text.lower()
+    is_content = (
+        source in {"pm:content-approval-watch", "content-approval-watch"}
+        or fingerprint.startswith("content-approval:")
+        or "content approval" in lower
+        or "approved action:" in lower
+    )
+    if not is_content:
+        return False
+    if "approved action: draft" in lower or "internal draft" in lower:
+        return False
+    if fingerprint.startswith("content-approval:"):
+        parts = [part for part in fingerprint.split(":") if part]
+        if any(part in _LIVE_CONTENT_ACTIONS for part in parts):
+            return True
+    if "connector auth" in lower or "metricool" in lower:
+        return True
+    return any(f"approved action: {action}" in lower for action in _LIVE_CONTENT_ACTIONS)
 
 
 def _safe_int(value, *, default: int) -> int:
