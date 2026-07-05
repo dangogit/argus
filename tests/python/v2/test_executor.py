@@ -60,7 +60,8 @@ def test_open_pr_enqueues_control_summary(conn, cfg):
                VALUES (%s,'dev','open_pr','reversible_internal','fake:chat','open-pr',
                        %s)""",
             (rid, '{"branch":"b","base":"main","remote":"origin","title":"Fix x",'
-                  '"body":"Body","summary_short":"Fixed x","checks":"QA: pass",'
+                  '"body":"Body","request":"bug report 123: checkout broken",'
+                  '"summary_short":"Fixed x","checks":"QA: pass",'
                   '"risk_summary":"low","cwd":"/tmp"}'))
     conn.commit()
 
@@ -76,7 +77,12 @@ def test_open_pr_enqueues_control_summary(conn, cfg):
         cur.execute("SELECT destination_ref, payload->>'text' FROM actions WHERE type='notify'")
         dest, text = cur.fetchone()
     assert dest == "fake:chat"
-    assert "PR ready: Fix x" in text
+    assert 'New bug report: "bug report 123: checkout broken"' in text
+    assert 'Fix: "Fixed x"' in text
+    assert "Verification: checked and verified (QA: pass)" in text
+    assert "Status: checked and verified" in text
+    assert "PR ready:" not in text
+    assert "Risk:" not in text
     assert "https://github.test/pull/9" in text
 
 

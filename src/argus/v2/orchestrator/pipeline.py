@@ -696,6 +696,7 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                           "draft": project.autofix.draft,
                           "title": pr_info["title"],
                           "body": pr_info["body"],
+                          "request": pr_info["request"],
                           "summary_short": pr_info["summary_short"],
                           "checks": pr_info["checks"],
                           "risk_summary": pr_info["risk_summary"],
@@ -759,6 +760,7 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
                       "draft": True,
                       "title": pr_info["title"],
                       "body": pr_info["body"],
+                      "request": pr_info["request"],
                       "summary_short": pr_info["summary_short"],
                       "checks": pr_info["checks"],
                       "risk_summary": pr_info["risk_summary"],
@@ -838,6 +840,7 @@ def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
     ])
     return {
         "title": title,
+        "request": request,
         "summary_short": summary,
         "body": body,
         "checks": checks,
@@ -891,17 +894,27 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
             "ORDER BY stage, updated_at",
             (request_id,))
         rows = cur.fetchall()
-    parts = []
+    order = []
+    parts = {}
     for role, result in rows:
         parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
+        part = ""
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
-            parts.append(f"QA: {verdict}")
+            part = f"QA: {verdict}"
         elif role == "browser_verify":
-            parts.append(f"Browser: {parsed.get('verdict') or 'skip'}")
+            meta = (result or {}).get("browser_verify", {}) if isinstance(result, dict) else {}
+            if isinstance(meta, dict) and meta.get("skipped"):
+                part = "Browser: skipped (no UI files changed)"
+            else:
+                part = f"Browser: {parsed.get('verdict') or 'skip'}"
         elif role == "senior":
-            parts.append(f"Senior: {parsed.get('decision') or 'approve'}")
-    return "; ".join(parts) or "QA and senior approved"
+            part = f"Senior: {parsed.get('decision') or 'no decision'}"
+        if part:
+            if role not in parts:
+                order.append(role)
+            parts[role] = part
+    return "; ".join(parts[role] for role in order) or "QA and senior approved"
 
 
 def _changed_files(cwd: str) -> list[str]:
@@ -952,7 +965,48 @@ def _builder_summary(conn: psycopg.Connection, request_id: str) -> str:
     if not isinstance(parsed, dict):
         return ""
     text = str(parsed.get("summary") or parsed.get("analysis") or "").strip()
+    if not text:
+        text = _builder_output_summary(str(row[0].get("output") or ""))
     return " ".join(text.split())[:600]
+
+
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_BUILDER_FILE_REF_RE = re.compile(r"\s+in\s+[\w./-]+\.[A-Za-z]{1,8}(?::\d+)?")
+
+
+def _builder_output_summary(output: str) -> str:
+    text = _MD_LINK_RE.sub(r"\1", output or "")
+    lines = [line.strip() for line in text.splitlines()]
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        if not lower.startswith(("fix:", "smallest fix", "smallest safe fix", "change:")):
+            continue
+        inline = line.split(":", 1)[1].strip() if ":" in line else ""
+        if inline and len(inline.split()) > 3:
+            return _clean_builder_summary(inline)
+        parts = []
+        for item in lines[index + 1:]:
+            if not item:
+                if parts:
+                    break
+                continue
+            if item.lower().startswith(("verification", "verified", "notes", "risk", "pr readiness")):
+                break
+            parts.append(item.lstrip("- ").strip())
+            if len(" ".join(parts)) >= 240:
+                break
+        if parts:
+            return _clean_builder_summary(" ".join(parts))
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    return _clean_builder_summary(paragraphs[0]) if paragraphs else ""
+
+
+def _clean_builder_summary(text: str) -> str:
+    text = _BUILDER_FILE_REF_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if "." in text:
+        text = text.split(".", 1)[0].strip() + "."
+    return text
 
 
 def _summary_short(request: str) -> str:
