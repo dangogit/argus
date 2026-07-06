@@ -79,13 +79,37 @@ def test_open_pr_enqueues_control_summary(conn, cfg):
         cur.execute("SELECT destination_ref, payload->>'text' FROM actions WHERE type='notify'")
         dest, text = cur.fetchone()
     assert dest == "fake:chat"
-    assert 'New bug report: "bug report 123: checkout broken"' in text
+    assert "Argus PR ready" in text
+    assert 'Request: "bug report 123: checkout broken"' in text
     assert 'Fix: "Fixed x"' in text
-    assert "Verification: checked and verified (QA: pass)" in text
+    assert "Checks:\n- QA: pass" in text
     assert "Status: checked and verified" in text
+    assert "Review notes:" not in text
     assert "PR ready:" not in text
     assert "Risk:" not in text
     assert "https://github.test/pull/9" in text
+
+
+def test_open_pr_notice_formats_review_failure():
+    text = executor._open_pr_notice_text({
+        "request": "bug report 123: checkout broken",
+        "summary_short": "Fixed x",
+        "checks": "QA: pass; Browser: fail; Senior: no decision",
+        "risk_summary": (
+            "needs review: browser_verify failed; "
+            "browser_verify did not pass after 1 rework attempt(s). "
+            "Blocking issue: browser run error: Command "
+            "['/Users/danielmini/.local/bin/hermes', '-z', 'long prompt'] "
+            "timed out after 300 seconds"
+        ),
+    }, "https://github.test/pull/9")
+
+    assert "Argus PR needs review" in text
+    assert "Status: needs review, browser verification failed" in text
+    assert "Checks:\n- QA: pass\n- Browser: fail\n- Senior: no decision" in text
+    assert "Review notes:" in text
+    assert "browser command timed out after 300 seconds" in text
+    assert "Command [" not in text
 
 
 def test_reply_send_timeout_is_retryable(conn, cfg, monkeypatch):

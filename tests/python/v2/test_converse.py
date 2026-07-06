@@ -228,6 +228,26 @@ def test_converse_answer_inserts_reply_action(conn, cfg_converse, monkeypatch):
     assert any(k.startswith("converse:") for k in keys)
 
 
+def test_converse_answer_without_reply_uses_output_body(conn, cfg_converse, monkeypatch):
+    body = "Use more proof carousels next."
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output":
+                                   f"{body}\nARGUS_RESULT {{\"action\":\"answer\"}}"})
+    _ingest(conn, cfg_converse); conn.commit()
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse); conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        reconcile.sweep_once(conn, cfg_converse); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload->>'text' FROM actions WHERE type='reply' "
+                    "AND idempotency_key LIKE 'converse:%%'")
+        text = cur.fetchone()[0]
+    assert body in text
+    assert "ARGUS_RESULT" not in text
+
+
 def test_converse_answer_idempotent(conn, cfg_converse, monkeypatch):
     """Re-running sweep after an answer does not insert a duplicate reply."""
     monkeypatch.setattr(pipeline, "_role_snapshot_extra",

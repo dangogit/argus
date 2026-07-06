@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
@@ -550,17 +551,24 @@ def _open_pr_notice_text(payload: dict, provider_ref: str) -> str:
     summary = str(payload.get("summary_short") or "").strip()
     checks = str(payload.get("checks") or "").strip()
     risk = str(payload.get("risk_summary") or payload.get("risk") or "").strip()
-    verification = _verification_line(checks, risk)
     status = _status_line(risk)
+    title = "Argus PR ready" if status == "checked and verified" else "Argus PR needs review"
     lines = [
-        f"New bug report: {_quote(_short(request or 'Argus PR', 220))}",
+        title,
+        f"Request: {_quote(_short(request or 'Argus PR', 220))}",
         f"Fix: {_quote(_short(summary or 'See PR for fix details.', 220))}",
     ]
-    if verification:
-        lines.append(f"Verification: {verification}")
     if provider_ref:
         lines.append(f"PR: {provider_ref}")
     lines.append(f"Status: {status}")
+    check_lines = _check_lines(checks)
+    if check_lines:
+        lines.append("Checks:")
+        lines.extend(f"- {line}" for line in check_lines)
+    risk_lines = _risk_lines(risk)
+    if risk_lines:
+        lines.append("Review notes:")
+        lines.extend(f"- {line}" for line in risk_lines)
     return "\n".join(lines)
 
 
@@ -584,6 +592,27 @@ def _bug_report_label(value: str) -> str:
 
 def _quote(value: str) -> str:
     return '"' + value.replace('"', "'") + '"'
+
+
+def _check_lines(checks: str) -> list[str]:
+    return [part.strip() for part in str(checks or "").split(";") if part.strip()]
+
+
+def _risk_lines(risk: str) -> list[str]:
+    text = _clean_risk_text(risk)
+    if not text:
+        return []
+    lowered = text.lower()
+    if lowered.startswith("low"):
+        return []
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    return [_short(part, 260) for part in parts]
+
+
+def _clean_risk_text(risk: str) -> str:
+    text = " ".join(str(risk or "").split())
+    return re.sub(r"Command \[.*\] timed out after ([0-9.]+) seconds",
+                  r"browser command timed out after \1 seconds", text)
 
 
 def _verification_line(checks: str, risk: str) -> str:

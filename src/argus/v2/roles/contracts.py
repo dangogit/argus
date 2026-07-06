@@ -7,6 +7,7 @@ import json
 from typing import Optional, Tuple
 
 _MARK = "ARGUS_RESULT:"
+_MARK_BARE = "ARGUS_RESULT"
 
 _CONVERSE_ACTIONS = frozenset({"answer", "dispatch", "ignore"})
 _TRIAGE_ACTIONS = frozenset({"investigate", "dispatch", "ignore"})
@@ -15,12 +16,18 @@ _RESEARCH_RECOMMENDS = frozenset({"fix", "no_fix"})
 
 def parse_result(text: str) -> dict:
     for line in (text or "").splitlines():
+        line = line.strip()
         if line.startswith(_MARK):
-            try:
-                v = json.loads(line[len(_MARK):].strip())
-                return v if isinstance(v, dict) else {}
-            except json.JSONDecodeError:
-                return {}
+            raw = line[len(_MARK):].strip()
+        elif line.startswith(_MARK_BARE + " "):
+            raw = line[len(_MARK_BARE):].strip()
+        else:
+            continue
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, dict) else {}
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 
