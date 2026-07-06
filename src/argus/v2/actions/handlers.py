@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 from typing import Callable
 
@@ -24,6 +25,7 @@ def _default_runner(argv, cwd=None) -> str:  # pragma: no cover
 
 
 _CONFLICT_TITLE_PREFIX = "[conflicts] "
+_ARGUS_PR_SIGNATURE_PREFIX = "argus-pr-signature:"
 
 
 def build_open_pr(*, branch, base, remote, title, body, draft=False):
@@ -37,6 +39,77 @@ def build_open_pr(*, branch, base, remote, title, body, draft=False):
         ["git", "push", remote, branch],
         create,
     ]
+
+
+def _normalize_signature_part(value) -> str:
+    if isinstance(value, list):
+        value = " ".join(sorted(str(item) for item in value))
+    text = " ".join(str(value or "").lower().split())
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _pr_signature(payload: dict, *, team_id: str | None) -> str:
+    raw = "|".join([
+        _normalize_signature_part(team_id or "unknown"),
+        _normalize_signature_part(payload.get("title")),
+        _normalize_signature_part(payload.get("request")),
+        _normalize_signature_part(payload.get("summary_short")),
+        _normalize_signature_part(payload.get("changed_files")),
+    ])
+    return sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _body_with_signature(body: str, signature: str) -> str:
+    marker = f"<!-- {_ARGUS_PR_SIGNATURE_PREFIX}{signature} -->"
+    body = body or ""
+    if marker in body:
+        return body
+    return f"{body.rstrip()}\n\n{marker}" if body.strip() else marker
+
+
+def _existing_open_pr(payload: dict, *, runner: Callable, cwd: str | None,
+                      signature: str) -> dict | None:
+    if not cwd:
+        return None
+    try:
+        out = runner([
+            "gh", "pr", "list",
+            "--state", "open",
+            "--limit", "100",
+            "--json", "number,url,title,body,headRefName",
+        ], cwd=cwd)
+        rows = json.loads(out or "[]")
+    except Exception as exc:
+        log.warning("open_pr duplicate scan failed, proceeding unchecked: %s", exc)
+        return None
+    if not isinstance(rows, list):
+        return None
+    marker = f"{_ARGUS_PR_SIGNATURE_PREFIX}{signature}"
+    branch = str(payload.get("branch") or "")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if marker in str(row.get("body") or "") or (
+            branch and str(row.get("headRefName") or "") == branch
+        ):
+            return row
+    return None
+
+
+def _comment_duplicate_pr(existing: dict, payload: dict, *, runner: Callable,
+                          cwd: str | None, signature: str) -> None:
+    number = existing.get("number")
+    if not number:
+        return
+    body = (
+        "Argus skipped opening a duplicate PR for the same work signature.\n\n"
+        f"- Signature: `{signature}`\n"
+        f"- Attempted branch: `{payload.get('branch') or 'unknown'}`"
+    )
+    try:
+        runner(["gh", "pr", "comment", str(number), "--body", body], cwd=cwd)
+    except Exception as exc:
+        log.warning("open_pr duplicate comment failed for PR %s: %s", number, exc)
 
 
 def _apply_conflict_prefix(title: str, body: str, check: mergeability.MergeCheck) -> tuple[str, str]:
@@ -66,6 +139,13 @@ def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
         body = payload.get("body", "")
         base = payload["base"]
         remote = payload["remote"]
+        signature = _pr_signature(payload, team_id=team_id)
+        existing = _existing_open_pr(payload, runner=runner, cwd=cwd, signature=signature)
+        if existing:
+            _comment_duplicate_pr(existing, payload, runner=runner, cwd=cwd,
+                                  signature=signature)
+            return str(existing.get("url") or f"existing-pr:{existing.get('number')}")
+        body = _body_with_signature(body, signature)
         if cwd:
             # Pre-propose mergeability check: fetch the current remote base and
             # see if the work branch merges cleanly, rebasing once if not. Never

@@ -25,11 +25,75 @@ def test_run_handler_uses_injected_runner_and_returns_pr_url():
     calls = []
     def fake_runner(argv, cwd=None):
         calls.append(argv)
-        return "https://github.com/x/y/pull/7\n" if argv[:2] == ["gh", "pr"] else ""
+        return "https://github.com/x/y/pull/7\n" if argv[:3] == ["gh", "pr", "create"] else "[]"
     ref = handlers.run("open_pr", {"branch": "b", "base": "main", "remote": "origin",
                                    "title": "t", "body": "x", "cwd": "/tmp"}, runner=fake_runner)
     assert ref == "https://github.com/x/y/pull/7"
-    assert len(calls) == 2  # push + pr create
+    assert len(calls) == 3  # duplicate scan + push + pr create
+
+
+def test_open_pr_adds_dedupe_signature_to_body(monkeypatch, tmp_path):
+    monkeypatch.setattr(handlers.mergeability, "check", lambda cwd, base, remote:
+                        handlers.mergeability.MergeCheck(True, False, False))
+    calls = []
+
+    def runner(argv, cwd=None):
+        calls.append(argv)
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        return "https://github.com/x/y/pull/7\n" if argv[:3] == ["gh", "pr", "create"] else ""
+
+    handlers.run("open_pr", {
+        "branch": "argus/dev/r1",
+        "base": "main",
+        "remote": "origin",
+        "title": "Fix login",
+        "body": "Body",
+        "request": "Login fails",
+        "summary_short": "Fixed login",
+        "changed_files": ["src/auth.py"],
+        "cwd": str(tmp_path),
+    }, runner=runner, team_id="dev")
+
+    create_cmd = next(cmd for cmd in calls if cmd[:3] == ["gh", "pr", "create"])
+    body = create_cmd[create_cmd.index("--body") + 1]
+    assert "Body" in body
+    assert "argus-pr-signature:" in body
+
+
+def test_open_pr_reuses_existing_pr_with_same_signature(tmp_path):
+    payload = {
+        "branch": "argus/dev/r1",
+        "base": "main",
+        "remote": "origin",
+        "title": "Fix login",
+        "body": "Body",
+        "request": "Login fails",
+        "summary_short": "Fixed login",
+        "changed_files": ["src/auth.py"],
+        "cwd": str(tmp_path),
+    }
+    signature = handlers._pr_signature(payload, team_id="dev")
+    calls = []
+
+    def runner(argv, cwd=None):
+        calls.append(argv)
+        if argv[:3] == ["gh", "pr", "list"]:
+            return json.dumps([{
+                "number": 12,
+                "url": "https://github.com/x/y/pull/12",
+                "title": "Fix login",
+                "body": f"<!-- argus-pr-signature:{signature} -->",
+                "headRefName": "argus/dev/other",
+            }])
+        return ""
+
+    ref = handlers.run("open_pr", payload, runner=runner, team_id="dev")
+
+    assert ref == "https://github.com/x/y/pull/12"
+    assert any(cmd[:3] == ["gh", "pr", "comment"] for cmd in calls)
+    assert not any(cmd[:2] == ["git", "push"] for cmd in calls)
+    assert not any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls)
 
 
 def test_unknown_action_type_raises():
