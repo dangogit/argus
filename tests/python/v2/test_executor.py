@@ -1,3 +1,5 @@
+import json
+
 from argus.v2.actions import executor
 from argus.v2.ingress import events
 from argus.v2.orchestrator import pipeline
@@ -242,3 +244,82 @@ def test_generic_pm_error_notify_stays_held(conn, tmp_path):
         cur.execute("SELECT status FROM actions WHERE idempotency_key='pm-error'")
         assert cur.fetchone()[0] == "held"
     assert fake.SENT == []
+
+
+def test_duplicate_low_disk_whatsapp_notify_suppresses_second_send(
+    conn, tmp_path, monkeypatch
+):
+    from argus.v2.channels import send as _send
+    from argus.v2.config import loader
+
+    y = tmp_path / "wa.yaml"
+    y.write_text(
+        "company:\n"
+        "  name: c\n"
+        "  defaults:\n"
+        "    engine: { engine: echo }\n"
+        "    autonomy:\n"
+            "      reversible_internal: auto\n"
+            "      irreversible_outward: approval\n"
+            "    notifications:\n"
+            "      quiet_hours: false\n"
+            "teams:\n"
+        "  - name: dev\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n"
+        "    channels: [ { type: whatsapp, role: control, channel_id: owner } ]\n",
+        encoding="utf-8",
+    )
+    cfg_wa = loader.load(y)
+    calls = []
+
+    def deliver(_cfg, destination_ref, text):
+        calls.append((destination_ref, text))
+        return f"wa:{len(calls)}"
+
+    monkeypatch.setattr(_send, "deliver", deliver)
+    payload = json.dumps({
+        "text": "low disk space under /Users/danielmini: 2.1 GB free",
+        "system_health_fingerprints": ["disk:low:argus-run"],
+        "evidence": [
+            "retro-change:2851e16d8281fc8ab7c28e49",
+            "converse:cb8313d2-be1f-4fd4-9098-805913ebd9f2",
+        ],
+    })
+    with conn.cursor() as cur:
+        for idem in ("low-disk-1", "low-disk-2"):
+            cur.execute(
+                """
+                INSERT INTO actions (team_id, type, risk, destination_ref,
+                                     idempotency_key, payload)
+                VALUES ('dev','notify','reversible_internal','whatsapp:owner',
+                        %s,%s::jsonb)
+                """,
+                (idem, payload),
+            )
+    conn.commit()
+
+    executor.process_proposed(conn, cfg_wa)
+    conn.commit()
+
+    assert calls == [
+        (
+            "whatsapp:owner",
+            "low disk space under /Users/danielmini: 2.1 GB free",
+        )
+    ]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, provider_ref, payload->>'suppressed_reason' "
+            "FROM actions WHERE idempotency_key='low-disk-2'"
+        )
+        status, provider_ref, reason = cur.fetchone()
+        cur.execute(
+            "SELECT payload->>'suppressed_fingerprint' FROM alerts "
+            "WHERE fingerprint LIKE 'disk:low:send-suppressed:%'"
+        )
+        suppressed_fingerprint = cur.fetchone()[0]
+    assert status == "done"
+    assert provider_ref.startswith("suppressed:duplicate_low_disk:")
+    assert reason == "duplicate_low_disk_notify"
+    assert suppressed_fingerprint == "disk:low:argus-run"

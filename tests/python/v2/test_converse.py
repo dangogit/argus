@@ -299,6 +299,36 @@ def test_converse_dispatch_idempotent(conn, cfg_converse, monkeypatch):
         assert cur.fetchone()[0] == 1
 
 
+def test_converse_dispatch_dedups_equivalent_task_text(conn, cfg_converse, monkeypatch):
+    task = "Deduplicate equivalent retro and converse work before PM dispatch"
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": _converse_result(
+                            "dispatch", reply="On it!", task=task)})
+
+    _ingest(conn, cfg_converse, key="dedupe-1"); conn.commit()
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse); conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        reconcile.sweep_once(conn, cfg_converse); conn.commit()
+
+    _ingest(conn, cfg_converse, key="dedupe-2"); conn.commit()
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse); conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        reconcile.sweep_once(conn, cfg_converse); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT count(*) FROM actions "
+            "WHERE type='reply' AND idempotency_key LIKE 'converse:%%'"
+        )
+        assert cur.fetchone()[0] == 2
+
+
 def test_converse_dispatch_vague_task_asks_for_detail(conn, cfg_converse, monkeypatch):
     """A degenerate dispatch task ('fix') opens NO request; it replies asking
     for specifics instead of building a junk PR (owner-reported 2026-06-19)."""
@@ -477,9 +507,8 @@ def test_converse_outage_falls_back_to_rule_reply(conn, cfg_converse, monkeypatc
 
 # ---------------------------------------------------------------------------
 # Security: converse turn allowlist + server-side risk override.
-# Only types in {close_pr, comment_pr, reopen_pr, merge_pr, deploy} are
-# persisted; all others are dropped. Risk is server-overridden so the model
-# cannot mark merge_pr/deploy as reversible to auto-run them.
+# Only explicitly allowlisted manager actions are persisted; all others are
+# dropped. Risk is server-overridden so the model cannot self-approve actions.
 # ---------------------------------------------------------------------------
 
 def test_converse_allowlist_permits_close_pr_and_runs_it(conn, cfg_converse, monkeypatch):
@@ -763,6 +792,26 @@ def test_converse_drops_non_allowlisted_type(conn, cfg_converse, monkeypatch):
         cur.execute("SELECT count(*) FROM actions WHERE type='reply' "
                     "AND idempotency_key LIKE 'converse:%%'")
         assert cur.fetchone()[0] == 1
+
+
+def test_converse_personal_drops_social_publish_but_keeps_content_queue(cfg_converse):
+    """Live publish needs readiness proof outside manager chat dispatch."""
+    from argus.v2.queue.models import ActionIntent, Job
+
+    job = Job(id="j-social", request_id=None, event_id=None, conversation_id=None,
+              team_id="personal", role="manager", stage=0, kind="converse",
+              status="done", attempts=0, max_attempts=3, claim_token=None,
+              exec_snapshot={}, payload={})
+    actions = [
+        ActionIntent(type="social_publish", risk="personal_outward",
+                     idempotency_key="publish", payload={"draft_id": "d1"}),
+        ActionIntent(type="content_queue", risk="personal_outward",
+                     idempotency_key="queue", payload={"project": "p"}),
+    ]
+
+    hardened = worker._harden_actions(cfg_converse, job, actions)
+
+    assert [action.type for action in hardened] == ["content_queue"]
 
 
 # ---------------------------------------------------------------------------

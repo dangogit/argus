@@ -1,3 +1,5 @@
+from psycopg.types.json import Json
+
 from argus.v2.orchestrator import pipeline
 from argus.v2.ingress import events
 from argus.v2.pm import memory as pm_memory
@@ -6,9 +8,10 @@ from argus.v2.queue.models import RunRecord
 from argus.v2.workspace import repo as workspace
 
 
-def _open(conn, cfg, text="fix login"):
+def _open(conn, cfg, text="fix login", fingerprint=None):
     eid = events.ingest_message(conn, cfg, team="dev", source="cli", dedup_key="m1", text=text)
-    return pipeline.open_request(conn, cfg, event_id=eid, team_id="dev", conversation_id=None)
+    return pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                 conversation_id=None, fingerprint=fingerprint)
 
 
 def _finish_stage(conn, role, result):
@@ -63,9 +66,12 @@ def test_exhausted_qa_records_project_memory(conn, cfg_project):
         cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
         assert cur.fetchone()[0] == "failed"
         cur.execute(
-            "SELECT finding, outcome FROM pm_lessons WHERE team_id='dev' ORDER BY created_at"
+            "SELECT finding, outcome, note FROM pm_lessons "
+            "WHERE team_id='dev' ORDER BY created_at"
         )
-        assert cur.fetchall()[-1] == ("fix payment", "qa-fail")
+        finding, outcome, note = cur.fetchall()[-1]
+        assert (finding, outcome) == ("fix payment", "qa-fail")
+        assert "Failure classification: unknown" in note
         cur.execute("SELECT lesson_fingerprint, outcome FROM pm_lesson_attributions")
         assert cur.fetchall() == [("prior", "qa-fail")]
 
@@ -118,9 +124,95 @@ def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, t
         payload = cur.fetchone()[0]
         assert payload["draft"] is True
         assert payload["changed_files"] == ["src/email.ts"]
-        assert payload["checks"] == "QA: fail"
+        assert "QA: fail" in payload["checks"]
+        assert "Failure classification: unknown" in payload["checks"]
         assert "needs review" in payload["risk_summary"]
+        assert "failure classification: unknown" in payload["risk_summary"]
         assert "QA failed" in payload["body"]
+
+
+def test_exhausted_qa_reconciles_latest_pass_before_recording_failure(
+        conn, cfg_project, monkeypatch, tmp_path):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(
+        conn, cfg_project,
+        text=("Implement minimal Argus process change so qa-fail lesson and PR-risk "
+              "recording first reconciles against the latest QA and senior run statuses."),
+        fingerprint="converse:61f70886-9a28-4607-b2b4-953bb404b4cf",
+    )
+    conn.commit()
+
+    monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
+    monkeypatch.setattr(workspace, "diff", lambda project, cwd: "+fixed\n")
+    monkeypatch.setattr(pipeline, "_changed_files", lambda cwd: ["src/pipeline.py"])
+
+    _finish_stage(conn, "developer", {"has_diff": True, "parsed": {"ready": True}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    stale_qa = jobs.claim(conn, "w"); conn.commit()
+    assert stale_qa.role == "qa"
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs "
+            "(request_id,event_id,team_id,kind,role,stage,status,result,idempotency_key) "
+            "VALUES (%s,%s,'dev','pipeline','qa',1,'done',%s,'qa-latest-pass'), "
+            "(%s,%s,'dev','pipeline','senior',2,'done',%s,'senior-latest-approve')",
+            (
+                rid, stale_qa.event_id, Json({"parsed": {"verdict": "pass"}}),
+                rid, stale_qa.event_id, Json({"parsed": {"decision": "approve"}}),
+            ),
+        )
+    conn.commit()
+    jobs.finalize(conn, stale_qa.id, stale_qa.claim_token, status="done",
+                  result={"parsed": {"verdict": "fail"}},
+                  run=RunRecord(role="qa", engine="scripted", status="ok"), actions=[])
+    conn.commit()
+
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, stale_qa.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome FROM pm_lessons WHERE fingerprint=%s",
+                    ("converse:61f70886-9a28-4607-b2b4-953bb404b4cf",))
+        assert cur.fetchall() == []
+        cur.execute("SELECT payload->>'risk_summary' FROM actions WHERE type='open_pr'")
+        assert cur.fetchall() == []
+
+
+def test_exhausted_senior_reconciles_latest_approval_before_retro_change_failure(
+        conn, cfg_project):
+    cfg_project.team("dev").pipeline.max_iters = 0
+    rid = _open(
+        conn, cfg_project,
+        text=("Implement minimal internal process change so PR risk and lesson outcome "
+              "recording reconciles against the latest QA and senior statuses."),
+        fingerprint="retro-change:032fdae8db0a6c18282199e7",
+    )
+    conn.commit()
+
+    _finish_stage(conn, "developer", {"parsed": {}})
+    pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
+    qa = _finish_stage(conn, "qa", {"parsed": {"verdict": "pass"}})
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, qa.id)); conn.commit()
+    stale_senior = jobs.claim(conn, "w"); conn.commit()
+    assert stale_senior.role == "senior"
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs "
+            "(request_id,event_id,team_id,kind,role,stage,status,result,idempotency_key) "
+            "VALUES (%s,%s,'dev','pipeline','senior',2,'done',%s,'senior-latest-pass')",
+            (rid, stale_senior.event_id, Json({"parsed": {"decision": "approve"}})),
+        )
+    conn.commit()
+    jobs.finalize(conn, stale_senior.id, stale_senior.claim_token, status="done",
+                  result={"parsed": {"decision": "reject"}},
+                  run=RunRecord(role="senior", engine="scripted", status="ok"), actions=[])
+    conn.commit()
+
+    pipeline.on_job_done(conn, cfg_project, _reload(conn, stale_senior.id)); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome FROM pm_lessons WHERE fingerprint=%s",
+                    ("retro-change:032fdae8db0a6c18282199e7",))
+        assert cur.fetchall() == []
 
 
 def test_qa_pass_then_senior_approve_completes(conn, cfg_project):

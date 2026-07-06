@@ -159,9 +159,12 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                 "kind": "judge",
                 "prompt": (
                     "Run or inspect verification and reject unsafe fixes. End "
+                    "failures with a classification of code regression, "
+                    "environment blocker, expected cancellation, stale status, "
+                    "or unknown. End "
                     "with ARGUS_RESULT: {\"verdict\": \"pass\", \"summary\": "
                     "\"...\"} or ARGUS_RESULT: {\"verdict\": \"fail\", "
-                    "\"summary\": \"...\"}."
+                    "\"summary\": \"<classification plus evidence>\"}."
                 ),
                 "engine": {"engine": "codex"},
             },
@@ -169,10 +172,13 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                 "name": "senior",
                 "kind": "judge",
                 "prompt": (
-                    "Review scope, risk, and PR readiness. End with "
+                    "Review scope, risk, and PR readiness. Before a failing PR "
+                    "summary, classify each failure as code regression, "
+                    "environment blocker, expected cancellation, stale status, "
+                    "or unknown. End with "
                     "ARGUS_RESULT: {\"decision\": \"approve\", \"summary\": "
                     "\"...\"} or ARGUS_RESULT: {\"decision\": \"changes\", "
-                    "\"summary\": \"...\"}."
+                    "\"summary\": \"<classification plus evidence>\"}."
                 ),
                 "engine": {"engine": "codex"},
             },
