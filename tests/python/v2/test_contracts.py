@@ -6,6 +6,11 @@ def test_parse_result_extracts_json_line():
     assert contracts.parse_result(out) == {"ready": True, "summary": "fixed"}
 
 
+def test_parse_result_extracts_bare_marker_json_line():
+    out = "did the thing\nARGUS_RESULT {\"ready\": true, \"summary\": \"fixed\"}"
+    assert contracts.parse_result(out) == {"ready": True, "summary": "fixed"}
+
+
 def test_parse_result_absent_is_empty():
     assert contracts.parse_result("no marker here") == {}
 

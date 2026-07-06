@@ -397,6 +397,46 @@ def test_checks_summary_does_not_invent_senior_approval(conn, cfg):
     assert "Senior: approve" not in checks
 
 
+def test_pr_info_formats_review_status_checks_and_risk(conn, cfg, tmp_path):
+    eid = events.ingest_message(conn, cfg, team="dev", source="cli",
+                                dedup_key="pr-format", text="fix checkout")
+    rid = pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
+                                conversation_id=None)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs "
+            "(request_id,event_id,team_id,kind,role,stage,status,result,idempotency_key) "
+            "VALUES (%s,%s,'dev','pipeline','qa',1,'done',%s,'qa-format'), "
+            "(%s,%s,'dev','pipeline','browser_verify',2,'done',%s,'bv-format'), "
+            "(%s,%s,'dev','pipeline','senior',3,'done',%s,'senior-format')",
+            (
+                rid, eid, Json({"parsed": {"verdict": "pass"}}),
+                rid, eid, Json({"parsed": {"verdict": "fail"}}),
+                rid, eid, Json({"parsed": {"summary": "needs another pass"}}),
+            ),
+        )
+    conn.commit()
+
+    risk = (
+        "needs review: browser_verify failed; "
+        "browser_verify did not pass after 1 rework attempt(s). "
+        "Blocking issue: browser run error: Command "
+        "['/Users/danielmini/.local/bin/hermes', '-z', 'long prompt'] "
+        "timed out after 300 seconds"
+    )
+    info = pipeline._pr_info(conn, cfg, rid, cwd=str(tmp_path), risk_summary=risk)
+    body = info["body"]
+
+    assert "## Status\nNeeds review: browser verification failed" in body
+    assert "## Verification" in body
+    assert "- QA: pass" in body
+    assert "- Browser: fail" in body
+    assert "- Senior: no decision" in body
+    assert "## Risk / Next Step" in body
+    assert "browser command timed out after 300 seconds" in body
+    assert "Command [" not in body
+
+
 def _developer_job(conn, rid, result: dict) -> Job:
     """Mark the open request's stage-0 developer job done with `result`, then
     return a Job matching that row so on_job_done can advance the pipeline."""
