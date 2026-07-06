@@ -8,6 +8,7 @@ import psycopg
 
 _OUTCOMES = frozenset({
     "proposed", "qa-pass", "qa-fail", "no-change", "blocked", "found-not-fixed",
+    "manual-qa",
 })
 _ATTR_OUTCOMES = frozenset({"qa-pass", "qa-fail"})
 _MIN_APPLIED = 5

@@ -133,6 +133,8 @@ def render_digest(project: str, prs: list[PendingPr],
             about = _about_pr(pr)
             if about:
                 lines.append(f"  {about}")
+            if not pr.draft:
+                lines.append("  Manual QA follow-up: confirm the deployed fix with owner/manual QA.")
     if patches:
         lines += ["", "Patches (apply or reject, then delete the result json):"]
         for patch in patches:
