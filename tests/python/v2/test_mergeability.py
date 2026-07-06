@@ -217,7 +217,9 @@ def test_open_pr_prefixes_title_and_notes_conflict_in_body(monkeypatch, tmp_path
 
     def runner(argv, cwd=None):
         calls.append(argv)
-        return "https://github.com/o/r/pull/9\n" if argv[:2] == ["gh", "pr"] else ""
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        return "https://github.com/o/r/pull/9\n" if argv[:3] == ["gh", "pr", "create"] else ""
 
     ref = handlers.run("open_pr", {
         "branch": "argus/dev/r1", "base": "main", "remote": "origin",
@@ -225,7 +227,7 @@ def test_open_pr_prefixes_title_and_notes_conflict_in_body(monkeypatch, tmp_path
     }, runner=runner)
 
     assert ref == "https://github.com/o/r/pull/9"
-    create_cmd = calls[1]
+    create_cmd = next(cmd for cmd in calls if cmd[:3] == ["gh", "pr", "create"])
     title_idx = create_cmd.index("--title")
     body_idx = create_cmd.index("--body")
     assert create_cmd[title_idx + 1] == "[conflicts] Fix login"
@@ -241,14 +243,16 @@ def test_open_pr_leaves_title_unchanged_when_mergeable(monkeypatch, tmp_path):
 
     def runner(argv, cwd=None):
         calls.append(argv)
-        return "https://github.com/o/r/pull/10\n" if argv[:2] == ["gh", "pr"] else ""
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        return "https://github.com/o/r/pull/10\n" if argv[:3] == ["gh", "pr", "create"] else ""
 
     handlers.run("open_pr", {
         "branch": "argus/dev/r2", "base": "main", "remote": "origin",
         "title": "Fix login", "body": "auto fix", "cwd": str(tmp_path),
     }, runner=runner)
 
-    create_cmd = calls[1]
+    create_cmd = next(cmd for cmd in calls if cmd[:3] == ["gh", "pr", "create"])
     title_idx = create_cmd.index("--title")
     assert create_cmd[title_idx + 1] == "Fix login"
 
