@@ -63,6 +63,7 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
         snap = cur.fetchone()[0]
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
     assert "external side effects" in snap["checkpoints"]
+    assert "manual QA follow-up" in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():

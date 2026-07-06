@@ -39,6 +39,8 @@ _PIPELINE_CHECKPOINTS = (
     "- For merge, deploy, repair, or live ops work, name completed milestones "
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
+    "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
+    "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
     "code regression, environment blocker, expected cancellation, stale status, "
     "or unknown.\n"
