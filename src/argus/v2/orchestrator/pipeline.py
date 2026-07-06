@@ -39,11 +39,20 @@ _PIPELINE_CHECKPOINTS = (
     "- For merge, deploy, repair, or live ops work, name completed milestones "
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
+    "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
+    "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
     "code regression, environment blocker, expected cancellation, stale status, "
     "or unknown.\n"
     "- If interrupted, the transcript must show completed external side effects "
     "and remaining work."
+)
+
+_MANAGER_CHECKPOINTS = (
+    "CHECKPOINTS:\n"
+    "- If a REVIEW item is already fixed and deployed but awaiting owner/manual "
+    "QA confirmation, do not silently ignore it. Reply with a manual QA "
+    "follow-up asking the owner to confirm."
 )
 
 
@@ -381,6 +390,9 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                 # reported as "Investigated, no fix needed".)
                 _record_memory_outcome(conn, job.request_id, "blocked", analysis)
                 _no_fix_close(conn, cfg, job.request_id, analysis, blocked=True)
+            elif _awaits_manual_qa(parsed, analysis):
+                _record_memory_outcome(conn, job.request_id, "manual-qa", analysis)
+                _manual_qa_close(conn, cfg, job.request_id, analysis)
             elif _recommends_fix(parsed, analysis):
                 # Third class: the developer DIAGNOSED a concrete, located fix but
                 # produced no diff. Closing this as "no fix needed" would hide a
@@ -491,6 +503,15 @@ _NO_FIX_MARKERS = (
     "expected behavior", "expected behaviour", "no defect", "not a bug",
     "behaves correctly", "no code change",
 )
+_MANUAL_QA_FIXED_MARKERS = (
+    "fixed and deployed", "deployed and fixed", "already fixed",
+    "fix is deployed", "deployed fix", "deployed the fix",
+)
+_MANUAL_QA_WAIT_MARKERS = (
+    "manual qa", "owner qa", "qa confirmation", "manual confirmation",
+    "owner confirmation", "awaiting confirmation", "awaiting qa",
+    "waiting for confirmation", "waiting on confirmation",
+)
 # A file/line reference grounds the recommendation in a concrete location, so we
 # only treat the result as an actionable diagnosis when one is present. Matches
 # path.ext or path.ext:line tokens (e.g. components/Pay.vue:498, src/index.ts).
@@ -515,6 +536,47 @@ def _recommends_fix(parsed: dict, analysis: str) -> bool:
     if not any(m in text for m in _RECOMMEND_FIX_MARKERS):
         return False
     return bool(_FILE_REF_RE.search(analysis or ""))
+
+
+def _awaits_manual_qa(parsed: dict, analysis: str) -> bool:
+    """True when item is fixed/deployed and remaining work is human QA."""
+    if _looks_blocked(parsed, analysis):
+        return False
+    status = str(parsed.get("status", "")).lower()
+    if status in ("manual_qa", "awaiting_manual_qa", "awaiting_qa"):
+        return True
+    text = (analysis or "").lower()
+    return (any(marker in text for marker in _MANUAL_QA_FIXED_MARKERS)
+            and any(marker in text for marker in _MANUAL_QA_WAIT_MARKERS))
+
+
+def _manual_qa_close(conn: psycopg.Connection, cfg, request_id, analysis: str) -> None:
+    """Close automation but leave an owner-visible manual QA follow-up."""
+    text = ("Manual QA follow-up: this REVIEW item is marked fixed and deployed. "
+            f"Please confirm whether owner/manual QA passes. {analysis}")
+    status.set_status_for_request(conn, request_id, status.DONE)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT r.team_id, r.conversation_id "
+            "FROM requests r WHERE r.id=%s",
+            (request_id,))
+        row = cur.fetchone()
+        if not row:
+            return
+        team_id, conv_id = row
+        cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
+                    (request_id,))
+        cur.execute(
+            "UPDATE jobs SET status='dead', updated_at=now() "
+            "WHERE request_id=%s AND status IN ('pending','claimed','running')",
+            (request_id,))
+        dest = _control_destination(conn, cfg, team_id, conv_id)
+        cur.execute(
+            "INSERT INTO actions (request_id, team_id, type, risk, destination_ref, "
+            "idempotency_key, payload) VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
+            "ON CONFLICT (idempotency_key) DO NOTHING",
+            (request_id, team_id, dest, f"manual_qa:{request_id}",
+             psycopg.types.json.Json({"text": text})))
 
 
 def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
@@ -1435,6 +1497,10 @@ def _add_pipeline_checkpoints(snapshot: dict) -> None:
     snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
 
 
+def _add_manager_checkpoints(snapshot: dict) -> None:
+    snapshot["checkpoints"] = _MANAGER_CHECKPOINTS
+
+
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:
     """Freeze the rendered load-on-relevance skills block into the snapshot so
     the job replays deterministically. No-op (no key added) when nothing matches,
@@ -1471,6 +1537,7 @@ def enqueue_converse(conn: psycopg.Connection, cfg, *, event_id: str,
     text = _request_text(conn, event_id)
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_manager_checkpoints(snapshot)
     _add_prompt_hash(snapshot)
     return jobs.enqueue(
         conn,
@@ -1501,6 +1568,7 @@ def enqueue_triage(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_manager_checkpoints(snapshot)
     _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("manager"))
     key = f"triage:{team_id}:{fingerprint or event_id}"

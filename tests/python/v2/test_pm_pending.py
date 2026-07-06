@@ -50,12 +50,13 @@ def test_pending_patches_no_longer_reads_legacy_pm_registry(tmp_path):
 def test_render_digest_counts_prs_and_patches():
     text = pending.render_digest(
         "dev",
-        [pending.PendingPr("dev", 3, "Fix", "https://github.test/pull/3", True, "")],
+        [pending.PendingPr("dev", 3, "Fix", "https://github.test/pull/3", False, "")],
         [pending.PendingPatch("dev", "F1", "/tmp/fix.patch", "approve", "pass")],
     )
 
     assert "1 open PR(s), 1 patch(es)" in text
-    assert "PR #3 (draft): Fix" in text
+    assert "PR #3: Fix" in text
+    assert "Manual QA follow-up: confirm the deployed fix with owner/manual QA." in text
     assert "patch F1 (senior:approve qa:pass)" in text
 
 
