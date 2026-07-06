@@ -46,6 +46,13 @@ _PIPELINE_CHECKPOINTS = (
     "and remaining work."
 )
 
+_MANAGER_CHECKPOINTS = (
+    "CHECKPOINTS:\n"
+    "- If a REVIEW item is already fixed and deployed but awaiting owner/manual "
+    "QA confirmation, do not silently ignore it. Reply with a manual QA "
+    "follow-up asking the owner to confirm."
+)
+
 
 def is_actionable(payload: Optional[dict]) -> bool:
     """True if a signal payload is worth opening a request for. Drops empty
@@ -1385,6 +1392,10 @@ def _add_pipeline_checkpoints(snapshot: dict) -> None:
     snapshot["checkpoints"] = _PIPELINE_CHECKPOINTS
 
 
+def _add_manager_checkpoints(snapshot: dict) -> None:
+    snapshot["checkpoints"] = _MANAGER_CHECKPOINTS
+
+
 def _add_skills(snapshot: dict, role_name: str, allow, text: str) -> None:
     """Freeze the rendered load-on-relevance skills block into the snapshot so
     the job replays deterministically. No-op (no key added) when nothing matches,
@@ -1421,6 +1432,7 @@ def enqueue_converse(conn: psycopg.Connection, cfg, *, event_id: str,
     text = _request_text(conn, event_id)
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_manager_checkpoints(snapshot)
     _add_prompt_hash(snapshot)
     return jobs.enqueue(
         conn,
@@ -1451,6 +1463,7 @@ def enqueue_triage(conn: psycopg.Connection, cfg, *, event_id: str,
                       "config_hash": _config_hash(cfg), "project": team_id}
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
+    _add_manager_checkpoints(snapshot)
     _add_prompt_hash(snapshot)
     snapshot.update(_role_snapshot_extra("manager"))
     key = f"triage:{team_id}:{fingerprint or event_id}"

@@ -65,6 +65,13 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "external side effects" in snap["checkpoints"]
 
 
+def test_add_manager_checkpoints_mentions_manual_qa_followup():
+    snap = {}
+    pipeline._add_manager_checkpoints(snap)
+    assert "manual QA follow-up" in snap.get("checkpoints", "")
+    assert "fixed and deployed" in snap["checkpoints"]
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
