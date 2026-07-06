@@ -436,6 +436,46 @@ def test_recommends_fix_helper_classifies_diagnosed_but_unapplied():
         {"status": "blocked"}, "could not access repo [a.ts:1]") is False
 
 
+def test_awaits_manual_qa_classifies_fixed_deployed_followup():
+    analysis = ("REVIEW item is fixed and deployed, awaiting owner/manual QA "
+                "confirmation.")
+    assert pipeline._awaits_manual_qa({"ready": False}, analysis) is True
+    assert pipeline._awaits_manual_qa({"status": "awaiting_manual_qa"}, "") is True
+    assert pipeline._awaits_manual_qa(
+        {"ready": False}, "Reviewed the code; current behavior is correct.") is False
+    assert pipeline._awaits_manual_qa(
+        {"status": "blocked"}, "fixed and deployed, awaiting manual QA") is False
+
+
+def test_dev_manual_qa_followup_notifies_control_for_signal(conn, cfg_project):
+    e1 = events.ingest_signal(conn, cfg_project, team="dev", source="review",
+                              fingerprint="REVIEW-QA-1",
+                              payload={"title": "Review item", "status": "REVIEW"})
+    conn.commit()
+    rid = pipeline.open_request(conn, cfg_project, event_id=e1, team_id="dev",
+                                conversation_id=None, fingerprint="REVIEW-QA-1")
+    conn.commit()
+    analysis = ("REVIEW item is fixed and deployed, awaiting owner/manual QA "
+                "confirmation.")
+    job = _developer_job(conn, rid, {"has_diff": False,
+                                     "parsed": {"ready": False, "analysis": analysis}})
+    pipeline.on_job_done(conn, cfg_project, job)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
+        assert cur.fetchone()[0] == "done"
+        cur.execute("SELECT destination_ref, payload->>'text' FROM actions "
+                    "WHERE idempotency_key=%s", (f"manual_qa:{rid}",))
+        dest, text = cur.fetchone()
+        cur.execute("SELECT outcome, note FROM pm_lessons WHERE fingerprint='REVIEW-QA-1'")
+        outcome, note = cur.fetchone()
+    assert dest is not None
+    assert "Manual QA follow-up" in text
+    assert "Please confirm" in text
+    assert outcome == "manual-qa"
+    assert "manual QA confirmation" in note
+
+
 def test_dev_recommends_fix_redispatches_developer_under_budget(conn, cfg_project):
     """ready=false + a concrete located fix + no diff, under rework budget:
     re-dispatch the developer (loop back), do NOT close as no-fix."""
