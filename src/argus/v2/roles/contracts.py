@@ -82,6 +82,8 @@ def qa_verdict(result: dict, test_exit: Optional[int]) -> str:
     2. test_exit when present: 0 -> pass, non-zero -> fail.
     3. PASS, for advisory or no-project mode with no structured result.
     """
+    if result.get("qa_environment_blocker"):
+        return "fail"
     v = result.get("verdict")
     if v is not None:
         return "pass" if v == "pass" else "fail"

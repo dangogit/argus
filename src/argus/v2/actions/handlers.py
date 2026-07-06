@@ -271,6 +271,7 @@ def _content_queue(payload: dict) -> str:
 
 
 def _social_publish(payload: dict, runner: Callable) -> str:
+    _require_live_readiness(payload)
     if os.environ.get("ARGUS_CONTENT_PUBLISH_ENABLED") != "1":
         raise RuntimeError("social publishing not configured")
     command = os.environ.get("ARGUS_SOCIAL_PUBLISH_COMMAND")
@@ -289,6 +290,26 @@ def _social_publish(payload: dict, runner: Callable) -> str:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+_LIVE_READINESS_REQUIRED = (
+    "approval_proof",
+    "durable_media",
+    "cta_route",
+    "dm_activation",
+    "metricool_target",
+    "connector_auth",
+)
+
+
+def _require_live_readiness(payload: dict) -> None:
+    proof = payload.get("live_readiness") or payload.get("readiness")
+    if not isinstance(proof, dict):
+        missing = ", ".join(_LIVE_READINESS_REQUIRED)
+        raise RuntimeError(f"live readiness proof missing: {missing}")
+    missing = [key for key in _LIVE_READINESS_REQUIRED if not str(proof.get(key) or "").strip()]
+    if missing:
+        raise RuntimeError(f"live readiness proof incomplete: {', '.join(missing)}")
 
 
 def _required(payload: dict, key: str) -> str:

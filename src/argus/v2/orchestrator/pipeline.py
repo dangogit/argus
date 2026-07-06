@@ -39,6 +39,9 @@ _PIPELINE_CHECKPOINTS = (
     "- For merge, deploy, repair, or live ops work, name completed milestones "
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
+    "- Before emitting qa-fail or a failing PR summary, classify each failure as "
+    "code regression, environment blocker, expected cancellation, stale status, "
+    "or unknown.\n"
     "- If interrupted, the transcript must show completed external side effects "
     "and remaining work."
 )
@@ -103,6 +106,12 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
             )
             if cur.fetchone():
                 return None
+        if _pm_equivalence_enabled(fingerprint):
+            cur.execute("SELECT payload FROM events WHERE id=%s", (event_id,))
+            row = cur.fetchone()
+            payload = dict(row[0] or {}) if row else {}
+            if equivalent_pm_request(conn, team_id, payload, fingerprint):
+                return None
         # Off by default (checked first: cheaper than the payload lookup below,
         # and keeps the common case a no-op with zero extra queries).
         dedup_on = bug_dedup.dedup_enabled(cfg, team_id)
@@ -140,6 +149,85 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         request_id = str(row[0])
     enqueue_stage(conn, cfg, request_id=request_id, stage_index=0)
     return request_id
+
+
+def equivalent_pm_request(conn: psycopg.Connection, team_id: str, payload: dict,
+                          fingerprint: Optional[str]) -> Optional[str]:
+    if not _pm_equivalence_enabled(fingerprint):
+        return None
+    target = _pm_work_signature(payload)
+    if not target:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id::text, r.fingerprint, e.payload
+            FROM requests r
+            JOIN events e ON e.id = r.event_id
+            WHERE r.team_id=%s
+              AND r.fingerprint IS NOT NULL
+              AND r.fingerprint <> %s
+              AND (
+                r.fingerprint LIKE 'retro-change:%%'
+                OR r.fingerprint LIKE 'converse:%%'
+              )
+            ORDER BY r.created_at DESC
+            LIMIT 100
+            """,
+            (team_id, fingerprint or ""),
+        )
+        rows = cur.fetchall()
+    for request_id, _existing_fp, existing_payload in rows:
+        if _pm_signatures_match(target, _pm_work_signature(dict(existing_payload or {}))):
+            return request_id
+    return None
+
+
+def _pm_equivalence_enabled(fingerprint: Optional[str]) -> bool:
+    return bool(
+        fingerprint
+        and (fingerprint.startswith("retro-change:")
+             or fingerprint.startswith("converse:"))
+    )
+
+
+def _pm_work_signature(payload: dict) -> tuple[str, str, str] | None:
+    text = _norm_work_part(
+        payload.get("task_text")
+        or payload.get("text")
+        or payload.get("message")
+        or payload.get("title")
+    )
+    if not text:
+        return None
+    lineage = _norm_work_part(
+        payload.get("lineage")
+        or payload.get("request_lineage")
+        or payload.get("source_lineage")
+    )
+    theme = _norm_work_part(payload.get("theme") or payload.get("retro_theme"))
+    return text, lineage, theme
+
+
+def _pm_signatures_match(left: tuple[str, str, str] | None,
+                         right: tuple[str, str, str] | None) -> bool:
+    if not left or not right or left[0] != right[0]:
+        return False
+    for idx in (1, 2):
+        if left[idx] and right[idx] and left[idx] != right[idx]:
+            return False
+    return True
+
+
+def _norm_work_part(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        value = " ".join(sorted(str(item) for item in value if str(item)))
+    text = " ".join(str(value).casefold().split())
+    return " ".join(
+        "".join(ch if ch.isalnum() else " " for ch in text).split()
+    )
 
 
 def _bug_ref_for_event(conn: psycopg.Connection, event_id) -> Optional[str]:
@@ -509,6 +597,13 @@ def _loop_back(conn: psycopg.Connection, cfg, job: Job, team, to_role: str,
         reason = f"{job.role} did not pass after {team.pipeline.max_iters} rework attempt(s)."
         if detail:
             reason = f"{reason} Blocking issue: {detail}"
+        if _review_failure_superseded(conn, job.request_id, job.role):
+            log.info("request %s ignored stale %s failure after later review pass",
+                     job.request_id, job.role,
+                     extra={"team_id": job.team_id, "request_id": job.request_id,
+                            "job_id": job.id})
+            return
+        reason = _classified_failure_note(reason)
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
             reason,
@@ -669,12 +764,14 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                 diff_text = ""
             scan = pm_scan.scan_diff(diff_text)
             if pm_scan.has_critical(scan):
+                reason = _classified_failure_note(
+                    f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}"
+                )
                 _record_memory_outcome(
                     conn, job.request_id, "qa-fail",
-                    f"blocked by deterministic diff scan: {pm_scan.format_findings(scan)}",
+                    reason,
                 )
-                _fail(conn, cfg, job.request_id,
-                      f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}")
+                _fail(conn, cfg, job.request_id, reason)
                 return
             pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd)
             _record_memory_outcome(conn, job.request_id, "qa-pass", pr_info["summary_short"])
@@ -730,16 +827,20 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
         diff_text = ""
     scan = pm_scan.scan_diff(diff_text)
     if pm_scan.has_critical(scan):
+        reason = _classified_failure_note(
+            f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}"
+        )
         _record_memory_outcome(
             conn, job.request_id, "qa-fail",
-            f"blocked by deterministic diff scan: {pm_scan.format_findings(scan)}",
+            reason,
         )
-        _fail(conn, cfg, job.request_id,
-              f"Deterministic diff scan blocked PR: {pm_scan.format_findings(scan)}")
+        _fail(conn, cfg, job.request_id, reason)
         return True
 
     failure_label = "QA failed" if job.role == "qa" else f"{job.role} failed"
-    risk = f"needs review: {failure_label}; {reason} Opened as draft so the diff is inspectable."
+    classification = _failure_classification(reason)
+    risk = (f"needs review: {failure_label}; failure classification: {classification}; "
+            f"{reason} Opened as draft so the diff is inspectable.")
     pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd, risk_summary=risk)
     with conn.cursor() as cur:
         cur.execute(
@@ -794,10 +895,13 @@ def _memory_outcome_note(outcome: str, note: str) -> str:
                 return note
             return f"Next repair action: address the known root cause. Evidence: {note}"
         return f"Next repair action: none, no code change warranted. Evidence: {note}"
-    if outcome == "qa-fail" and _has_known_root_cause(note):
-        if "Blocking issue:" in note or "Next repair action:" in note:
-            return note
-        return f"Next repair action: address the review failure root cause. Evidence: {note}"
+    if outcome == "qa-fail":
+        note = _classified_failure_note(note)
+        if _has_known_root_cause(note):
+            if "Blocking issue:" in note or "Next repair action:" in note:
+                return note
+            return f"Next repair action: address the review failure root cause. Evidence: {note}"
+        return note
     return note
 
 
@@ -806,12 +910,94 @@ def _has_known_root_cause(text: str) -> bool:
     return "root cause" in lowered and "no root cause" not in lowered
 
 
+def _review_failure_superseded(conn: psycopg.Connection, request_id: str,
+                               failed_role: str) -> bool:
+    """True when a failure callback is older than the latest review result."""
+    latest = _latest_review_outcomes(conn, request_id)
+    if latest.get("senior") == "approve":
+        return True
+    if failed_role == "qa" and latest.get("qa") == "pass":
+        return True
+    if failed_role == "browser_verify" and latest.get("browser_verify") in ("pass", "skipped"):
+        return True
+    if failed_role == "senior" and latest.get("senior") == "approve":
+        return True
+    return False
+
+
+def _latest_review_outcomes(conn: psycopg.Connection, request_id: str) -> dict[str, str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (role) role, result
+            FROM jobs
+            WHERE request_id=%s
+              AND kind='pipeline'
+              AND status='done'
+              AND role IN ('qa', 'browser_verify', 'senior')
+            ORDER BY role, created_at DESC, updated_at DESC
+            """,
+            (request_id,),
+        )
+        rows = cur.fetchall()
+    outcomes: dict[str, str] = {}
+    for role, result in rows:
+        parsed = (result or {}).get("parsed", {}) if isinstance(result, dict) else {}
+        if role == "qa":
+            outcomes[role] = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
+        elif role == "browser_verify":
+            meta = (result or {}).get("browser_verify", {}) if isinstance(result, dict) else {}
+            if isinstance(meta, dict) and meta.get("skipped"):
+                outcomes[role] = "skipped"
+            else:
+                outcomes[role] = str(parsed.get("verdict") or "")
+        elif role == "senior":
+            outcomes[role] = str(parsed.get("decision") or "")
+    return outcomes
+
+
 def _parsed_failure_detail(parsed: dict) -> str:
     for key in ("reason", "analysis", "summary", "message"):
         value = parsed.get(key)
         if value:
             return str(value)
     return ""
+
+
+def _classified_failure_note(reason: str) -> str:
+    if "failure classification:" in (reason or "").lower():
+        return reason
+    return f"Failure classification: {_failure_classification(reason)}. {reason}"
+
+
+def _failure_classification(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in (
+        "superseded", "expected cancellation", "expected cancelation",
+        "cancelled because", "canceled because", "cancelled by newer",
+        "canceled by newer", "newer request",
+    )):
+        return "expected cancellation"
+    if any(marker in lowered for marker in (
+        "stale status", "stale deployment", "deployment is stale",
+        "outdated deployment", "newer deployment",
+    )):
+        return "stale status"
+    if any(marker in lowered for marker in (
+        "sandbox networking", "network disabled", "network is disabled",
+        "network access", "connection refused", "could not resolve",
+        "temporary failure in name resolution", "localhost", "127.0.0.1",
+        "postgres", "pypi", "http 403", "403", "forbidden", "token 401",
+        "401", "unauthorized", "not authorized",
+    )):
+        return "environment blocker"
+    if any(marker in lowered for marker in (
+        "code regression", "regression", "test failed", "tests failed",
+        "failed tests", "assertionerror", "traceback", "typeerror",
+        "valueerror", "deterministic diff scan",
+    )):
+        return "code regression"
+    return "unknown"
 
 
 def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
@@ -902,19 +1088,41 @@ def _checks_summary(conn: psycopg.Connection, request_id: str) -> str:
         if role == "qa":
             verdict = contracts.qa_verdict(parsed, (result or {}).get("test_exit"))
             part = f"QA: {verdict}"
+            if verdict != "pass":
+                part += f" ({_classified_failure_note(_result_failure_text(role, result))})"
         elif role == "browser_verify":
             meta = (result or {}).get("browser_verify", {}) if isinstance(result, dict) else {}
             if isinstance(meta, dict) and meta.get("skipped"):
                 part = "Browser: skipped (no UI files changed)"
             else:
-                part = f"Browser: {parsed.get('verdict') or 'skip'}"
+                verdict = parsed.get("verdict") or "skip"
+                part = f"Browser: {verdict}"
+                if verdict != "pass":
+                    part += f" ({_classified_failure_note(_result_failure_text(role, result))})"
         elif role == "senior":
-            part = f"Senior: {parsed.get('decision') or 'no decision'}"
+            decision = parsed.get("decision") or "no decision"
+            part = f"Senior: {decision}"
+            if decision != "approve":
+                part += f" ({_classified_failure_note(_result_failure_text(role, result))})"
         if part:
             if role not in parts:
                 order.append(role)
             parts[role] = part
     return "; ".join(parts[role] for role in order) or "QA and senior approved"
+
+
+def _result_failure_text(role: str, result) -> str:
+    if not isinstance(result, dict):
+        return str(role)
+    parsed = result.get("parsed")
+    details = []
+    if isinstance(parsed, dict):
+        details.append(_parsed_failure_detail(parsed))
+    for key in ("test_output", "output", "error"):
+        value = result.get(key)
+        if value:
+            details.append(str(value))
+    return " ".join(part for part in details if part) or str(role)
 
 
 def _changed_files(cwd: str) -> list[str]:
@@ -1022,6 +1230,7 @@ def _bullet_list(items: list[str]) -> str:
 def _failure_text(conn: psycopg.Connection, request_id: str, reason: str) -> str:
     request = _request_text_for_request(conn, request_id)
     detail = _last_failure_detail(conn, request_id)
+    classification = _failure_classification(f"{reason}\n{detail}")
     next_line = "Next: fix failing stage and rerun request."
     if _may_have_partial_side_effects(f"{reason}\n{detail}"):
         next_line = ("Next: inspect live state and job transcript before rerun; "
@@ -1029,6 +1238,7 @@ def _failure_text(conn: psycopg.Connection, request_id: str, reason: str) -> str
     lines = [
         "Argus pipeline stopped before normal completion.",
         f"Request: {request or request_id}",
+        f"Failure classification: {classification}",
         f"Reason: {reason}",
         next_line,
     ]

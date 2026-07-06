@@ -37,6 +37,27 @@ def test_unknown_action_type_raises():
         handlers.run("nope", {}, runner=lambda *a, **k: "")
 
 
+def test_social_publish_requires_live_readiness_proof(monkeypatch):
+    monkeypatch.setenv("ARGUS_CONTENT_PUBLISH_ENABLED", "1")
+    monkeypatch.setenv("ARGUS_SOCIAL_PUBLISH_COMMAND", "echo posted")
+
+    with pytest.raises(RuntimeError, match="live readiness proof missing"):
+        handlers.run("social_publish", {"draft_id": "d1"}, runner=lambda *a, **k: "posted")
+
+    proof = {
+        "approval_proof": "owner approved content-approval:pr:2:publish:1783099493.667819",
+        "durable_media": "asset stored in content/d1/image.png",
+        "cta_route": "cta link resolves",
+        "dm_activation": "dm automation active",
+        "metricool_target": "Metricool brand and network selected",
+        "connector_auth": "publisher connector auth checked",
+    }
+    ref = handlers.run("social_publish", {"draft_id": "d1", "live_readiness": proof},
+                       runner=lambda *a, **k: "posted")
+
+    assert ref == "posted"
+
+
 def test_calendar_action_uses_v2_calendar(monkeypatch):
     from argus.v2 import calendar
 

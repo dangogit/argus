@@ -44,6 +44,7 @@ class WatchdogFinding:
     retry_command: str
     retryable: bool
     destination_ref: str
+    collapse_key: str
 
 
 @dataclass(frozen=True)
@@ -319,6 +320,11 @@ def _classify(row: dict[str, Any], cfg, *, rule: _Rule, threshold_minutes: int,
         retry_command=retry_command,
         retryable=retryable,
         destination_ref=dest,
+        collapse_key=_lineage_collapse_key(
+            team_id=str(row["team_id"]),
+            category=category,
+            payload=payload,
+        ),
     )
 
 
@@ -338,11 +344,44 @@ def _insert_alert(conn: psycopg.Connection, finding: WatchdogFinding) -> int:
                 job_id,
                 finding.team_id,
                 finding.destination_ref,
-                f"completion-watchdog:{finding.category}:{finding.request_id}",
+                finding.collapse_key
+                or f"completion-watchdog:{finding.category}:{finding.request_id}",
                 Json({"text": text, "urgent": True, "severity": "error"}),
             ),
         )
         return 1 if cur.rowcount else 0
+
+
+def _lineage_collapse_key(*, team_id: str, category: str, payload: dict[str, Any]) -> str:
+    if not payload.get("collapse_lineage"):
+        return ""
+    lineage = _payload_text(
+        payload, "lineage", "request_lineage", "original_request_lineage"
+    )
+    if not lineage:
+        return ""
+    readiness = _payload_text(payload, "readiness_signal", "readiness_state")
+    blocker = _payload_text(payload, "blocker", "blocker_key", "blocker_state")
+    escalation = _payload_text(
+        payload, "escalation", "escalation_level", "escalation_threshold"
+    )
+    return ":".join((
+        "completion-watchdog-lineage",
+        team_id,
+        category,
+        lineage,
+        readiness,
+        blocker,
+        escalation,
+    ))
+
+
+def _payload_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return ""
 
 
 def _alert_text(finding: WatchdogFinding) -> str:

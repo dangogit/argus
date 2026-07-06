@@ -594,10 +594,22 @@ def test_content_draft_list_and_publish(conn, pg_dsn, monkeypatch, capsys):
         "--request", "announce launch",
     ]) == 0
     draft_id = state.register("luma", "linkedin")
-    monkeypatch.setattr(handlers, "run", lambda action_type, payload: "posted:1")
+    publish_payloads = []
+    monkeypatch.setattr(
+        handlers, "run",
+        lambda action_type, payload: publish_payloads.append(payload) or "posted:1",
+    )
 
     assert cli.main(["content", "list"]) == 0
-    assert cli.main(["content", "publish", draft_id]) == 0
+    assert cli.main([
+        "content", "publish", draft_id,
+        "--approval-proof", "owner approved content-approval:pr:2:publish:1783099493.667819",
+        "--durable-media", "image stored in content draft",
+        "--cta-route", "cta link checked",
+        "--dm-activation", "dm active",
+        "--metricool-target", "Metricool target selected",
+        "--connector-auth", "publisher auth checked",
+    ]) == 0
 
     out = capsys.readouterr().out
     assert "content queue " in out
@@ -607,6 +619,8 @@ def test_content_draft_list_and_publish(conn, pg_dsn, monkeypatch, capsys):
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM content_drafts WHERE id=%s", (draft_id,))
         assert cur.fetchone()[0] == "published"
+    assert publish_payloads[0]["live_readiness"]["approval_proof"].startswith("owner approved")
+    assert publish_payloads[0]["live_readiness"]["metricool_target"] == "Metricool target selected"
 
 
 def test_ceo_brief_parser(monkeypatch):

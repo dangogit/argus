@@ -519,7 +519,8 @@ def test_memory_outcome_note_requires_repair_action_for_known_root_cause_failure
     )
 
     assert note.startswith("Next repair action: address the review failure root cause.")
-    assert "Evidence: Senior review rejected it." in note
+    assert "Failure classification: unknown" in note
+    assert "Evidence: Failure classification: unknown. Senior review rejected it." in note
 
 
 def test_memory_outcome_note_requires_repair_action_for_known_root_cause_no_change():
@@ -539,8 +540,23 @@ def test_memory_outcome_note_preserves_existing_blocking_marker_for_known_root_c
     )
 
     assert note == (
-        "senior did not pass. Blocking issue: Root cause still present in checkout.py."
+        "Failure classification: unknown. senior did not pass. Blocking issue: "
+        "Root cause still present in checkout.py."
     )
+
+
+def test_failure_classification_covers_known_blockers():
+    cases = {
+        "sandbox networking blocked localhost Postgres": "environment blocker",
+        "HTTP 403 while reading deployment logs": "environment blocker",
+        "stale deployment status from prior preview": "stale status",
+        "token 401 from connector auth": "environment blocker",
+        "superseded cancellation after newer request": "expected cancellation",
+        "tests failed with AssertionError in checkout.py": "code regression",
+        "qa rejected without details": "unknown",
+    }
+    for text, expected in cases.items():
+        assert pipeline._failure_classification(text) == expected
 
 
 def test_dev_genuine_no_fix_unchanged(conn, cfg_project):

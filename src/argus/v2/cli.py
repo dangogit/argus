@@ -1159,6 +1159,14 @@ def cmd_content(args) -> int:
             "project": draft["project"],
             "platform": draft["platform"],
             "path": str(state.content_dir() / draft["id"]),
+            "live_readiness": {
+                "approval_proof": args.approval_proof,
+                "durable_media": args.durable_media,
+                "cta_route": args.cta_route,
+                "dm_activation": args.dm_activation,
+                "metricool_target": args.metricool_target,
+                "connector_auth": args.connector_auth,
+            },
         }
         try:
             ref = handlers.run("social_publish", payload)
@@ -1801,6 +1809,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(fn=cmd_content)
     r = cts.add_parser("publish")
     r.add_argument("draft_id")
+    r.add_argument("--approval-proof", required=True)
+    r.add_argument("--durable-media", required=True)
+    r.add_argument("--cta-route", required=True)
+    r.add_argument("--dm-activation", required=True)
+    r.add_argument("--metricool-target", required=True)
+    r.add_argument("--connector-auth", required=True)
     r.set_defaults(fn=cmd_content)
     r = cts.add_parser("drain"); r.set_defaults(fn=cmd_content)
     s = sub.add_parser("brief")

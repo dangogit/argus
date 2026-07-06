@@ -75,7 +75,8 @@ def _notify(draft_id: str, notifier: Notifier) -> bool:
 def _default_notifier(draft_id: str, body: str, to: str, image: Path | None) -> bool:
     if not to:
         return False
-    header = f'Draft {draft_id} ready. Reply "publish {draft_id}" to post, "reject {draft_id}" to drop.'
+    header = (f"Draft {draft_id} ready. Publish only after approval proof, durable media, "
+              "CTA route, DM activation, Metricool target, and connector auth are checked.")
     _send_text(to, f"{header}\n\n{body}")
     if image is not None and image.exists():
         if not _send_media(to, f"draft {draft_id}", image):

@@ -24,6 +24,18 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert cfg.teams[0].project.repo == "/repo/luma"
     assert cfg.teams[0].project.autofix.draft is True
     assert cfg.teams[0].project.pm.daily_limit == 2
+    roles = {role.name: role for role in cfg.teams[0].roles}
+    assert "code regression" in roles["qa"].prompt
+    assert "environment blocker" in roles["qa"].prompt
+    assert "expected cancellation" in roles["qa"].prompt
+    assert "stale status" in roles["qa"].prompt
+    assert "unknown" in roles["qa"].prompt
+    assert "failing PR summary" in roles["senior"].prompt
+    assert "code regression" in roles["senior"].prompt
+    assert "environment blocker" in roles["senior"].prompt
+    assert "expected cancellation" in roles["senior"].prompt
+    assert "stale status" in roles["senior"].prompt
+    assert "unknown" in roles["senior"].prompt
 
 
 def test_convert_without_projects_creates_default_team():
