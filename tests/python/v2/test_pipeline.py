@@ -63,6 +63,9 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
         snap = cur.fetchone()[0]
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
     assert "external side effects" in snap["checkpoints"]
+    assert "verification path" in snap["checkpoints"]
+    assert "every covered report or item" in snap["checkpoints"]
+    assert "post-fix follow-up condition" in snap["checkpoints"]
     assert "manual QA follow-up" in snap["checkpoints"]
 
 
@@ -71,6 +74,9 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     pipeline._add_manager_checkpoints(snap)
     assert "manual QA follow-up" in snap.get("checkpoints", "")
     assert "fixed and deployed" in snap["checkpoints"]
+    assert "verification path" in snap["checkpoints"]
+    assert "every covered report or item" in snap["checkpoints"]
+    assert "post-fix follow-up condition" in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():

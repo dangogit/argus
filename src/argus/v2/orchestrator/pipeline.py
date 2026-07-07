@@ -39,6 +39,8 @@ _PIPELINE_CHECKPOINTS = (
     "- For merge, deploy, repair, or live ops work, name completed milestones "
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
+    "- For QA-sensitive work, document the verification path, every covered "
+    "report or item, and the post-fix follow-up condition before closure.\n"
     "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
     "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
@@ -52,7 +54,9 @@ _MANAGER_CHECKPOINTS = (
     "CHECKPOINTS:\n"
     "- If a REVIEW item is already fixed and deployed but awaiting owner/manual "
     "QA confirmation, do not silently ignore it. Reply with a manual QA "
-    "follow-up asking the owner to confirm."
+    "follow-up asking the owner to confirm.\n"
+    "- For QA-sensitive work, require the verification path, every covered "
+    "report or item, and the post-fix follow-up condition before closure."
 )
 
 

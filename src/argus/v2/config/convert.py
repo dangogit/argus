@@ -93,11 +93,15 @@ def _team_from_project(project: dict) -> dict:
              "edited code, or {\"ready\": false, \"analysis\": \"<why no change "
              "was warranted>\"} otherwise."},
             {"name": "qa", "kind": "judge", "prompt":
-             "Run checks and judge the result. Before failing, classify the "
+             "Run checks and judge the result. For QA-sensitive work, document "
+             "the verification path, every covered report or item, and the "
+             "post-fix follow-up condition before closure. Before failing, classify the "
              "failure as code regression, environment blocker, expected "
              "cancellation, stale status, or unknown."},
             {"name": "senior", "kind": "judge", "prompt":
-             "Review the change before PR. Before a failing PR summary, "
+             "Review the change before PR. For QA-sensitive work, require the "
+             "verification path, every covered report or item, and the post-fix "
+             "follow-up condition before closure. Before a failing PR summary, "
              "classify the failure as code regression, environment blocker, "
              "expected cancellation, stale status, or unknown."},
         ],
