@@ -25,11 +25,21 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert cfg.teams[0].project.autofix.draft is True
     assert cfg.teams[0].project.pm.daily_limit == 2
     roles = {role.name: role for role in cfg.teams[0].roles}
+    assert "QA-sensitive work cannot close" in roles["qa"].prompt
+    assert "transcript documents" in roles["qa"].prompt
+    assert "verification path" in roles["qa"].prompt
+    assert "every covered report or item" in roles["qa"].prompt
+    assert "post-fix follow-up condition" in roles["qa"].prompt
     assert "code regression" in roles["qa"].prompt
     assert "environment blocker" in roles["qa"].prompt
     assert "expected cancellation" in roles["qa"].prompt
     assert "stale status" in roles["qa"].prompt
     assert "unknown" in roles["qa"].prompt
+    assert "QA-sensitive work cannot close" in roles["senior"].prompt
+    assert "transcript documents" in roles["senior"].prompt
+    assert "verification path" in roles["senior"].prompt
+    assert "every covered report or item" in roles["senior"].prompt
+    assert "post-fix follow-up condition" in roles["senior"].prompt
     assert "failing PR summary" in roles["senior"].prompt
     assert "code regression" in roles["senior"].prompt
     assert "environment blocker" in roles["senior"].prompt
