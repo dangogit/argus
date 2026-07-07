@@ -110,6 +110,10 @@ def test_bundled_project_rules_matches_developer_work():
         allow=["project-rules"],
     )
     assert "AGENTS.md" in block
+    assert "QA-sensitive work cannot close" in block
+    assert "verification path" in block
+    assert "every covered report or item" in block
+    assert "post-fix follow-up condition" in block
 
 
 def test_bundled_support_email_triage_matches_vendor_notice():
