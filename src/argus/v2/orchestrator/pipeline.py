@@ -40,7 +40,7 @@ _PIPELINE_CHECKPOINTS = (
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
     "- QA-sensitive work cannot close unless the transcript documents the "
-    "access path, verification path, every covered report or item, and the "
+    "access path, item-by-item disposition, verification coverage, and the "
     "post-fix follow-up condition.\n"
     "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
     "follow-up until owner or manual QA confirmation arrives.\n"
@@ -57,7 +57,7 @@ _MANAGER_CHECKPOINTS = (
     "QA confirmation, do not silently ignore it. Reply with a manual QA "
     "follow-up asking the owner to confirm.\n"
     "- QA-sensitive work cannot close unless the transcript documents the "
-    "access path, verification path, every covered report or item, and the "
+    "access path, item-by-item disposition, verification coverage, and the "
     "post-fix follow-up condition."
 )
 
