@@ -111,6 +111,7 @@ def test_bundled_project_rules_matches_developer_work():
     )
     assert "AGENTS.md" in block
     assert "QA-sensitive work cannot close" in block
+    assert "access path" in block
     assert "verification path" in block
     assert "every covered report or item" in block
     assert "post-fix follow-up condition" in block
