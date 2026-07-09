@@ -40,8 +40,8 @@ _PIPELINE_CHECKPOINTS = (
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
     "- QA-sensitive work cannot close unless the transcript documents the "
-    "verification path, every covered report or item, and the post-fix "
-    "follow-up condition.\n"
+    "access path, item disposition, verification coverage, and unresolved "
+    "follow-up condition for every covered report or item.\n"
     "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
     "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
@@ -57,8 +57,8 @@ _MANAGER_CHECKPOINTS = (
     "QA confirmation, do not silently ignore it. Reply with a manual QA "
     "follow-up asking the owner to confirm.\n"
     "- QA-sensitive work cannot close unless the transcript documents the "
-    "verification path, every covered report or item, and the post-fix "
-    "follow-up condition."
+    "access path, item disposition, verification coverage, and unresolved "
+    "follow-up condition for every covered report or item."
 )
 
 
@@ -1470,6 +1470,10 @@ def _batch_signal_text(source: str, payload: dict) -> str:
         f"Source: '{source}'. For each bug below, find the root cause and make a "
         "minimal, focused fix if one is warranted. Land all fixes as ONE combined "
         "PR, not one PR per bug.",
+        "",
+        "Before claiming summary-ready, list every covered bug with its access "
+        "path, disposition, verification coverage, evidence, and any unresolved "
+        "follow-up condition.",
         "",
         "Bugs:",
     ]

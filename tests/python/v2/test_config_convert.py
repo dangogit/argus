@@ -27,9 +27,11 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     roles = {role.name: role for role in cfg.teams[0].roles}
     assert "QA-sensitive work cannot close" in roles["qa"].prompt
     assert "transcript documents" in roles["qa"].prompt
-    assert "verification path" in roles["qa"].prompt
+    assert "access path" in roles["qa"].prompt
+    assert "item disposition" in roles["qa"].prompt
+    assert "verification coverage" in roles["qa"].prompt
+    assert "unresolved follow-up condition" in roles["qa"].prompt
     assert "every covered report or item" in roles["qa"].prompt
-    assert "post-fix follow-up condition" in roles["qa"].prompt
     assert "code regression" in roles["qa"].prompt
     assert "environment blocker" in roles["qa"].prompt
     assert "expected cancellation" in roles["qa"].prompt
@@ -37,9 +39,11 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "unknown" in roles["qa"].prompt
     assert "QA-sensitive work cannot close" in roles["senior"].prompt
     assert "transcript documents" in roles["senior"].prompt
-    assert "verification path" in roles["senior"].prompt
+    assert "access path" in roles["senior"].prompt
+    assert "item disposition" in roles["senior"].prompt
+    assert "verification coverage" in roles["senior"].prompt
+    assert "unresolved follow-up condition" in roles["senior"].prompt
     assert "every covered report or item" in roles["senior"].prompt
-    assert "post-fix follow-up condition" in roles["senior"].prompt
     assert "failing PR summary" in roles["senior"].prompt
     assert "code regression" in roles["senior"].prompt
     assert "environment blocker" in roles["senior"].prompt
