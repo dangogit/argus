@@ -83,6 +83,32 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "post-fix follow-up condition" in snap["checkpoints"]
 
 
+def test_batch_signal_text_requires_per_bug_disposition_and_evidence():
+    text = pipeline._batch_signal_text(
+        "supabase:tadam-agents",
+        {
+            "kind": "bug_batch",
+            "rows": [
+                {
+                    "message": "Login fails",
+                    "severity": "error",
+                    "row": {"id": "bug-1"},
+                },
+                {
+                    "message": "Dashboard is blank",
+                    "severity": "warn",
+                    "row": {"id": "bug-2"},
+                },
+            ],
+        },
+    )
+
+    assert "Before claiming summary-ready" in text
+    assert "list every bug below with its disposition and evidence" in text
+    assert "id=bug-1" in text
+    assert "id=bug-2" in text
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}

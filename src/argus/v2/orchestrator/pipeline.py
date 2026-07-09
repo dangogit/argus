@@ -1470,6 +1470,8 @@ def _batch_signal_text(source: str, payload: dict) -> str:
         f"Source: '{source}'. For each bug below, find the root cause and make a "
         "minimal, focused fix if one is warranted. Land all fixes as ONE combined "
         "PR, not one PR per bug.",
+        "Before claiming summary-ready, list every bug below with its disposition "
+        "and evidence.",
         "",
         "Bugs:",
     ]
