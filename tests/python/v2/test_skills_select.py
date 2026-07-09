@@ -110,7 +110,7 @@ def test_bundled_project_rules_matches_developer_work():
         allow=["project-rules"],
     )
     assert "AGENTS.md" in block
-    assert "QA-sensitive work cannot close" in block
+    assert "QA-sensitive closures and batch handoffs cannot claim done" in block
     assert "access path" in block
     assert "item disposition" in block
     assert "verification coverage" in block

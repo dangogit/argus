@@ -39,9 +39,10 @@ _PIPELINE_CHECKPOINTS = (
     "- For merge, deploy, repair, or live ops work, name completed milestones "
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
-    "- QA-sensitive work cannot close unless the transcript documents the "
-    "access path, item disposition, verification coverage, and unresolved "
-    "follow-up condition for every covered report or item.\n"
+    "- QA-sensitive closures and batch handoffs cannot claim done unless the "
+    "transcript documents the access path, item disposition, verification "
+    "coverage, and unresolved follow-up condition for every covered report or "
+    "item.\n"
     "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
     "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
@@ -56,9 +57,10 @@ _MANAGER_CHECKPOINTS = (
     "- If a REVIEW item is already fixed and deployed but awaiting owner/manual "
     "QA confirmation, do not silently ignore it. Reply with a manual QA "
     "follow-up asking the owner to confirm.\n"
-    "- QA-sensitive work cannot close unless the transcript documents the "
-    "access path, item disposition, verification coverage, and unresolved "
-    "follow-up condition for every covered report or item."
+    "- QA-sensitive closures and batch handoffs cannot claim done unless the "
+    "transcript documents the access path, item disposition, verification "
+    "coverage, and unresolved follow-up condition for every covered report or "
+    "item."
 )
 
 
@@ -1471,9 +1473,9 @@ def _batch_signal_text(source: str, payload: dict) -> str:
         "minimal, focused fix if one is warranted. Land all fixes as ONE combined "
         "PR, not one PR per bug.",
         "",
-        "Before claiming summary-ready, list every covered bug with its access "
-        "path, disposition, verification coverage, evidence, and any unresolved "
-        "follow-up condition.",
+        "Before claiming done or summary-ready, list every covered bug with its "
+        "access path, disposition, verification coverage, evidence, and any "
+        "unresolved follow-up condition.",
         "",
         "Bugs:",
     ]

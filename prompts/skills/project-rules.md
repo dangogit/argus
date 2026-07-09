@@ -10,6 +10,6 @@ This is repo work. Before editing or reviewing, read repo-local rules when prese
 
 Apply global owner rules from the prompt. If repo rules conflict with owner rules, owner rules win. Keep the change small and verify with the narrowest relevant check.
 
-QA-sensitive work cannot close unless the transcript documents the access path,
-item disposition, verification coverage, and unresolved follow-up condition for
-every covered report or item.
+QA-sensitive closures and batch handoffs cannot claim done unless the transcript
+documents the access path, item disposition, verification coverage, and
+unresolved follow-up condition for every covered report or item.

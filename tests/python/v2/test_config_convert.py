@@ -25,7 +25,7 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert cfg.teams[0].project.autofix.draft is True
     assert cfg.teams[0].project.pm.daily_limit == 2
     roles = {role.name: role for role in cfg.teams[0].roles}
-    assert "QA-sensitive work cannot close" in roles["qa"].prompt
+    assert "QA-sensitive closures and batch handoffs cannot claim done" in roles["qa"].prompt
     assert "transcript documents" in roles["qa"].prompt
     assert "access path" in roles["qa"].prompt
     assert "item disposition" in roles["qa"].prompt
@@ -37,7 +37,7 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "expected cancellation" in roles["qa"].prompt
     assert "stale status" in roles["qa"].prompt
     assert "unknown" in roles["qa"].prompt
-    assert "QA-sensitive work cannot close" in roles["senior"].prompt
+    assert "QA-sensitive closures and batch handoffs cannot claim done" in roles["senior"].prompt
     assert "transcript documents" in roles["senior"].prompt
     assert "access path" in roles["senior"].prompt
     assert "item disposition" in roles["senior"].prompt

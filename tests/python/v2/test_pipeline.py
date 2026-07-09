@@ -63,7 +63,7 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
         snap = cur.fetchone()[0]
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
     assert "external side effects" in snap["checkpoints"]
-    assert "QA-sensitive work cannot close" in snap["checkpoints"]
+    assert "QA-sensitive closures and batch handoffs cannot claim done" in snap["checkpoints"]
     assert "transcript documents" in snap["checkpoints"]
     assert "access path" in snap["checkpoints"]
     assert "item disposition" in snap["checkpoints"]
@@ -78,7 +78,7 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     pipeline._add_manager_checkpoints(snap)
     assert "manual QA follow-up" in snap.get("checkpoints", "")
     assert "fixed and deployed" in snap["checkpoints"]
-    assert "QA-sensitive work cannot close" in snap["checkpoints"]
+    assert "QA-sensitive closures and batch handoffs cannot claim done" in snap["checkpoints"]
     assert "transcript documents" in snap["checkpoints"]
     assert "access path" in snap["checkpoints"]
     assert "item disposition" in snap["checkpoints"]
@@ -95,7 +95,7 @@ def test_batch_signal_text_requires_itemized_summary_ready_handoff():
         ],
     })
 
-    assert "Before claiming summary-ready" in text
+    assert "Before claiming done or summary-ready" in text
     assert "every covered bug" in text
     assert "access path" in text
     assert "disposition" in text

@@ -159,10 +159,10 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                 "kind": "judge",
                 "prompt": (
                     "Run or inspect verification and reject unsafe fixes. "
-                    "QA-sensitive work cannot close unless the transcript "
-                    "documents the access path, item disposition, verification "
-                    "coverage, and unresolved follow-up condition for every "
-                    "covered report or item. End "
+                    "QA-sensitive closures and batch handoffs cannot claim "
+                    "done unless the transcript documents the access path, "
+                    "item disposition, verification coverage, and unresolved "
+                    "follow-up condition for every covered report or item. End "
                     "failures with a classification of code regression, "
                     "environment blocker, expected cancellation, stale status, "
                     "or unknown. End "
@@ -176,11 +176,11 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                 "name": "senior",
                 "kind": "judge",
                 "prompt": (
-                    "Review scope, risk, and PR readiness. QA-sensitive work "
-                    "cannot close unless the transcript documents the "
-                    "access path, item disposition, verification coverage, "
-                    "and unresolved follow-up condition for every covered "
-                    "report or item. "
+                    "Review scope, risk, and PR readiness. QA-sensitive "
+                    "closures and batch handoffs cannot claim done unless the "
+                    "transcript documents the access path, item disposition, "
+                    "verification coverage, and unresolved follow-up condition "
+                    "for every covered report or item. "
                     "Before a failing PR summary, classify each failure as code "
                     "regression, "
                     "environment blocker, expected cancellation, stale status, "
