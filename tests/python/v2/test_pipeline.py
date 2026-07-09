@@ -104,7 +104,12 @@ def test_batch_signal_text_requires_per_bug_disposition_and_evidence():
     )
 
     assert "Before claiming summary-ready" in text
-    assert "list every bug below with its disposition and evidence" in text
+    assert "list every covered bug report below with its disposition and evidence" in text
+    assert "02767ee5e5a09da6a3c70119" in text
+    assert "0da901e759011fb8053321bf" in text
+    assert "supabase-tadam-agents-bug_reports-batch-85c0cf6ee7e7ae71" in text
+    assert "retro-change:0da901e759011fb8053321bf" in text
+    assert "27fecf3e9cf39d50cfecb3e0" in text
     assert "id=bug-1" in text
     assert "id=bug-2" in text
 

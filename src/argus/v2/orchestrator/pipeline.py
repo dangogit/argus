@@ -1470,8 +1470,13 @@ def _batch_signal_text(source: str, payload: dict) -> str:
         f"Source: '{source}'. For each bug below, find the root cause and make a "
         "minimal, focused fix if one is warranted. Land all fixes as ONE combined "
         "PR, not one PR per bug.",
-        "Before claiming summary-ready, list every bug below with its disposition "
-        "and evidence.",
+        "Before claiming summary-ready, list every covered bug report below with "
+        "its disposition and evidence. This internal prompt requirement is "
+        "backed by evidence "
+        "02767ee5e5a09da6a3c70119, 0da901e759011fb8053321bf, "
+        "supabase-tadam-agents-bug_reports-batch-85c0cf6ee7e7ae71, "
+        "retro-change:0da901e759011fb8053321bf, and "
+        "27fecf3e9cf39d50cfecb3e0.",
         "",
         "Bugs:",
     ]
