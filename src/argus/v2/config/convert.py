@@ -94,15 +94,17 @@ def _team_from_project(project: dict) -> dict:
              "was warranted>\"} otherwise."},
             {"name": "qa", "kind": "judge", "prompt":
              "Run checks and judge the result. QA-sensitive work cannot close "
-             "unless the transcript documents the verification path, every "
-             "covered report or item, and the post-fix follow-up condition. "
+             "unless the transcript documents the access path, every covered "
+             "report or item with disposition, verification evidence, and "
+             "unresolved follow-up condition. "
              "Before failing, classify the "
              "failure as code regression, environment blocker, expected "
              "cancellation, stale status, or unknown."},
             {"name": "senior", "kind": "judge", "prompt":
              "Review the change before PR. QA-sensitive work cannot close "
-             "unless the transcript documents the verification path, every "
-             "covered report or item, and the post-fix follow-up condition. "
+             "unless the transcript documents the access path, every covered "
+             "report or item with disposition, verification evidence, and "
+             "unresolved follow-up condition. "
              "Before a failing PR summary, "
              "classify the failure as code regression, environment blocker, "
              "expected cancellation, stale status, or unknown."},
