@@ -44,15 +44,18 @@ class SlackChannel:
             metadata={k: v for k, v in metadata.items() if v},
         )]
 
-    def send(self, binding, text: str) -> str:  # pragma: no cover
+    def send(self, binding, text: str, thread_ts: str | None = None) -> str:  # pragma: no cover
         import httpx
 
         if not binding.secret:
             raise RuntimeError("slack channel missing bot token")
+        body = {"channel": binding.channel_id, "text": text}
+        if thread_ts:
+            body["thread_ts"] = str(thread_ts)
         r = httpx.post(
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {binding.secret}"},
-            json={"channel": binding.channel_id, "text": text},
+            json=body,
             timeout=20,
         )
         r.raise_for_status()

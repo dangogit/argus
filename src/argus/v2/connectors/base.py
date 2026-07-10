@@ -12,6 +12,13 @@ REGISTRY: dict[str, type] = {}
 class Signal:
     fingerprint: str
     payload: dict = field(default_factory=dict)
+    # Optional origin descriptor for respond-back (orchestrator/respond.py):
+    # where to post the outcome once this signal's work goes terminal, e.g.
+    # {"kind": "supabase_bug_reports", "row_id": ...} or
+    # {"kind": "slack_thread", "channel": ..., "ts": ...}. Persisted into the
+    # event payload as 'reply_to' by the driver. Connectors populate it where
+    # they can; None is always fine.
+    reply_to: dict | None = None
 
 
 def register(cls):
