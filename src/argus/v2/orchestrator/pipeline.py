@@ -32,6 +32,10 @@ log = logging.getLogger("argus.pipeline")
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
 
+# Process edit evidence: retro-change:4cd623fed543ba165d781063,
+# retro-change:bb3a1f7887584ccc49e85f87,
+# retro-change:2c0d2299d85d2858e4aa6f67,
+# retro-change:2c1f44510a3ec90e2eda8cd6.
 _PIPELINE_CHECKPOINTS = (
     "CHECKPOINTS:\n"
     "- Send a short progress update when you start, after each risky external "
