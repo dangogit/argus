@@ -64,12 +64,17 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
     assert "external side effects" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
-    assert "transcript documents" in snap["checkpoints"]
+    assert "transcript records" in snap["checkpoints"]
     assert "access path" in snap["checkpoints"]
-    assert "every covered report or item with disposition" in snap["checkpoints"]
+    assert "covered items" in snap["checkpoints"]
+    assert "disposition for every covered report or item" in snap["checkpoints"]
     assert "verification evidence" in snap["checkpoints"]
     assert "unresolved follow-up condition" in snap["checkpoints"]
     assert "manual QA follow-up" in snap["checkpoints"]
+    assert "retro-change:4cd623fed543ba165d781063" in snap["checkpoints"]
+    assert "retro-change:bb3a1f7887584ccc49e85f87" in snap["checkpoints"]
+    assert "retro-change:2c0d2299d85d2858e4aa6f67" in snap["checkpoints"]
+    assert "retro-change:2c1f44510a3ec90e2eda8cd6" in snap["checkpoints"]
 
 
 def test_add_manager_checkpoints_mentions_manual_qa_followup():
@@ -78,11 +83,16 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "manual QA follow-up" in snap.get("checkpoints", "")
     assert "fixed and deployed" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
-    assert "transcript documents" in snap["checkpoints"]
+    assert "transcript records" in snap["checkpoints"]
     assert "access path" in snap["checkpoints"]
-    assert "every covered report or item with disposition" in snap["checkpoints"]
+    assert "covered items" in snap["checkpoints"]
+    assert "disposition for every covered report or item" in snap["checkpoints"]
     assert "verification evidence" in snap["checkpoints"]
     assert "unresolved follow-up condition" in snap["checkpoints"]
+    assert "retro-change:4cd623fed543ba165d781063" in snap["checkpoints"]
+    assert "retro-change:bb3a1f7887584ccc49e85f87" in snap["checkpoints"]
+    assert "retro-change:2c0d2299d85d2858e4aa6f67" in snap["checkpoints"]
+    assert "retro-change:2c1f44510a3ec90e2eda8cd6" in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():

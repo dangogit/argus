@@ -26,22 +26,32 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert cfg.teams[0].project.pm.daily_limit == 2
     roles = {role.name: role for role in cfg.teams[0].roles}
     assert "QA-sensitive work cannot close" in roles["qa"].prompt
-    assert "transcript documents" in roles["qa"].prompt
+    assert "transcript records" in roles["qa"].prompt
     assert "access path" in roles["qa"].prompt
-    assert "every covered report or item with disposition" in roles["qa"].prompt
+    assert "covered items" in roles["qa"].prompt
+    assert "disposition for every covered report or item" in roles["qa"].prompt
     assert "verification evidence" in roles["qa"].prompt
     assert "unresolved follow-up condition" in roles["qa"].prompt
+    assert "retro-change:4cd623fed543ba165d781063" in roles["qa"].prompt
+    assert "retro-change:bb3a1f7887584ccc49e85f87" in roles["qa"].prompt
+    assert "retro-change:2c0d2299d85d2858e4aa6f67" in roles["qa"].prompt
+    assert "retro-change:2c1f44510a3ec90e2eda8cd6" in roles["qa"].prompt
     assert "code regression" in roles["qa"].prompt
     assert "environment blocker" in roles["qa"].prompt
     assert "expected cancellation" in roles["qa"].prompt
     assert "stale status" in roles["qa"].prompt
     assert "unknown" in roles["qa"].prompt
     assert "QA-sensitive work cannot close" in roles["senior"].prompt
-    assert "transcript documents" in roles["senior"].prompt
+    assert "transcript records" in roles["senior"].prompt
     assert "access path" in roles["senior"].prompt
-    assert "every covered report or item with disposition" in roles["senior"].prompt
+    assert "covered items" in roles["senior"].prompt
+    assert "disposition for every covered report or item" in roles["senior"].prompt
     assert "verification evidence" in roles["senior"].prompt
     assert "unresolved follow-up condition" in roles["senior"].prompt
+    assert "retro-change:4cd623fed543ba165d781063" in roles["senior"].prompt
+    assert "retro-change:bb3a1f7887584ccc49e85f87" in roles["senior"].prompt
+    assert "retro-change:2c0d2299d85d2858e4aa6f67" in roles["senior"].prompt
+    assert "retro-change:2c1f44510a3ec90e2eda8cd6" in roles["senior"].prompt
     assert "failing PR summary" in roles["senior"].prompt
     assert "code regression" in roles["senior"].prompt
     assert "environment blocker" in roles["senior"].prompt
