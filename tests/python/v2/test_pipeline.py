@@ -65,9 +65,10 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "external side effects" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
     assert "transcript documents" in snap["checkpoints"]
-    assert "verification path" in snap["checkpoints"]
-    assert "every covered report or item" in snap["checkpoints"]
-    assert "post-fix follow-up condition" in snap["checkpoints"]
+    assert "access path" in snap["checkpoints"]
+    assert "item disposition" in snap["checkpoints"]
+    assert "verification coverage" in snap["checkpoints"]
+    assert "unresolved follow-up condition" in snap["checkpoints"]
     assert "manual QA follow-up" in snap["checkpoints"]
 
 
@@ -78,9 +79,10 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "fixed and deployed" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
     assert "transcript documents" in snap["checkpoints"]
-    assert "verification path" in snap["checkpoints"]
-    assert "every covered report or item" in snap["checkpoints"]
-    assert "post-fix follow-up condition" in snap["checkpoints"]
+    assert "access path" in snap["checkpoints"]
+    assert "item disposition" in snap["checkpoints"]
+    assert "verification coverage" in snap["checkpoints"]
+    assert "unresolved follow-up condition" in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():

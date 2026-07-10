@@ -160,8 +160,8 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                 "prompt": (
                     "Run or inspect verification and reject unsafe fixes. "
                     "QA-sensitive work cannot close unless the transcript "
-                    "documents the verification path, every covered report or "
-                    "item, and the post-fix follow-up condition. End "
+                    "documents the access path, item disposition, verification "
+                    "coverage, and unresolved follow-up condition. End "
                     "failures with a classification of code regression, "
                     "environment blocker, expected cancellation, stale status, "
                     "or unknown. End "
@@ -176,9 +176,9 @@ def _config_doc(scan: ProjectScan, *, mode: str, channel: str,
                 "kind": "judge",
                 "prompt": (
                     "Review scope, risk, and PR readiness. QA-sensitive work "
-                    "cannot close unless the transcript documents the "
-                    "verification path, every covered report or item, and the "
-                    "post-fix follow-up condition. "
+                    "cannot close unless the transcript documents the access "
+                    "path, item disposition, verification coverage, and "
+                    "unresolved follow-up condition. "
                     "Before a failing PR summary, classify each failure as code "
                     "regression, "
                     "environment blocker, expected cancellation, stale status, "
