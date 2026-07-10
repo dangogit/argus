@@ -13,7 +13,7 @@ from argus.v2.actions import approvals, executor
 from argus.v2.front import front
 from argus.v2.ingress import events as ingress_events
 from argus.v2.ingress.media import run_root
-from argus.v2.orchestrator import budget, context_router, pipeline, status
+from argus.v2.orchestrator import budget, context_router, pipeline, respond, status
 from argus.v2.queue import jobs
 from argus.v2.queue.models import ActionIntent, Job
 
@@ -486,9 +486,10 @@ def sweep_once(conn: psycopg.Connection, cfg) -> dict:
     counts["pipeline_advanced"] = len(rows)
     # 2b. Handle done converse jobs not yet processed (no marker action yet).
     counts["async_jobs_handled"] = _sweep_converse(conn, cfg)
-    # 2c. Close the loop on supabase bug sources: write Argus's verdict back to
-    # the bug row so terminal requests stop looking ignored.
-    counts["bug_writebacks"] = writeback_terminal_bugs(conn, cfg)
+    # 2c. Close the loop with signal reporters: reply to each signal's origin
+    # (supabase bug row, slack thread, ...) once its work goes terminal, so
+    # terminal requests and ignored signals stop looking ignored.
+    counts["origin_replies"] = respond.sweep(conn, cfg)
     # 3. Drain the action outbox.
     counts["actions_drained"] = executor.process_proposed(conn, cfg)
     # 4. Expire stale approvals.
@@ -514,90 +515,11 @@ def _log_sweep(counts: dict) -> None:
 
 
 def writeback_terminal_bugs(conn: psycopg.Connection, cfg) -> int:
-    """Propose bug_writeback action(s) for each terminal (done/failed) request
-    that originated from a writeback-enabled supabase source and has no
-    writeback action yet. A normal (non-batch) signal proposes one action,
-    idempotency-keyed 'bug_writeback:<rid>' (unchanged). A batch signal
-    (payload.kind == 'bug_batch', see the supabase connector's batch mode)
-    proposes one action PER bug in the batch so every row gets its own verdict
-    note, each idempotency-keyed 'bug_writeback:<rid>:<row_id>' so a partial
-    prior write does not repeat and a missing one still gets added on resweep."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT r.id, r.team_id, r.status, e.source, e.payload
-            FROM requests r JOIN events e ON e.id = r.event_id
-            WHERE r.status IN ('done','failed') AND e.kind='signal'
-              AND NOT EXISTS (
-                SELECT 1 FROM actions a
-                WHERE a.idempotency_key = 'bug_writeback:' || r.id::text
-                   OR a.idempotency_key LIKE 'bug_writeback:' || r.id::text || ':%%')
-            """
-        )
-        rows = cur.fetchall()
-    proposed = 0
-    for rid, team_id, status, source, payload in rows:
-        src = _writeback_source(cfg, source)
-        if src is None:
-            continue
-        id_col = (src.config or {}).get("id_column", "id")
-        note = _bug_outcome_note(conn, str(rid), status)
-        bug_rows = (payload or {}).get("rows") if (payload or {}).get("kind") == "bug_batch" else None
-        if bug_rows:
-            for finding in bug_rows:
-                row_id = str((finding.get("row") or {}).get(id_col) or "")
-                if not row_id:
-                    continue
-                proposed += _propose_bug_writeback(
-                    conn, request_id=str(rid), team_id=team_id, source=source,
-                    row_id=row_id, note=note,
-                    idempotency_key=f"bug_writeback:{rid}:{row_id}")
-        else:
-            row_id = str(((payload or {}).get("row") or {}).get(id_col) or "")
-            if not row_id:
-                continue
-            proposed += _propose_bug_writeback(
-                conn, request_id=str(rid), team_id=team_id, source=source,
-                row_id=row_id, note=note,
-                idempotency_key=f"bug_writeback:{rid}")
-    return proposed
-
-
-def _propose_bug_writeback(conn: psycopg.Connection, *, request_id: str, team_id: str,
-                           source: str, row_id: str, note: str,
-                           idempotency_key: str) -> int:
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO actions (request_id, team_id, type, risk, "
-            " idempotency_key, payload) "
-            "VALUES (%s,%s,'bug_writeback','reversible_internal',%s,%s) "
-            "ON CONFLICT (idempotency_key) DO NOTHING",
-            (request_id, team_id, idempotency_key,
-             Json({"source_name": source, "row_id": row_id, "note": note})))
-        return 1 if cur.rowcount else 0
-
-
-def _writeback_source(cfg, source_name: str):
-    for s in (cfg.company.sources if cfg and cfg.company else []):
-        if (s.name == source_name and s.type == "supabase"
-                and (s.config or {}).get("writeback")):
-            return s
-    return None
-
-
-def _bug_outcome_note(conn: psycopg.Connection, request_id: str, status: str) -> str:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT provider_ref FROM actions WHERE request_id=%s AND type='open_pr' "
-            "AND provider_ref LIKE 'http%%' ORDER BY created_at DESC LIMIT 1",
-            (request_id,))
-        row = cur.fetchone()
-    if row and row[0]:
-        return f"Argus investigated this and opened a PR: {row[0]}"
-    if status == "failed":
-        return ("Argus attempted an automated fix but it did not pass review. "
-                "Needs a human.")
-    return "Argus investigated; no automated code fix was warranted."
+    """Backward-compat alias: the supabase bug write-back now rides the generic
+    respond-back sweep (orchestrator/respond.py), which keeps the original
+    'bug_writeback:<rid>[:<row_id>]' idempotency keys so already-written rows
+    are not re-written on upgrade."""
+    return respond.sweep(conn, cfg)
 
 
 def _sweep_converse(conn: psycopg.Connection, cfg) -> int:

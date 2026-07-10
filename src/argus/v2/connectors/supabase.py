@@ -90,7 +90,9 @@ def _batch_signal(project: str, table: str, findings: list[dict]) -> Signal:
         "rows": findings,
         "last_seen": max((f.get("last_seen") or "" for f in findings), default=""),
     }
-    return Signal(fingerprint=fingerprint, payload=payload)
+    # Respond-back origin: the responder fans out per bug row from 'rows'.
+    return Signal(fingerprint=fingerprint, payload=payload,
+                  reply_to={"kind": "supabase_bug_reports"})
 
 
 def _build_url(base: str, table: str, query: str, limit: int, *,
@@ -166,7 +168,9 @@ class SupabaseConnector:
             }
             findings.append(finding)
             if not batch:
-                signals.append(Signal(fingerprint=fingerprint, payload=finding))
+                signals.append(Signal(
+                    fingerprint=fingerprint, payload=finding,
+                    reply_to={"kind": "supabase_bug_reports", "row_id": rid}))
             seen.add(fingerprint)
             next_seen.append(fingerprint)
             # Advance the durable watermark to the newest cursor value emitted.

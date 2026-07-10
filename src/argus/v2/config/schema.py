@@ -28,9 +28,16 @@ class SourceRef(BaseModel):
     secret: Optional[str] = None  # filled by the loader
     team: Optional[str] = None    # which team a company-scoped source routes to
     config: dict = Field(default_factory=dict)  # connector-specific params
+    # cross-connector knobs of note:
+    #   respond: bool, default False. Respond-back: when a signal from this
+    #     source carries a 'reply_to' origin descriptor and its work reaches a
+    #     terminal state (PR opened, failed, triaged as ignore), propose a short
+    #     reply to that origin (see orchestrator/respond.py). Replies ride the
+    #     actions outbox, so outward-channel approval gates still apply.
     # supabase source connector-specific knobs of note (see connectors/supabase.py):
     #   writeback: bool, default False. Append Argus's verdict to the bug row's
-    #     notes column after the request goes terminal.
+    #     notes column after the request goes terminal. Predates and implies
+    #     respond-back for the supabase_bug_reports origin kind.
     #   batch: bool, default False. Collapse every open bug row found in one poll
     #     into a single consolidated signal (one PM dispatch, one pipeline run,
     #     one PR) instead of one per bug row. Opt-in, current per-bug behavior

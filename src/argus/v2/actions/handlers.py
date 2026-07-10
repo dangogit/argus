@@ -235,15 +235,22 @@ def _source_by_name(cfg, name):
     for s in (cfg.company.sources if cfg and cfg.company else []):
         if s.name == name:
             return s
+    for t in (cfg.teams if cfg else []):
+        for s in t.sources:
+            if s.name == name:
+                return s
     return None
 
 
 def _run_bug_writeback(payload: dict, *, cfg) -> str:
     """PATCH a supabase bug row's notes column with Argus's verdict. Opt-in:
-    only runs when the source config sets writeback: true. Read-modify-write so
-    existing notes are kept. Column/table names are validated (no injection)."""
+    only runs when the source config sets writeback: true or respond: true.
+    Read-modify-write so existing notes are kept. Column/table names are
+    validated (no injection)."""
     src = _source_by_name(cfg, payload.get("source_name"))
-    if src is None or not (src.config or {}).get("writeback"):
+    enabled = src is not None and any(
+        (src.config or {}).get(f) for f in ("writeback", "respond"))
+    if not enabled:
         return "skipped: writeback not enabled"
     cfgd = src.config or {}
     base = (cfgd.get("url") or "").rstrip("/")

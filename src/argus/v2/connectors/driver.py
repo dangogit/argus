@@ -170,8 +170,13 @@ def poll_once(conn: psycopg.Connection, cfg, *,
             conn.commit()
             continue
         for sig in signals:
+            payload = sig.payload
+            if sig.reply_to and "reply_to" not in payload:
+                # Persist the origin descriptor with the event so respond-back
+                # can reach the reporter once the work goes terminal.
+                payload = {**payload, "reply_to": sig.reply_to}
             events.ingest_signal(conn, cfg, team=team, source=source.name,
-                                 fingerprint=sig.fingerprint, payload=sig.payload)
+                                 fingerprint=sig.fingerprint, payload=payload)
             total += 1
         _save_cursor(conn, source.name, new_cursor)
         if state["error_count"]:

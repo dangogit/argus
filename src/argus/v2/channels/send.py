@@ -5,7 +5,7 @@ from __future__ import annotations
 from argus.v2.channels.base import REGISTRY
 
 
-def deliver(cfg, destination_ref: str, text: str):
+def deliver(cfg, destination_ref: str, text: str, *, thread_ts=None):
     if ":" not in (destination_ref or ""):
         return None
     ctype, chat_id = destination_ref.split(":", 1)
@@ -16,7 +16,14 @@ def deliver(cfg, destination_ref: str, text: str):
     if not route:
         return None
     _team, binding = route
-    return REGISTRY[ctype]().send(binding, text)
+    adapter = REGISTRY[ctype]()
+    if thread_ts is not None:
+        # Thread the reply when the channel supports it (Slack); channels whose
+        # send() has no thread_ts parameter fall back to a plain send.
+        import inspect
+        if "thread_ts" in inspect.signature(adapter.send).parameters:
+            return adapter.send(binding, text, thread_ts=thread_ts)
+    return adapter.send(binding, text)
 
 
 def edit(cfg, destination_ref: str, message_id: str, text: str):

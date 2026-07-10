@@ -348,7 +348,11 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 return
             from argus.v2.channels import send as _send
             text = (payload or {}).get("text", "")
-            channel_ref = _send.deliver(cfg, destination_ref, text)
+            thread_ts = (payload or {}).get("thread_ts")
+            # Kwarg only when threaded so plain sends (and test fakes with the
+            # 3-arg signature) are untouched.
+            kwargs = {"thread_ts": thread_ts} if thread_ts else {}
+            channel_ref = _send.deliver(cfg, destination_ref, text, **kwargs)
             provider_ref = channel_ref if channel_ref is not None else f"local:{action_id}"
         else:
             provider_ref = f"local:{action_id}"
