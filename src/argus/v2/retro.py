@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -18,6 +19,13 @@ from argus.v2.pm import memory as pm_memory
 
 COMPANY_TEAM_ID = "__company__"
 _AUTO_TYPES = frozenset({"skill", "prompt-edit", "process-edit"})
+# The Facilitator re-words the same improvement every day, so the backlog id
+# (a hash of the statement) drifts and neither the per-item fingerprint nor
+# equivalent_pm_request catches the semantic duplicate. Guard auto-changes on a
+# fuzzy statement match against ones already queued/merged for the same team+type
+# within this window so the same change is not re-opened as a new PR daily.
+_AUTO_DEDUP_WINDOW_DAYS = 21
+_AUTO_DEDUP_THRESHOLD = 0.72
 _TYPES = frozenset({"lesson", "skill", "prompt-edit", "process-edit", "infra-flag"})
 _BLOCKERS = (
     ("prompt-injection", ("ignore previous", "ignore all previous", "system prompt")),
@@ -221,11 +229,16 @@ def _team_digest_text(conn: psycopg.Connection, team_id: str, day: date) -> str:
     items = _items_for_day(conn, team_id, day)
     if not items:
         return ""
-    lessons = [item for item in items if item["type"] == "lesson" and item["status"] == "gated"]
-    changes = [item for item in items if item["type"] in _AUTO_TYPES and item["status"] == "gated"]
+    all_changes = [item for item in items
+                   if item["type"] in _AUTO_TYPES and item["status"] == "gated"]
+    # Hide lessons/candidates already bridged, queued, or skipped as duplicates
+    # so a handled improvement stops reprinting in the digest every day.
+    lessons = [item for item in items if item["type"] == "lesson"
+               and item["status"] == "gated" and not item["handled"]]
+    changes = [item for item in all_changes if not item["handled"]]
     infra = [item for item in items if item["status"] == "infra-notice"]
     quarantined = [item for item in items if item["status"] == "quarantined"]
-    auto_count = sum(1 for item in changes if item["auto_queued"])
+    auto_count = sum(1 for item in all_changes if item["auto_queued"])
     lines = ["PM Retro Digest", f"Team: {team_id}", f"Date: {day}"]
     _add_section(lines, "Lessons learned", lessons)
     _add_section(lines, "Improvement candidates", changes)
@@ -261,6 +274,7 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
                 "statement": item.statement,
                 "trigger": item.trigger,
                 "auto_queued": False,
+                "handled": False,
             })
     if not items:
         return []
@@ -268,7 +282,7 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, type, status, priority, statement, trigger, payload
+            SELECT id, type, status, priority, statement, trigger, payload, bridged_at
             FROM retro_backlog
             WHERE id=ANY(%s)
             """,
@@ -279,14 +293,17 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
         row = rows.get(item["id"])
         if not row:
             continue
-        _id, typ, status, priority, statement, trigger, payload = row
+        _id, typ, status, priority, statement, trigger, payload, bridged_at = row
+        pl = payload or {}
         item.update({
             "type": typ,
             "status": status,
             "priority": priority,
             "statement": statement,
             "trigger": trigger,
-            "auto_queued": bool((payload or {}).get("auto_request_id")),
+            "auto_queued": bool(pl.get("auto_request_id")),
+            "handled": bool(pl.get("auto_request_id") or pl.get("auto_skipped_at")
+                            or bridged_at),
         })
     return sorted(items, key=lambda item: (-int(item["priority"]), item["statement"]))
 
@@ -653,10 +670,11 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         )
         rows = cur.fetchall()
     queued = 0
+    handled_tokens: dict[tuple[str, str], list[frozenset[str]]] = {}
     for item_id, team_id, typ, statement, trigger, payload in rows:
         item_id = str(item_id)
         payload = payload or {}
-        if payload.get("auto_request_id"):
+        if payload.get("auto_request_id") or payload.get("auto_skipped_at"):
             continue
         if not _auto_change_eligible(team_id, statement, trigger, payload):
             continue
@@ -678,6 +696,20 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         if equivalent:
             _mark_auto_queued(conn, item_id, equivalent, target_team)
             continue
+        # Fuzzy guard runs only after the exact-fingerprint and equivalent checks
+        # miss: it catches the reworded-daily duplicate whose statement (and thus
+        # backlog id, theme, and evidence ids) drifted enough to slip both.
+        cache_key = (target_team, typ)
+        prior = handled_tokens.get(cache_key)
+        if prior is None:
+            prior = [_statement_tokens(s)
+                     for s in _recent_auto_change_statements(conn, target_team, typ)]
+            handled_tokens[cache_key] = prior
+        tokens = _statement_tokens(statement)
+        if any(_statements_similar(tokens, other) for other in prior):
+            _mark_auto_skipped(conn, item_id, target_team)
+            continue
+        prior.append(tokens)
         event_id = events.ingest_message(
             conn, cfg, team=target_team, source="retro",
             dedup_key=fingerprint, text=text,
@@ -767,6 +799,53 @@ def _mark_auto_queued(conn: psycopg.Connection, item_id: str, request_id: str,
                 "auto_queued_at": datetime.now(timezone.utc).isoformat(),
             }), item_id),
         )
+
+
+def _mark_auto_skipped(conn: psycopg.Connection, item_id: str,
+                       target_team: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE retro_backlog
+            SET payload = payload || %s::jsonb, updated_at=clock_timestamp()
+            WHERE id=%s
+            """,
+            (Json({
+                "auto_skipped_at": datetime.now(timezone.utc).isoformat(),
+                "auto_skip_reason": "duplicate-of-recent-auto-change",
+                "auto_target_team": target_team,
+            }), item_id),
+        )
+
+
+def _statement_tokens(text: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def _statements_similar(a: frozenset[str], b: frozenset[str],
+                        threshold: float = _AUTO_DEDUP_THRESHOLD) -> bool:
+    if not a or not b:
+        return False
+    union = len(a | b)
+    return bool(union) and len(a & b) / union >= threshold
+
+
+def _recent_auto_change_statements(conn: psycopg.Connection, target_team: str,
+                                   typ: str) -> list[str]:
+    """Statements of same-type auto-changes already queued or merged for this
+    team within the dedup window (matched by resolved target team)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT statement FROM retro_backlog
+            WHERE type=%s
+              AND (payload ? 'auto_request_id' OR bridged_at IS NOT NULL)
+              AND (payload->>'auto_target_team' = %s OR team_id = %s)
+              AND created_at >= clock_timestamp() - make_interval(days => %s)
+            """,
+            (typ, target_team, target_team, _AUTO_DEDUP_WINDOW_DAYS),
+        )
+        return [row[0] for row in cur.fetchall()]
 
 
 def _auto_change_text(*, team_id: str, typ: str, statement: str,
