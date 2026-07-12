@@ -257,6 +257,65 @@ def test_auto_changes_dedup_equivalent_task_theme_and_lineage(conn, tmp_path):
         assert cur.fetchone()[0] == 2
 
 
+def test_reworded_auto_change_skips_duplicate_pr_across_days(conn, tmp_path):
+    """The Facilitator re-words the same improvement daily, so the backlog id
+    drifts and equivalent_pm_request misses it. The fuzzy guard must skip the
+    reworded duplicate (no second PR) while still enqueueing a distinct change."""
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    d1 = date(2026, 6, 18)
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=d1, candidates=[{
+        "type": "process-edit",
+        "statement": ("Require QA-sensitive closures to document access path, "
+                      "item disposition, verification coverage, and follow-up condition"),
+        "trigger": "qa-fail closures missing verification docs",
+        "evidence_run_ids": ["e1", "e2", "e3"],
+        "source_team_ids": ["argus", "tadam-agents"],
+        "confidence": 0.9, "impact": 8, "theme": "qa-closure-docs",
+    }])
+    retro.run(conn, cfg, retro_day=d1, company_only=True)
+
+    d2 = date(2026, 6, 19)
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=d2, candidates=[
+        {  # reworded near-duplicate of the day-1 change -> must be skipped
+            "type": "process-edit",
+            "statement": ("Require QA-sensitive closures to record access path, item "
+                          "disposition, verification coverage, and unresolved follow-up condition"),
+            "trigger": "qa closure evidence still incomplete",
+            "evidence_run_ids": ["e4", "e5", "e6"],
+            "source_team_ids": ["argus", "general"],
+            "confidence": 0.9, "impact": 8, "theme": "qa-closure-evidence",
+        },
+        {  # genuinely different change -> must still enqueue
+            "type": "process-edit",
+            "statement": ("Classify Fly warm-pool machines in requested_stop state "
+                          "as expected before dispatching incident triage"),
+            "trigger": "warm pool standby raised a false incident",
+            "evidence_run_ids": ["f1", "f2", "f3"],
+            "source_team_ids": ["myopenclaw-cloud", "general"],
+            "confidence": 0.9, "impact": 8, "theme": "fly-warm-pool",
+        },
+    ])
+    retro.run(conn, cfg, retro_day=d2, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 2  # day-1 change + the distinct day-2 change only
+        cur.execute("SELECT count(*) FROM retro_backlog WHERE payload ? 'auto_skipped_at'")
+        assert cur.fetchone()[0] == 1  # the reworded duplicate
+        cur.execute("SELECT count(*) FROM retro_backlog WHERE payload ? 'auto_request_id'")
+        assert cur.fetchone()[0] == 2
+
+
+def test_statements_similar_matches_rewording_not_distinct_themes():
+    tok = retro._statement_tokens
+    a = tok("Require QA-sensitive closures to document access path and follow-up condition")
+    reworded = tok("Require QA-sensitive closures to record access path and unresolved follow-up condition")
+    distinct = tok("Classify Fly warm-pool machines in requested_stop state as expected")
+    assert retro._statements_similar(a, reworded)
+    assert not retro._statements_similar(a, distinct)
+    assert not retro._statements_similar(a, frozenset())
+
+
 def test_company_auto_change_live_work_requires_readiness_proof(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
