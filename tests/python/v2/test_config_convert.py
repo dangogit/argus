@@ -32,6 +32,9 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "post-fix follow-up condition" in roles["qa"].prompt
     assert "Protected UI QA tasks cannot claim manual verification is runnable" in roles["qa"].prompt
     assert "working preview login path" in roles["qa"].prompt
+    assert "preview URL" in roles["qa"].prompt
+    assert "non-secret credential source or test account label" in roles["qa"].prompt
+    assert "observed post-login page or state" in roles["qa"].prompt
     assert "retro-change:ee7afeddb9fac326df4dc4eb" in roles["qa"].prompt
     assert "code regression" in roles["qa"].prompt
     assert "environment blocker" in roles["qa"].prompt
@@ -45,6 +48,9 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "post-fix follow-up condition" in roles["senior"].prompt
     assert "Protected UI QA tasks cannot claim manual verification is runnable" in roles["senior"].prompt
     assert "working preview login path" in roles["senior"].prompt
+    assert "preview URL" in roles["senior"].prompt
+    assert "non-secret credential source or test account label" in roles["senior"].prompt
+    assert "observed post-login page or state" in roles["senior"].prompt
     assert "retro-change:ee7afeddb9fac326df4dc4eb" in roles["senior"].prompt
     assert "failing PR summary" in roles["senior"].prompt
     assert "code regression" in roles["senior"].prompt

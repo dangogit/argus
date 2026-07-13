@@ -116,6 +116,9 @@ def test_bundled_project_rules_matches_developer_work():
     assert "post-fix follow-up condition" in block
     assert "Protected UI QA tasks cannot claim manual verification is runnable" in block
     assert "working preview login path" in block
+    assert "preview URL" in block
+    assert "non-secret credential source or test account label" in block
+    assert "post-login page or state" in block
     assert "retro-change:ee7afeddb9fac326df4dc4eb" in block
 
 

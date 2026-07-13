@@ -70,6 +70,9 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "post-fix follow-up condition" in snap["checkpoints"]
     assert "Protected UI QA tasks cannot claim manual verification is runnable" in snap["checkpoints"]
     assert "working preview login path" in snap["checkpoints"]
+    assert "preview URL" in snap["checkpoints"]
+    assert "non-secret credential source or test account label" in snap["checkpoints"]
+    assert "observed post-login page or state" in snap["checkpoints"]
     assert "retro-change:ee7afeddb9fac326df4dc4eb" in snap["checkpoints"]
     assert "manual QA follow-up" in snap["checkpoints"]
 
@@ -86,6 +89,9 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "post-fix follow-up condition" in snap["checkpoints"]
     assert "Protected UI QA tasks cannot claim manual verification is runnable" in snap["checkpoints"]
     assert "working preview login path" in snap["checkpoints"]
+    assert "preview URL" in snap["checkpoints"]
+    assert "non-secret credential source or test account label" in snap["checkpoints"]
+    assert "observed post-login page or state" in snap["checkpoints"]
     assert "retro-change:ee7afeddb9fac326df4dc4eb" in snap["checkpoints"]
 
 
