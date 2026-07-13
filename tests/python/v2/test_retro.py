@@ -198,6 +198,36 @@ def test_propose_authority_never_enqueues_auto_change(conn, tmp_path):
         assert cur.fetchone()[0] == 0
 
 
+def test_gated_auto_change_records_owner_escalation_when_not_self_applied(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="propose")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": "Require closure evidence before summary-ready status",
+        "trigger": "same QA miss repeated while backlog stayed gated",
+        "evidence_run_ids": ["a", "b", "c", "d"],
+        "source_team_ids": ["argus", "general"],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "closure-evidence",
+    }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT payload->>'owner_escalation_reason', "
+            "payload ? 'owner_escalation_required_at' "
+            "FROM retro_backlog WHERE team_id=%s",
+            (retro.COMPANY_TEAM_ID,),
+        )
+        reason, has_timestamp = cur.fetchone()
+    assert reason == "retro-authority-not-auto-changes"
+    assert has_timestamp is True
+
+
 def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

@@ -222,6 +222,7 @@ def run(conn: psycopg.Connection, cfg, *, retro_day: date | None = None,
     synthesized = synthesize(conn, retro_day=day)
     bridged = bridge_lessons(conn, cfg)
     _enqueue_auto_changes(conn, cfg)
+    _mark_owner_escalations(conn, cfg)
     return synthesized, bridged
 
 
@@ -816,6 +817,30 @@ def _mark_auto_skipped(conn: psycopg.Connection, item_id: str,
                 "auto_target_team": target_team,
             }), item_id),
         )
+
+
+def _mark_owner_escalations(conn: psycopg.Connection, cfg) -> int:
+    retro_cfg = getattr(cfg, "retro", None)
+    authority = getattr(retro_cfg, "authority", "propose")
+    reason = ("retro-authority-not-auto-changes" if authority != "auto-changes"
+              else "auto-change-not-queued")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE retro_backlog
+            SET payload = payload || %s::jsonb, updated_at=clock_timestamp()
+            WHERE status='gated'
+              AND type=ANY(%s)
+              AND NOT (payload ? 'auto_request_id')
+              AND NOT (payload ? 'auto_skipped_at')
+              AND NOT (payload ? 'owner_escalation_required_at')
+            """,
+            (Json({
+                "owner_escalation_required_at": datetime.now(timezone.utc).isoformat(),
+                "owner_escalation_reason": reason,
+            }), list(_AUTO_TYPES)),
+        )
+        return int(cur.rowcount)
 
 
 def _statement_tokens(text: str) -> frozenset[str]:
