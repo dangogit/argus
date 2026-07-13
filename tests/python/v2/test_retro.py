@@ -219,13 +219,15 @@ def test_gated_auto_change_records_owner_escalation_when_not_self_applied(conn, 
         assert cur.fetchone()[0] == 0
         cur.execute(
             "SELECT payload->>'owner_escalation_reason', "
-            "payload ? 'owner_escalation_required_at' "
+            "payload ? 'owner_escalation_required_at', "
+            "payload->'owner_escalation_evidence_ids' "
             "FROM retro_backlog WHERE team_id=%s",
             (retro.COMPANY_TEAM_ID,),
         )
-        reason, has_timestamp = cur.fetchone()
+        reason, has_timestamp, evidence_ids = cur.fetchone()
     assert reason == "retro-authority-not-auto-changes"
     assert has_timestamp is True
+    assert evidence_ids == ["a", "b", "c", "d"]
 
 
 def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):

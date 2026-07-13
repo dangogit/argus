@@ -828,17 +828,23 @@ def _mark_owner_escalations(conn: psycopg.Connection, cfg) -> int:
         cur.execute(
             """
             UPDATE retro_backlog
-            SET payload = payload || %s::jsonb, updated_at=clock_timestamp()
+            SET payload = payload || jsonb_build_object(
+                  'owner_escalation_required_at', %s,
+                  'owner_escalation_reason', %s,
+                  'owner_escalation_evidence_ids',
+                    COALESCE(payload->'evidence_run_ids',
+                             payload->'evidence_ids',
+                             payload->'evidence',
+                             '[]'::jsonb)
+                ),
+                updated_at=clock_timestamp()
             WHERE status='gated'
               AND type=ANY(%s)
               AND NOT (payload ? 'auto_request_id')
               AND NOT (payload ? 'auto_skipped_at')
               AND NOT (payload ? 'owner_escalation_required_at')
             """,
-            (Json({
-                "owner_escalation_required_at": datetime.now(timezone.utc).isoformat(),
-                "owner_escalation_reason": reason,
-            }), list(_AUTO_TYPES)),
+            (datetime.now(timezone.utc).isoformat(), reason, list(_AUTO_TYPES)),
         )
         return int(cur.rowcount)
 
