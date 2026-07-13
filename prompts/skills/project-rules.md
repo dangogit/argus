@@ -12,3 +12,8 @@ Apply global owner rules from the prompt. If repo rules conflict with owner rule
 
 QA-sensitive work cannot close unless the transcript documents the verification path,
 every covered report or item, and the post-fix follow-up condition.
+Protected UI QA tasks cannot claim manual verification is runnable unless the
+transcript records a working preview login path. This covers the
+Arvuyot-yashir evidence chain: retro-change:ee7afeddb9fac326df4dc4eb,
+converse:9814ed70-155c-45e8-b9f0-61167de15acf,
+5eca1717dd3ea52c690bed71, and 4564c37904b5c9ab86d539c5.

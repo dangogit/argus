@@ -114,6 +114,9 @@ def test_bundled_project_rules_matches_developer_work():
     assert "verification path" in block
     assert "every covered report or item" in block
     assert "post-fix follow-up condition" in block
+    assert "Protected UI QA tasks cannot claim manual verification is runnable" in block
+    assert "working preview login path" in block
+    assert "retro-change:ee7afeddb9fac326df4dc4eb" in block
 
 
 def test_bundled_support_email_triage_matches_vendor_notice():

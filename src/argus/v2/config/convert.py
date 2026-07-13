@@ -96,6 +96,11 @@ def _team_from_project(project: dict) -> dict:
              "Run checks and judge the result. QA-sensitive work cannot close "
              "unless the transcript documents the verification path, every "
              "covered report or item, and the post-fix follow-up condition. "
+             "Protected UI QA tasks cannot claim manual verification is "
+             "runnable unless the transcript records a working preview login "
+             "path. Evidence: retro-change:ee7afeddb9fac326df4dc4eb, "
+             "converse:9814ed70-155c-45e8-b9f0-61167de15acf, "
+             "5eca1717dd3ea52c690bed71, 4564c37904b5c9ab86d539c5. "
              "Before failing, classify the "
              "failure as code regression, environment blocker, expected "
              "cancellation, stale status, or unknown."},
@@ -103,6 +108,11 @@ def _team_from_project(project: dict) -> dict:
              "Review the change before PR. QA-sensitive work cannot close "
              "unless the transcript documents the verification path, every "
              "covered report or item, and the post-fix follow-up condition. "
+             "Protected UI QA tasks cannot claim manual verification is "
+             "runnable unless the transcript records a working preview login "
+             "path. Evidence: retro-change:ee7afeddb9fac326df4dc4eb, "
+             "converse:9814ed70-155c-45e8-b9f0-61167de15acf, "
+             "5eca1717dd3ea52c690bed71, 4564c37904b5c9ab86d539c5. "
              "Before a failing PR summary, "
              "classify the failure as code regression, environment blocker, "
              "expected cancellation, stale status, or unknown."},
