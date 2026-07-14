@@ -18,6 +18,7 @@ For a GitHub Pages-ready landing page, use [index.md](index.md).
 | Monitor production providers | [Connectors](triage.md) |
 | Enable draft PR agents | [PM Auto-Fix](pm.md) |
 | Run daily team and company learning | [Retro](retro.md) |
+| Inspect team project memory | [Project Memory](project-memory.md) |
 | Run always-on workers | [Operations](operations.md) |
 | Update or uninstall Argus | [Updating](updating.md) |
 | Answer common setup questions | [FAQ](faq.md) |
@@ -49,6 +50,7 @@ For a GitHub Pages-ready landing page, use [index.md](index.md).
 - [Advisor](advisor.md)
 - [Assistant And Calendar](assistant.md)
 - [Retro](retro.md)
+- [Project Memory](project-memory.md)
 - [Threat Model](threat-model.md)
 - [Acceptance](v2-acceptance.md)
 
