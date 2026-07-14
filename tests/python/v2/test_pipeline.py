@@ -64,10 +64,11 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
     assert "external side effects" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
-    assert "transcript documents" in snap["checkpoints"]
-    assert "verification path" in snap["checkpoints"]
-    assert "every covered report or item" in snap["checkpoints"]
-    assert "post-fix follow-up condition" in snap["checkpoints"]
+    assert "transcript records the access path" in snap["checkpoints"]
+    assert "every covered report or item's disposition" in snap["checkpoints"]
+    assert "verification coverage and evidence" in snap["checkpoints"]
+    assert "unresolved follow-up" in snap["checkpoints"]
+    assert "retro-change:4cd623fed543ba165d781063" in snap["checkpoints"]
     assert "manual QA follow-up" in snap["checkpoints"]
 
 
@@ -77,10 +78,11 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "manual QA follow-up" in snap.get("checkpoints", "")
     assert "fixed and deployed" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
-    assert "transcript documents" in snap["checkpoints"]
-    assert "verification path" in snap["checkpoints"]
-    assert "every covered report or item" in snap["checkpoints"]
-    assert "post-fix follow-up condition" in snap["checkpoints"]
+    assert "transcript records the access path" in snap["checkpoints"]
+    assert "every covered report or item's disposition" in snap["checkpoints"]
+    assert "verification coverage and evidence" in snap["checkpoints"]
+    assert "unresolved follow-up" in snap["checkpoints"]
+    assert "retro-change:e3d046e4c372455df82bfe30" in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():

@@ -111,9 +111,12 @@ def test_bundled_project_rules_matches_developer_work():
     )
     assert "AGENTS.md" in block
     assert "QA-sensitive work cannot close" in block
-    assert "verification path" in block
-    assert "every covered report or item" in block
-    assert "post-fix follow-up condition" in block
+    assert "access path" in block
+    assert "every covered report or item's disposition" in block
+    assert "verification coverage and evidence" in block
+    assert "unresolved follow-up" in block
+    assert "retro-change:4cd623fed543ba165d781063" in block
+    assert "retro-change:e3d046e4c372455df82bfe30" in block
 
 
 def test_bundled_support_email_triage_matches_vendor_notice():
