@@ -9,7 +9,9 @@ from typing import Optional, Tuple
 _MARK = "ARGUS_RESULT:"
 _MARK_BARE = "ARGUS_RESULT"
 
-_CONVERSE_ACTIONS = frozenset({"answer", "dispatch", "ignore", "learn"})
+_CONVERSE_ACTIONS = frozenset({
+    "answer", "dispatch", "ignore", "learn", "capability_gap",
+})
 _TRIAGE_ACTIONS = frozenset({"investigate", "dispatch", "ignore"})
 _RESEARCH_RECOMMENDS = frozenset({"fix", "no_fix"})
 

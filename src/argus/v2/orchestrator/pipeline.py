@@ -1555,6 +1555,10 @@ def enqueue_converse(conn: psycopg.Connection, cfg, *, event_id: str,
             f"{snapshot['prompt']}\n\n"
             f"{_support_context_manager_prompt(support_context)}"
         ).strip()
+    snapshot["prompt"] = (
+        f"{snapshot['prompt']}\n\n"
+        f"{_manager_capability_prompt(cfg, team_id)}"
+    ).strip()
     _add_rules(conn, cfg, snapshot, team_id)
     _add_skills(snapshot, "manager", role.skills, text)
     _add_manager_checkpoints(snapshot)
@@ -1599,6 +1603,43 @@ def _support_context_manager_prompt(context: dict) -> str:
         "line must be exactly ARGUS_RESULT: "
         '{"action":"answer|dispatch|learn|ignore","reply":"short reply",'
         '"task":"specific current task or empty","guidance":"reusable rule or empty"}.'
+    )
+
+
+def _manager_capability_prompt(cfg, team_id: str) -> str:
+    direct = {"close_pr", "comment_pr", "reopen_pr"}
+    sources = list(getattr(cfg.company, "sources", []) or [])
+    try:
+        sources.extend(list(getattr(cfg.team(team_id), "sources", []) or []))
+    except KeyError:
+        pass
+    for source in sources:
+        if source.type == "support_apps_script" and source.team in (None, team_id):
+            direct.update({"email_list", "email_search", "email_read"})
+        if source.type == "firebase" and source.team in (None, team_id):
+            direct.update((source.config or {}).get("account_actions") or [])
+    if team_id == "personal":
+        direct.update({
+            "remember", "calendar_list", "calendar_get", "calendar_create",
+            "calendar_update", "calendar_delete", "email_list", "email_search",
+            "email_read", "email_reply", "email_archive", "email_draft",
+            "content_queue",
+        })
+    capabilities = ", ".join(sorted(direct)) or "none"
+    return (
+        "CAPABILITY AWARENESS:\n"
+        f"Immediate action types advertised for this team: {capabilities}.\n"
+        "Project code work is supported through dispatch. Immediate operations not "
+        "listed above are unsupported for this Slack agent. Never claim an unsupported "
+        "operation succeeded, never silently ignore it, and never turn it into a lesson. "
+        "Choose capability_gap instead. Explain the missing capability and offer to build "
+        "it after owner approval. For capability_gap, provide capability, reason, and a "
+        "specific safe Argus implementation task. Do not dispatch that implementation "
+        "until owner replies with approval. Last line must be exactly ARGUS_RESULT: "
+        '{"action":"answer|dispatch|learn|ignore|capability_gap",'
+        '"reply":"short reply or empty","task":"specific current or implementation task",'
+        '"guidance":"reusable rule or empty","capability":"missing operation or empty",'
+        '"reason":"why unavailable or empty"}.'
     )
 
 
@@ -1860,6 +1901,50 @@ def _handle_converse(conn: psycopg.Connection, cfg, job: Job) -> None:
                 (job.id, job.team_id, channel_ref, idem,
                  psycopg.types.json.Json({"text": ack_text})))
 
+    elif action == "capability_gap":
+        capability = _bounded_gap_text(
+            parsed.get("capability"), "requested operation", 200)
+        reason = _bounded_gap_text(
+            parsed.get("reason"), "No approved direct action is available.", 500)
+        implementation_task = _bounded_gap_text(
+            task,
+            f"Add a safe, audited Argus action for {capability}.",
+            1500,
+        )
+        requested_text = _bounded_gap_text(
+            (job.payload or {}).get("text"), "", 1500)
+        gap_key = f"capability-gap:{job.id}"
+        gap_payload = {
+            "capability": capability,
+            "reason": reason,
+            "task": implementation_task,
+            "requested_text": requested_text,
+            "origin_team": job.team_id,
+            "origin_event_id": job.event_id,
+            "conversation_id": job.conversation_id,
+        }
+        text = (
+            f"I can't perform {capability} yet. {reason} "
+            "Reply `fix it` and I'll build the missing capability in Argus."
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO actions (job_id, team_id, type, risk, destination_ref, "
+                "  idempotency_key, status, payload) "
+                "VALUES (%s,%s,'capability_gap','reversible_internal',%s,%s,"
+                "'awaiting_approval',%s) "
+                "ON CONFLICT (idempotency_key) DO NOTHING",
+                (job.id, job.team_id, channel_ref, gap_key, Json(gap_payload)),
+            )
+            cur.execute(
+                "INSERT INTO actions (job_id, team_id, type, risk, "
+                "  destination_ref, idempotency_key, payload) "
+                "VALUES (%s,%s,'reply','reversible_internal',%s,%s,%s) "
+                "ON CONFLICT (idempotency_key) DO NOTHING",
+                (job.id, job.team_id, channel_ref, idem, Json({"text": text})),
+            )
+        status.set_status(conn, job.event_id, status.DONE)
+
     else:
         # ignore: still acknowledge the owner. A converse job is owner-chat, so
         # silence reads as "the bot ignored me" (owner hit this: "merge it" and
@@ -1875,6 +1960,13 @@ def _handle_converse(conn: psycopg.Connection, cfg, job: Job) -> None:
                 (job.id, job.team_id, channel_ref, idem,
                  psycopg.types.json.Json({"text": ack})))
         status.set_status(conn, job.event_id, status.DONE)
+
+
+def _bounded_gap_text(value, default: str, limit: int) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        text = default
+    return text[:limit]
 
 
 def _set_support_context_status(conn: psycopg.Connection, context: dict,
