@@ -707,7 +707,7 @@ def _enqueue_account_result_notify(cur, *, action_id: str, team_id: str,
         "VALUES (%s,'notify','reversible_internal',%s,%s,%s) "
         "ON CONFLICT (idempotency_key) DO NOTHING",
         (team_id, destination_ref, f"account_result:{action_id}",
-         Json({"text": text})),
+         Json({"text": text, "urgent": True})),
     )
 
 
