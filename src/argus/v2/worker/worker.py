@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import json
 import os
+import re
 import subprocess
+from email.utils import parseaddr
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
@@ -260,14 +262,20 @@ def _harden_actions(cfg, job, actions):
     from dataclasses import replace
     from argus.v2.actions.executor import (
         risk_for, _CONVERSE_ALLOWLIST, _CONVERSE_PERSONAL_ALLOWLIST,
-        _CONVERSE_TEAM_EMAIL_ALLOWLIST, _PR_NUMBER_OPS)
+        _CONVERSE_TEAM_EMAIL_ALLOWLIST, _CONVERSE_FIREBASE_ALLOWLIST,
+        _PR_NUMBER_OPS)
     repo = front._gh_owner_repo(cfg, job.team_id) if job.kind == "converse" else None
     out = []
     for a in actions:
+        if a.type == "set_user_balance" and job.kind != "converse":
+            continue
         if job.kind == "converse":
             allowed = _CONVERSE_ALLOWLIST
             if _has_team_email_source(cfg, job.team_id):
                 allowed = allowed | _CONVERSE_TEAM_EMAIL_ALLOWLIST
+            firebase_source = _firebase_account_source(cfg, job.team_id)
+            if firebase_source:
+                allowed = allowed | _CONVERSE_FIREBASE_ALLOWLIST
             if job.team_id == "personal":
                 allowed = allowed | _CONVERSE_PERSONAL_ALLOWLIST
             if a.type not in allowed:
@@ -285,6 +293,31 @@ def _harden_actions(cfg, job, actions):
                 payload["number"] = n
                 payload["repo"] = repo  # server-scoped; the model's repo is ignored
                 a = replace(a, payload=payload)
+            elif a.type == "set_user_balance":
+                context = (job.payload or {}).get("support_context") or {}
+                email = parseaddr(str(context.get("sender") or ""))[1].strip().lower()
+                if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) \
+                        or not firebase_source or not job.event_id:
+                    continue
+                raw_balance = (a.payload or {}).get("balance")
+                if isinstance(raw_balance, bool) or not isinstance(raw_balance, (int, str)):
+                    continue
+                if isinstance(raw_balance, str) and not raw_balance.isdigit():
+                    continue
+                balance = int(raw_balance)
+                if balance < 0 or balance > 1_000_000:
+                    continue
+                context_id = str(context.get("context_id") or "")
+                if not context_id:
+                    continue
+                a = replace(a, payload={
+                    "email": email,
+                    "balance": balance,
+                    "source_name": firebase_source.name,
+                    "approval_proof": f"owner control event {job.event_id}",
+                    "support_context_id": context_id,
+                    "idempotency_key": a.idempotency_key,
+                })
         out.append(replace(a, risk=risk_for(a.type)))
     return out
 
@@ -301,6 +334,21 @@ def _has_team_email_source(cfg, team_id: str | None) -> bool:
         if source.type in email_types and (source.scope == "team" or source.team in (None, team_id)):
             return True
     return False
+
+
+def _firebase_account_source(cfg, team_id: str | None):
+    if cfg is None or not team_id:
+        return None
+    try:
+        team = cfg.team(team_id)
+    except KeyError:
+        return None
+    for source in list(team.sources) + list(cfg.company.sources):
+        scoped = source.team in (None, team_id)
+        actions = (source.config or {}).get("account_actions") or []
+        if source.type == "firebase" and scoped and "set_user_balance" in actions:
+            return source
+    return None
 
 
 def _safe_int(value, *, default: int) -> int:
