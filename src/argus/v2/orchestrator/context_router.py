@@ -116,6 +116,7 @@ def handle_message(conn: psycopg.Connection, cfg, *, team_id: str,
     result = support_cycle.handle_context_message(
         conn, cfg, team_id=team_id, context=context, text=text)
     if not result.handled:
+        _attach_support_context(conn, event_id=event_id, context=context)
         return False
 
     if result.context_status:
@@ -126,6 +127,27 @@ def handle_message(conn: psycopg.Connection, cfg, *, team_id: str,
         _emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
                     event_id=event_id, text=result.reply)
     return True
+
+
+def _attach_support_context(conn: psycopg.Connection, *, event_id: str,
+                            context: dict[str, Any]) -> None:
+    payload = context.get("payload") or {}
+    support_context = {
+        "context_id": context.get("id"),
+        "context_ref": context.get("context_ref"),
+        "summary": context.get("summary") or "",
+        "sender": payload.get("from") or payload.get("sender") or "",
+        "subject": payload.get("subject") or "",
+        "question": payload.get("question") or "",
+        "proposed_reply": payload.get("proposed_reply") or "",
+        "customer_request": str(payload.get("thread") or "")[:4000],
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE events SET payload=jsonb_set(payload, '{support_context}', %s::jsonb) "
+            "WHERE id=%s",
+            (Json(support_context), event_id),
+        )
 
 
 def _handle_system_health(conn: psycopg.Connection, cfg, *, team_id: str,
