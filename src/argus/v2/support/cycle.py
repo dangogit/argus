@@ -149,8 +149,6 @@ def handle_context_message(conn: psycopg.Connection, cfg, *, team_id: str,
     rejected = _rejects_send(answer)
     if not explicit_reply and not rejected and _requests_email_lookup(answer):
         return ContextResponse(False)
-    if not explicit_reply and not rejected and _looks_like_new_work(answer):
-        return ContextResponse(False)
 
     source = _support_source(cfg, team_id)
     scfg = source.config or {}
@@ -173,14 +171,19 @@ def handle_context_message(conn: psycopg.Connection, cfg, *, team_id: str,
             reply="Sent and learned.",
             context_status="resolved",
         )
-    state.resolve_guidance(team_id, req["id"], answer, status="answered")
+    return ContextResponse(False)
+
+
+def learn_context_message(conn: psycopg.Connection, cfg, *, team_id: str,
+                          context_ref: str, guidance: str) -> bool:
+    """Persist manager-classified support guidance after semantic routing."""
+    answer = (guidance or "").strip()
+    req = state.guidance_request(team_id, context_ref)
+    if not req or not answer:
+        return False
+    state.resolve_guidance(team_id, context_ref, answer, status="answered")
     _remember_guidance(conn, cfg, team_id, req, answer)
-    return ContextResponse(
-        True,
-        reply='Learned. No customer reply sent. Reply "send" to send the proposed reply, '
-              "or send: <exact reply> to email the customer.",
-        context_status="learned",
-    )
+    return True
 
 
 def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
@@ -707,14 +710,6 @@ def _requests_email_lookup(text: str) -> bool:
         return True
     padded = f" {body} "
     return " email from " in padded or " mail from " in padded
-
-
-def _looks_like_new_work(text: str) -> bool:
-    body = (text or "").strip().lower()
-    return body.startswith((
-        "fix ", "implement ", "ship ", "merge ", "deploy ", "run ",
-        "test ", "create pr", "open pr", "close pr", "review ",
-    ))
 
 
 def _guidance_context(conn, cfg, team_id: str, query: str) -> str:

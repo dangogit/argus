@@ -9,7 +9,7 @@ from typing import Optional, Tuple
 _MARK = "ARGUS_RESULT:"
 _MARK_BARE = "ARGUS_RESULT"
 
-_CONVERSE_ACTIONS = frozenset({"answer", "dispatch", "ignore"})
+_CONVERSE_ACTIONS = frozenset({"answer", "dispatch", "ignore", "learn"})
 _TRIAGE_ACTIONS = frozenset({"investigate", "dispatch", "ignore"})
 _RESEARCH_RECOMMENDS = frozenset({"fix", "no_fix"})
 
@@ -40,7 +40,8 @@ def converse_decision(parsed: dict) -> Tuple[str, str, str]:
     if action not in _CONVERSE_ACTIONS:
         action = "ignore"
     reply = parsed.get("reply", "") or ""
-    task = parsed.get("task", "") or ""
+    task_key = "guidance" if action == "learn" else "task"
+    task = parsed.get(task_key, "") or ""
     return action, reply, task
 
 
