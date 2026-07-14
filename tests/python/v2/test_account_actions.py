@@ -282,12 +282,13 @@ def test_balance_action_completion_notifies_owner_and_resolves_context(
         cur.execute("SELECT status FROM actions WHERE idempotency_key='balance:1'")
         assert cur.fetchone()[0] == "done"
         cur.execute(
-            "SELECT payload->>'text' FROM actions "
+            "SELECT payload->>'text', (payload->>'urgent')::boolean FROM actions "
             "WHERE idempotency_key LIKE 'account_result:%'")
-        notice = cur.fetchone()[0]
+        notice, urgent = cur.fetchone()
         cur.execute("SELECT status FROM conversation_contexts WHERE id=%s", (context_id,))
         context_status = cur.fetchone()[0]
     assert "12" in notice and "0" in notice
+    assert urgent is True
     assert context_status == "resolved"
 
 
@@ -329,13 +330,14 @@ def test_balance_action_failure_notifies_owner_and_keeps_context_active(
         cur.execute("SELECT status FROM actions WHERE idempotency_key='balance:2'")
         assert cur.fetchone()[0] == "failed"
         cur.execute(
-            "SELECT payload->>'text' FROM actions "
+            "SELECT payload->>'text', (payload->>'urgent')::boolean FROM actions "
             "WHERE idempotency_key LIKE 'account_result:%'")
-        notice = cur.fetchone()[0]
+        notice, urgent = cur.fetchone()
         cur.execute("SELECT status FROM conversation_contexts WHERE id=%s", (context_id,))
         context_status = cur.fetchone()[0]
     assert "failed" in notice.lower()
     assert "Firebase write denied" in notice
+    assert urgent is True
     assert context_status == "active"
 
 
