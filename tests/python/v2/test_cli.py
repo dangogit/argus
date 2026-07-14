@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import plistlib
 
 import pytest
@@ -260,6 +261,107 @@ def test_support_run_parser(monkeypatch):
 
     assert rc == 0
     assert calls == ["luma"]
+
+
+def test_memory_parser_contract():
+    parser = cli.build_parser()
+
+    refresh = parser.parse_args(["memory", "refresh", "--team", "dev", "--lookback-days", "3"])
+    brief = parser.parse_args(["memory", "brief", "--team", "dev", "--json"])
+    status = parser.parse_args(["memory", "status", "--team", "dev"])
+
+    assert refresh.fn is cli.cmd_memory
+    assert refresh.memory_cmd == "refresh" and refresh.lookback_days == 3
+    assert brief.memory_cmd == "brief" and brief.json is True
+    assert status.memory_cmd == "status"
+
+
+def test_memory_refresh_brief_status_and_compatibility_commands(
+    conn, pg_dsn, monkeypatch, capsys
+):
+    from datetime import datetime, timezone
+    from argus.v2.context import summarize
+    from argus.v2.ingress import events
+
+    monkeypatch.setenv("ARGUS_DB_DSN", pg_dsn)
+    monkeypatch.setenv("ARGUS_CONFIG_V2", str(FIX))
+    event_id = events.ingest_message(
+        conn, cli._cfg(), team="dev", source="cli", dedup_key="cli-memory", text="Use Postgres"
+    )
+    conn.commit()
+    day = datetime.now(timezone.utc).date().isoformat()
+    monkeypatch.setattr(
+        summarize.engine,
+        "call",
+        lambda *args, **kwargs: json.dumps(
+            {
+                "decisions": [
+                    {"text": "Use Postgres", "evidence_ids": [f"event:{event_id}"]}
+                ],
+                "open_loops": [],
+                "outcomes": [],
+            }
+        ),
+    )
+
+    assert cli.main(["memory", "refresh", "--team", "dev", "--day", day]) == 0
+    assert cli.main(["memory", "brief", "--team", "dev"]) == 0
+    assert cli.main(["memory", "brief", "--team", "dev", "--json"]) == 0
+    assert cli.main(["memory", "status", "--team", "dev"]) == 0
+    assert cli.main(["summarize", "--team", "dev", "--day", day]) == 0
+    assert cli.main(["history", "--team", "dev", "--days", "1"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert f"dev\t{day}\tsemantic" in lines
+    assert any("Project memory brief: dev" in line for line in lines)
+    json_line = next(line for line in lines if line.startswith('{"current_work"'))
+    assert json.loads(json_line)["recent_decisions"][0]["text"] == "Use Postgres"
+    assert any(line.startswith(f"dev\t{day}\tsemantic\tmessages=1\tage=") for line in lines)
+    assert any("Use Postgres" in line for line in lines)
+
+
+def test_memory_refresh_defaults_to_previous_utc_days_for_all_teams(
+    conn, monkeypatch, capsys
+):
+    from datetime import datetime, timedelta, timezone
+    from argus.v2.context import summarize
+
+    calls = []
+    monkeypatch.setenv("ARGUS_CONFIG_V2", str(FIX))
+    monkeypatch.setattr(cli.pool, "connect", lambda: _ConnectionProxy(conn))
+    monkeypatch.setattr(
+        summarize,
+        "refresh_day",
+        lambda _conn, _cfg, **kwargs: calls.append((kwargs["team_id"], kwargs["day"])) or None,
+    )
+
+    assert cli.main(["memory", "refresh", "--lookback-days", "2"]) == 0
+
+    today = datetime.now(timezone.utc).date()
+    assert calls == [("dev", today - timedelta(days=2)), ("dev", today - timedelta(days=1))]
+    assert capsys.readouterr().out.splitlines() == [
+        f"dev\t{today - timedelta(days=2)}\tunchanged",
+        f"dev\t{today - timedelta(days=1)}\tunchanged",
+    ]
+
+
+def test_memory_status_reports_none_for_inactive_team(conn, monkeypatch, capsys):
+    monkeypatch.setenv("ARGUS_CONFIG_V2", str(FIX))
+    monkeypatch.setattr(cli.pool, "connect", lambda: _ConnectionProxy(conn))
+
+    assert cli.main(["memory", "status", "--team", "dev"]) == 0
+    assert capsys.readouterr().out.strip() == "dev\tnone"
+
+
+class _ConnectionProxy:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        return None
 
 
 def test_support_list_dry_reply_and_clear(conn, pg_dsn, monkeypatch, capsys):

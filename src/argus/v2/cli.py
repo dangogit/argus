@@ -672,6 +672,93 @@ def cmd_summarize(args) -> int:
         conn.close()
 
 
+def cmd_memory(args) -> int:
+    from datetime import date, datetime, timedelta, timezone
+
+    from argus.v2.context import summarize
+    from argus.v2.memory import brief as project_memory
+
+    cfg = _cfg()
+    team_ids = [args.team] if getattr(args, "team", None) else [team.name for team in cfg.teams]
+    known = {team.name for team in cfg.teams}
+    unknown = [team_id for team_id in team_ids if team_id not in known]
+    if unknown:
+        print(f"memory: unknown team {unknown[0]}", file=sys.stderr)
+        return 2
+    conn = pool.connect()
+    try:
+        if args.memory_cmd == "refresh":
+            if args.day:
+                days = [date.fromisoformat(args.day)]
+            else:
+                today = datetime.now(timezone.utc).date()
+                days = [
+                    today - timedelta(days=offset)
+                    for offset in range(args.lookback_days, 0, -1)
+                ]
+            for team_id in team_ids:
+                for summary_day in days:
+                    result = summarize.refresh_day(
+                        conn,
+                        cfg,
+                        team_id=team_id,
+                        conversation_id=None,
+                        day=summary_day,
+                    )
+                    conn.commit()
+                    quality = result.status if result else "unchanged"
+                    print(f"{team_id}\t{summary_day}\t{quality}")
+            return 0
+        if args.memory_cmd == "brief":
+            brief = project_memory.build(
+                conn, cfg, args.team, datetime.now(timezone.utc)
+            )
+            print(
+                project_memory.render_json(brief)
+                if args.json
+                else project_memory.render_text(brief)
+            )
+            return 0
+        if args.memory_cmd == "status":
+            now = datetime.now(timezone.utc)
+            for team_id in team_ids:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT day, details, message_count, updated_at
+                           FROM conversation_summaries
+                           WHERE team_id=%s
+                           ORDER BY day DESC, updated_at DESC, id DESC
+                           LIMIT 1""",
+                        (team_id,),
+                    )
+                    row = cur.fetchone()
+                if not row:
+                    print(f"{team_id}\tnone")
+                    continue
+                summary_day, details, message_count, updated_at = row
+                quality = (details or {}).get("status") or "fallback"
+                age = _memory_age(now, updated_at)
+                print(
+                    f"{team_id}\t{summary_day}\t{quality}\t"
+                    f"messages={message_count}\tage={age}"
+                )
+            return 0
+        return 1
+    finally:
+        conn.close()
+
+
+def _memory_age(now, updated_at) -> str:
+    seconds = max(0, int((now - updated_at).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
 def cmd_support(args) -> int:
     from argus.v2.support import state as support_state
 
@@ -1677,6 +1764,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("summarize"); s.add_argument("--team", required=True)
     s.add_argument("--day", required=True); s.set_defaults(fn=cmd_summarize)
+    s = sub.add_parser("memory")
+    ms = s.add_subparsers(dest="memory_cmd", required=True)
+    r = ms.add_parser("refresh")
+    r.add_argument("--team")
+    r.add_argument("--day")
+    r.add_argument("--lookback-days", type=int, default=2)
+    r.set_defaults(fn=cmd_memory)
+    r = ms.add_parser("brief")
+    r.add_argument("--team", required=True)
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(fn=cmd_memory)
+    r = ms.add_parser("status")
+    r.add_argument("--team")
+    r.set_defaults(fn=cmd_memory)
     s = sub.add_parser("support")
     ss = s.add_subparsers(dest="support_cmd", required=True)
     r = ss.add_parser("run"); r.add_argument("--team", required=True)
