@@ -173,6 +173,10 @@ def test_support_context_operational_message_routes_to_manager(
         context_status = cur.fetchone()[0]
         cur.execute("SELECT prompt FROM runs WHERE role='manager'")
         prompt = cur.fetchone()[0]
+        cur.execute(
+            "SELECT payload->'support_context'->>'channel_ref' "
+            "FROM jobs WHERE kind='converse'")
+        support_channel_ref = cur.fetchone()[0]
 
     assert converse_jobs == 1
     assert requests == 1
@@ -180,6 +184,7 @@ def test_support_context_operational_message_routes_to_manager(
     assert context_status == "resolved"
     assert "Request for Refund" in prompt
     assert "Do not choose learn" in prompt
+    assert support_channel_ref == "cli:local"
 
 
 def test_support_context_policy_message_routes_to_manager_learning(

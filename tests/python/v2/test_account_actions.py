@@ -57,6 +57,7 @@ def _job(*, sender="Customer <customer@example.com>"):
             "support_context": {
                 "context_id": "context-1",
                 "context_ref": "guidance-1",
+                "channel_ref": "cli:local",
                 "sender": sender,
             },
         },
@@ -76,6 +77,7 @@ def test_harden_balance_action_scopes_customer_and_records_owner_proof(tmp_path)
 
     assert len(hardened) == 1
     assert hardened[0].risk == "reversible_internal"
+    assert hardened[0].destination_ref == "cli:local"
     assert hardened[0].payload == {
         "email": "customer@example.com",
         "balance": 0,
