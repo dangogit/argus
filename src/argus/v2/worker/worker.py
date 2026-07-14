@@ -146,7 +146,22 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                 result["parsed"] = contracts.parse_result(run.output or "")
             if memory_fingerprints:
                 result["memory_fingerprints"] = memory_fingerprints
-            actions = _harden_actions(cfg, job, actions)
+            actions, rejected_action_types = _harden_actions(
+                cfg, job, actions, report_rejected=True)
+            if job.kind == "converse" and rejected_action_types:
+                capability = ", ".join(sorted(set(rejected_action_types)))
+                result["parsed"] = {
+                    "action": "capability_gap",
+                    "reply": "",
+                    "capability": capability,
+                    "reason": (
+                        f"Action type {capability} is not permitted for this Slack agent."
+                    ),
+                    "task": (
+                        "Add a safe, audited, server-scoped Argus action for "
+                        f"{capability}."
+                    ),
+                }
             if test_exit is not None:
                 result["test_exit"] = test_exit
                 result["test_output"] = test_context
@@ -249,7 +264,7 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
         conn.close()
 
 
-def _harden_actions(cfg, job, actions):
+def _harden_actions(cfg, job, actions, *, report_rejected: bool = False):
     """Security boundary for model-emitted actions (ARGUS_ACTIONS).
 
     For EVERY job the risk is recomputed server-side (executor.risk_for) so the
@@ -258,7 +273,7 @@ def _harden_actions(cfg, job, actions):
     and their target repo + number are forced server-side (never trust the
     model's repo, or it could close PRs in any repo the gh token can reach)."""
     if not actions:
-        return actions
+        return (actions, []) if report_rejected else actions
     from dataclasses import replace
     from argus.v2.actions.executor import (
         risk_for, _CONVERSE_ALLOWLIST, _CONVERSE_PERSONAL_ALLOWLIST,
@@ -266,6 +281,7 @@ def _harden_actions(cfg, job, actions):
         _PR_NUMBER_OPS)
     repo = front._gh_owner_repo(cfg, job.team_id) if job.kind == "converse" else None
     out = []
+    rejected_action_types = []
     for a in actions:
         if a.type == "set_user_balance" and job.kind != "converse":
             continue
@@ -279,6 +295,7 @@ def _harden_actions(cfg, job, actions):
             if job.team_id == "personal":
                 allowed = allowed | _CONVERSE_PERSONAL_ALLOWLIST
             if a.type not in allowed:
+                rejected_action_types.append(a.type)
                 continue  # not a manager-permitted op
             if a.type in _PR_NUMBER_OPS:
                 if not repo:
@@ -324,6 +341,8 @@ def _harden_actions(cfg, job, actions):
                     },
                 )
         out.append(replace(a, risk=risk_for(a.type)))
+    if report_rejected:
+        return out, rejected_action_types
     return out
 
 
