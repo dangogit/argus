@@ -135,6 +135,7 @@ def _attach_support_context(conn: psycopg.Connection, *, event_id: str,
     support_context = {
         "context_id": context.get("id"),
         "context_ref": context.get("context_ref"),
+        "channel_ref": context.get("channel_ref"),
         "summary": context.get("summary") or "",
         "sender": payload.get("from") or payload.get("sender") or "",
         "subject": payload.get("subject") or "",

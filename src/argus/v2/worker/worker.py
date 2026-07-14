@@ -308,16 +308,21 @@ def _harden_actions(cfg, job, actions):
                 if balance < 0 or balance > 1_000_000:
                     continue
                 context_id = str(context.get("context_id") or "")
-                if not context_id:
+                channel_ref = str(context.get("channel_ref") or "")
+                if not context_id or not channel_ref:
                     continue
-                a = replace(a, payload={
-                    "email": email,
-                    "balance": balance,
-                    "source_name": firebase_source.name,
-                    "approval_proof": f"owner control event {job.event_id}",
-                    "support_context_id": context_id,
-                    "idempotency_key": a.idempotency_key,
-                })
+                a = replace(
+                    a,
+                    destination_ref=channel_ref,
+                    payload={
+                        "email": email,
+                        "balance": balance,
+                        "source_name": firebase_source.name,
+                        "approval_proof": f"owner control event {job.event_id}",
+                        "support_context_id": context_id,
+                        "idempotency_key": a.idempotency_key,
+                    },
+                )
         out.append(replace(a, risk=risk_for(a.type)))
     return out
 
