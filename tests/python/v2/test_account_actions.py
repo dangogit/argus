@@ -1,4 +1,5 @@
 import json
+import os
 
 from argus.v2.actions import executor, handlers
 from argus.v2.config import loader
@@ -8,6 +9,7 @@ from argus.v2.worker import worker
 
 
 def _cfg(tmp_path, *, enabled=True):
+    os.environ["FIREBASE_TEST_TOKEN"] = "test-token"
     account_actions = "[set_user_balance]" if enabled else "[]"
     path = tmp_path / "account-actions.yaml"
     path.write_text(
@@ -20,7 +22,7 @@ def _cfg(tmp_path, *, enabled=True):
         "    sources:\n"
         "      - name: firebase-prod\n"
         "        type: firebase\n"
-        "        secret: test-token\n"
+        "        secret_ref: '${env:FIREBASE_TEST_TOKEN}'\n"
         f"        config: {{ project: luma-ai-website, account_actions: {account_actions} }}\n"
         "    roles:\n"
         "      - { name: manager, kind: front, prompt: manager }\n"
