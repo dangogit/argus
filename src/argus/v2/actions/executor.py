@@ -26,6 +26,7 @@ _REAL = {
     "calendar_delete", "email_list", "email_search", "email_read", "email_reply",
     "email_archive", "email_draft", "content_queue", "social_publish",
     "bug_writeback",
+    "set_user_balance",
 }
 
 # Server-side risk classification. The model's self-declared risk is ignored for
@@ -36,6 +37,7 @@ _REVERSIBLE = frozenset({
     "status",
     "calendar_list", "calendar_get", "email_list", "email_search", "email_read", "email_draft",
     "bug_writeback",
+    "set_user_balance",
 })
 _PERSONAL_OUTWARD = frozenset({
     "calendar_create", "calendar_update", "calendar_delete",
@@ -73,6 +75,7 @@ _CONVERSE_PERSONAL_ALLOWLIST = frozenset({
 _CONVERSE_TEAM_EMAIL_ALLOWLIST = frozenset({
     "email_list", "email_search", "email_read",
 })
+_CONVERSE_FIREBASE_ALLOWLIST = frozenset({"set_user_balance"})
 _LOW_DISK_NOTIFY_DEDUPE_SECONDS = 300
 
 # PR ops whose target repo + number must be set server-side (never trust the
@@ -326,6 +329,14 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                     "UPDATE actions SET status='failed', payload=payload||%s::jsonb, "
                     "updated_at=now() WHERE id=%s",
                     (Json({"error": str(e)}), action_id))
+                if atype == "set_user_balance":
+                    _enqueue_account_result_notify(
+                        cur,
+                        action_id=action_id,
+                        team_id=team_id,
+                        destination_ref=destination_ref,
+                        error=str(e),
+                    )
                 return
         elif atype in ("reply", "notify") and cfg is not None and destination_ref:
             suppressed_ref = _suppress_duplicate_low_disk_notify(
@@ -369,6 +380,21 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
                 cur, action_id=action_id, team_id=team_id,
                 destination_ref=destination_ref, action_type=atype,
                 payload=payload or {}, provider_ref=provider_ref)
+        elif atype == "set_user_balance":
+            _enqueue_account_result_notify(
+                cur,
+                action_id=action_id,
+                team_id=team_id,
+                destination_ref=destination_ref,
+                provider_ref=provider_ref,
+            )
+            context_id = str((payload or {}).get("support_context_id") or "")
+            if context_id:
+                cur.execute(
+                    "UPDATE conversation_contexts SET status='resolved', updated_at=now() "
+                    "WHERE id=%s AND context_type='support_case'",
+                    (context_id,),
+                )
 
 
 def _suppress_duplicate_low_disk_notify(
@@ -657,6 +683,31 @@ def _enqueue_email_notify(cur, *, action_id: str, team_id: str,
         "ON CONFLICT (idempotency_key) DO NOTHING",
         (team_id, destination_ref, f"email_result:{action_id}",
          Json({"text": text})),
+    )
+
+
+def _enqueue_account_result_notify(cur, *, action_id: str, team_id: str,
+                                   destination_ref: Optional[str],
+                                   provider_ref: str = "", error: str = "") -> None:
+    if not destination_ref:
+        return
+    if error:
+        text = f"Credit balance update failed: {_short(error, 300)}"
+    else:
+        try:
+            result = json.loads(provider_ref or "{}")
+        except json.JSONDecodeError:
+            result = {}
+        before = result.get("before")
+        after = result.get("after")
+        text = f"Credits updated: {before} -> {after}."
+    cur.execute(
+        "INSERT INTO actions (team_id, type, risk, destination_ref, "
+        "idempotency_key, payload) "
+        "VALUES (%s,'notify','reversible_internal',%s,%s,%s) "
+        "ON CONFLICT (idempotency_key) DO NOTHING",
+        (team_id, destination_ref, f"account_result:{action_id}",
+         Json({"text": text, "urgent": True})),
     )
 
 

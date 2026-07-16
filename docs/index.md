@@ -33,6 +33,7 @@ This page is ready for GitHub Pages with the repository Pages source set to
 | Monitor production providers | [Connectors](triage.md) |
 | Enable PM draft PRs | [PM Auto-Fix](pm.md) |
 | Run daily team and company learning | [Retro](retro.md) |
+| Inspect team project memory | [Project Memory](project-memory.md) |
 | Run always-on workers | [Operations](operations.md) |
 | Update or uninstall Argus | [Updating](updating.md) |
 | Answer common setup questions | [FAQ](faq.md) |
@@ -99,5 +100,6 @@ or `blocked`.
 - [Advisor](advisor.md)
 - [Assistant And Calendar](assistant.md)
 - [Retro](retro.md)
+- [Project Memory](project-memory.md)
 - [Threat Model](threat-model.md)
 - [Acceptance](v2-acceptance.md)

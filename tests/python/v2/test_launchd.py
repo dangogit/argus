@@ -44,6 +44,7 @@ def test_default_units_cover_runtime_without_shell_wrapper():
         "com.argus.work-pipeline",
         "com.argus.poll",
         "com.argus.retro",
+        "com.argus.memory",
         "com.argus.watchdog",
         "com.argus.backup",
         "com.argus.logrotate",
@@ -65,6 +66,8 @@ def test_default_units_cover_runtime_without_shell_wrapper():
     assert by_label["com.argus.poll"].start_interval == 300
     assert by_label["com.argus.retro"].argv[-2:] == ["retro", "run"]
     assert by_label["com.argus.retro"].start_interval == 86400
+    assert by_label["com.argus.memory"].argv[-2:] == ["memory", "refresh"]
+    assert by_label["com.argus.memory"].start_interval == 86400
     assert by_label["com.argus.watchdog"].argv[-2:] == ["host", "watchdog"]
     assert by_label["com.argus.backup"].argv[-2:] == ["host", "backup"]
     assert by_label["com.argus.logrotate"].argv[-2:] == ["host", "logrotate"]
@@ -106,13 +109,14 @@ def test_write_units_linux_emits_systemd(tmp_path):
         env_files=[], log_dir="/logs")
     written = launchd.write_units(units, tmp_path, os_name="linux")
     names = sorted(p.name for p in written)
-    # 9 services + 5 timers (poll/retro/watchdog/backup/logrotate are interval;
+    # 10 services + 6 timers (poll/retro/memory/watchdog/backup/logrotate are interval;
     # serve/up/work-chat/work-pipeline are long-running, no timer).
     assert "argus-serve.service" in names
     assert "argus-poll.service" in names and "argus-poll.timer" in names
     assert "argus-up.timer" not in names  # up is a long-running service
-    assert sum(1 for n in names if n.endswith(".service")) == 9
-    assert sum(1 for n in names if n.endswith(".timer")) == 5
+    assert sum(1 for n in names if n.endswith(".service")) == 10
+    assert sum(1 for n in names if n.endswith(".timer")) == 6
+    assert names.count("argus-memory.timer") == 1
     assert not any(n.endswith(".plist") for n in names)
 
 
@@ -123,7 +127,8 @@ def test_write_units_macos_still_plists(tmp_path):
         env_files=[], log_dir="/logs")
     written = launchd.write_units(units, tmp_path, os_name="macos")
     assert all(p.suffix == ".plist" for p in written)
-    assert len(written) == 9
+    assert len(written) == 10
+    assert sum(1 for path in written if path.name == "com.argus.memory.plist") == 1
 
 
 def test_write_units_macos_plists_are_owner_only(tmp_path):

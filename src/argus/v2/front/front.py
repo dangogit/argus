@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
 import psycopg
+
+from argus.v2.memory import brief as project_memory
 
 WORK_VERBS = ("fix", "build", "add", "implement", "deploy", "investigate",
               "debug", "create", "refactor", "ship", "release", "update", "do:")
@@ -51,39 +54,8 @@ def manager_state(conn: psycopg.Connection, cfg, team_id: str) -> str:
     (actions with type in open_pr/pr and provider_ref starting with http),
     recent signals (last 5), and a read-only gh usage note if a project repo
     is known."""
-    lines = ["--- ARGUS STATE ---"]
-
-    # In-flight requests for this team.
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, status FROM requests "
-            "WHERE team_id=%s AND status IN ('open','awaiting_approval') "
-            "ORDER BY created_at DESC",
-            (team_id,))
-        reqs = cur.fetchall()
-    if reqs:
-        lines.append("In-flight requests:")
-        for rid, status in reqs:
-            lines.append(f"  {rid} ({status})")
-    else:
-        lines.append("In-flight requests: none")
-
-    # PRs opened by Argus: actions with type in (open_pr, pr) and a PR URL.
-    # Note: %% is the psycopg3 escape for a literal '%' inside the query string.
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT provider_ref FROM actions "
-            "WHERE team_id=%s AND type IN ('open_pr','pr') "
-            "  AND provider_ref LIKE 'http%%' "
-            "ORDER BY created_at DESC LIMIT 10",
-            (team_id,))
-        pr_rows = cur.fetchall()
-    if pr_rows:
-        lines.append("PRs Argus opened:")
-        for (url,) in pr_rows:
-            lines.append(f"  {url}")
-    else:
-        lines.append("PRs Argus opened: none")
+    brief = project_memory.build(conn, cfg, team_id, datetime.now(timezone.utc))
+    lines = [project_memory.render_prompt(brief), "", "--- ARGUS LIVE STATE ---"]
 
     # Recent signals (last _MAX_SIGNALS).
     with conn.cursor() as cur:
@@ -120,10 +92,10 @@ def manager_state(conn: psycopg.Connection, cfg, team_id: str) -> str:
         lines.append("Open pull requests: none")
 
     # Friendly "no current work" note when there is truly nothing.
-    if not reqs and not pr_rows and not sigs and not prs:
+    if not brief.current_work and not brief.recent_outcomes and not sigs and not prs:
         lines.append("(no current work for this team)")
 
-    lines.append("--- END STATE ---")
+    lines.append("--- END ARGUS LIVE STATE ---")
     return "\n".join(lines)
 
 

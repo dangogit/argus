@@ -43,6 +43,13 @@ def test_manager_state_empty_returns_no_work_line(conn, cfg):
     assert "no current work" in state.lower() or state.strip() != ""
 
 
+def test_manager_state_pins_project_memory_brief(conn, cfg):
+    state = front.manager_state(conn, cfg, "dev")
+
+    assert "--- PROJECT MEMORY: dev ---" in state
+    assert "Current work and approval waits" in state
+
+
 def test_manager_state_includes_open_request(conn, cfg):
     from psycopg.types.json import Json
     # Seed an event, then a request in 'open' status.

@@ -192,6 +192,8 @@ def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
         return _social_publish(payload, runner)
     if action_type == "bug_writeback":
         return _run_bug_writeback(payload, cfg=cfg)
+    if action_type == "set_user_balance":
+        return _run_set_user_balance(payload, cfg=cfg, team_id=team_id)
     raise KeyError(action_type)
 
 
@@ -275,6 +277,108 @@ def _run_bug_writeback(payload: dict, *, cfg) -> str:
             body[status_col] = status
     _sb_patch(f"{base}/rest/v1/{table}?{id_col}=eq.{row_id}", _sb_headers(key), body)
     return f"writeback:{table}:{payload['row_id']}"
+
+
+def _firebase_request(method: str, url: str, *, token: str,
+                      json_body: dict | None = None) -> dict:  # pragma: no cover
+    import httpx
+
+    response = httpx.request(
+        method,
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        json=json_body,
+        timeout=20,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
+def _firestore_balance(document: dict) -> int:
+    value = ((document.get("fields") or {}).get("balance") or {})
+    raw = value.get("integerValue", value.get("doubleValue"))
+    if raw is None:
+        raise RuntimeError("Firebase user balance field missing")
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Firebase user balance is not numeric") from exc
+
+
+def _run_set_user_balance(payload: dict, *, cfg, team_id: str | None) -> str:
+    source = _source_by_name(cfg, payload.get("source_name"))
+    actions = (source.config or {}).get("account_actions") if source else []
+    if not source or source.type != "firebase" or "set_user_balance" not in (actions or []):
+        raise RuntimeError("Firebase balance action is not enabled")
+    if source.team not in (None, team_id):
+        raise RuntimeError("Firebase balance source is not scoped to this team")
+    if not str(payload.get("approval_proof") or "").startswith("owner control event "):
+        raise RuntimeError("owner approval proof missing")
+    if not payload.get("support_context_id") or not payload.get("idempotency_key"):
+        raise RuntimeError("support audit context missing")
+
+    email = str(payload.get("email") or "").strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise RuntimeError("valid customer email required")
+    raw_balance = payload.get("balance")
+    if isinstance(raw_balance, bool) or not isinstance(raw_balance, (int, str)):
+        raise RuntimeError("balance must be an integer")
+    if isinstance(raw_balance, str) and not raw_balance.isdigit():
+        raise RuntimeError("balance must be an integer")
+    balance = int(raw_balance)
+    if balance < 0 or balance > 1_000_000:
+        raise RuntimeError("balance outside allowed range")
+
+    from argus.v2.connectors.firebase import _auth_token
+    from urllib.parse import quote
+
+    config = source.config or {}
+    project = str(config.get("project") or "").strip()
+    if not project:
+        raise RuntimeError("Firebase project missing")
+    token = _auth_token(source)
+    lookup_url = (
+        "https://identitytoolkit.googleapis.com/v1/projects/"
+        f"{quote(project, safe='')}/accounts:lookup"
+    )
+    lookup = _firebase_request("POST", lookup_url, token=token,
+                               json_body={"email": [email]})
+    users = lookup.get("users") or []
+    if len(users) != 1 or not users[0].get("localId"):
+        raise RuntimeError("Firebase Auth user not found for support email")
+    uid = str(users[0]["localId"])
+    document_url = (
+        "https://firestore.googleapis.com/v1/projects/"
+        f"{quote(project, safe='')}/databases/(default)/documents/users/"
+        f"{quote(uid, safe='')}"
+    )
+    before = _firestore_balance(
+        _firebase_request("GET", document_url, token=token))
+    if before != balance:
+        patch_url = (
+            f"{document_url}?updateMask.fieldPaths=balance"
+            "&currentDocument.exists=true"
+        )
+        _firebase_request(
+            "PATCH",
+            patch_url,
+            token=token,
+            json_body={"fields": {"balance": {"integerValue": str(balance)}}},
+        )
+    after = _firestore_balance(
+        _firebase_request("GET", document_url, token=token))
+    if after != balance:
+        raise RuntimeError(
+            f"Firebase balance verification failed: expected {balance}, got {after}")
+    return json.dumps({
+        "project": project,
+        "uid": uid,
+        "email": email,
+        "before": before,
+        "after": after,
+        "idempotency_key": str(payload["idempotency_key"]),
+    }, separators=(",", ":"), sort_keys=True)
 
 
 def _calendar(verb: str, payload: dict, runner: Callable) -> str:
