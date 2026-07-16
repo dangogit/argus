@@ -100,9 +100,7 @@ def _team_from_project(project: dict) -> dict:
              "runnable unless the transcript records a working preview login "
              "path: preview URL, login route or steps, non-secret credential "
              "source or test account label, and observed post-login page or "
-             "state. Evidence: retro-change:ee7afeddb9fac326df4dc4eb, "
-             "converse:9814ed70-155c-45e8-b9f0-61167de15acf, "
-             "5eca1717dd3ea52c690bed71, 4564c37904b5c9ab86d539c5. "
+             "state. "
              "Before failing, classify the "
              "failure as code regression, environment blocker, expected "
              "cancellation, stale status, or unknown."},
@@ -114,9 +112,7 @@ def _team_from_project(project: dict) -> dict:
              "runnable unless the transcript records a working preview login "
              "path: preview URL, login route or steps, non-secret credential "
              "source or test account label, and observed post-login page or "
-             "state. Evidence: retro-change:ee7afeddb9fac326df4dc4eb, "
-             "converse:9814ed70-155c-45e8-b9f0-61167de15acf, "
-             "5eca1717dd3ea52c690bed71, 4564c37904b5c9ab86d539c5. "
+             "state. "
              "Before a failing PR summary, "
              "classify the failure as code regression, environment blocker, "
              "expected cancellation, stale status, or unknown."},

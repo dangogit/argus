@@ -48,10 +48,7 @@ _PIPELINE_CHECKPOINTS = (
     "- Protected UI QA tasks cannot claim manual verification is runnable "
     "unless the transcript records a working preview login path: preview URL, "
     "login route or steps, non-secret credential source or test account label, "
-    "and observed post-login page or state. Evidence: "
-    "retro-change:ee7afeddb9fac326df4dc4eb, "
-    "converse:9814ed70-155c-45e8-b9f0-61167de15acf, "
-    "5eca1717dd3ea52c690bed71, 4564c37904b5c9ab86d539c5.\n"
+    "and observed post-login page or state.\n"
     "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
     "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
@@ -74,10 +71,7 @@ _MANAGER_CHECKPOINTS = (
     "- Protected UI QA tasks cannot claim manual verification is runnable "
     "unless the transcript records a working preview login path: preview URL, "
     "login route or steps, non-secret credential source or test account label, "
-    "and observed post-login page or state. Evidence: "
-    "retro-change:ee7afeddb9fac326df4dc4eb, "
-    "converse:9814ed70-155c-45e8-b9f0-61167de15acf, "
-    "5eca1717dd3ea52c690bed71, 4564c37904b5c9ab86d539c5."
+    "and observed post-login page or state."
 )
 
 

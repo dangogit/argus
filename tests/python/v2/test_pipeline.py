@@ -76,7 +76,10 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "preview URL" in snap["checkpoints"]
     assert "non-secret credential source or test account label" in snap["checkpoints"]
     assert "observed post-login page or state" in snap["checkpoints"]
-    assert "retro-change:ee7afeddb9fac326df4dc4eb" in snap["checkpoints"]
+    assert "Arvuyot-yashir" not in snap["checkpoints"]
+    assert "converse:" not in snap["checkpoints"]
+    assert "ee7afeddb9fac326df4dc4eb" not in snap["checkpoints"]
+    assert "5eca1717dd3ea52c690bed71" not in snap["checkpoints"]
     assert "manual QA follow-up" in snap["checkpoints"]
 
 
@@ -98,7 +101,10 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "preview URL" in snap["checkpoints"]
     assert "non-secret credential source or test account label" in snap["checkpoints"]
     assert "observed post-login page or state" in snap["checkpoints"]
-    assert "retro-change:ee7afeddb9fac326df4dc4eb" in snap["checkpoints"]
+    assert "Arvuyot-yashir" not in snap["checkpoints"]
+    assert "converse:" not in snap["checkpoints"]
+    assert "ee7afeddb9fac326df4dc4eb" not in snap["checkpoints"]
+    assert "5eca1717dd3ea52c690bed71" not in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():

@@ -119,7 +119,10 @@ def test_bundled_project_rules_matches_developer_work():
     assert "preview URL" in block
     assert "non-secret credential source or test account label" in block
     assert "post-login page or state" in block
-    assert "retro-change:ee7afeddb9fac326df4dc4eb" in block
+    assert "Arvuyot-yashir" not in block
+    assert "converse:" not in block
+    assert "ee7afeddb9fac326df4dc4eb" not in block
+    assert "5eca1717dd3ea52c690bed71" not in block
 
 
 def test_bundled_support_email_triage_matches_vendor_notice():
