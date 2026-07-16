@@ -37,8 +37,10 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "observed post-login page or state" in roles["qa"].prompt
     assert "Arvuyot-yashir" not in roles["qa"].prompt
     assert "converse:" not in roles["qa"].prompt
+    assert "retro-change:" not in roles["qa"].prompt
     assert "ee7afeddb9fac326df4dc4eb" not in roles["qa"].prompt
     assert "5eca1717dd3ea52c690bed71" not in roles["qa"].prompt
+    assert "4564c37904b5c9ab86d539c5" not in roles["qa"].prompt
     assert "code regression" in roles["qa"].prompt
     assert "environment blocker" in roles["qa"].prompt
     assert "expected cancellation" in roles["qa"].prompt
@@ -56,8 +58,10 @@ def test_convert_legacy_project_dirs_to_v2_config(tmp_path):
     assert "observed post-login page or state" in roles["senior"].prompt
     assert "Arvuyot-yashir" not in roles["senior"].prompt
     assert "converse:" not in roles["senior"].prompt
+    assert "retro-change:" not in roles["senior"].prompt
     assert "ee7afeddb9fac326df4dc4eb" not in roles["senior"].prompt
     assert "5eca1717dd3ea52c690bed71" not in roles["senior"].prompt
+    assert "4564c37904b5c9ab86d539c5" not in roles["senior"].prompt
     assert "failing PR summary" in roles["senior"].prompt
     assert "code regression" in roles["senior"].prompt
     assert "environment blocker" in roles["senior"].prompt
