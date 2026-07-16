@@ -1,3 +1,5 @@
+import subprocess
+
 from psycopg.types.json import Json
 
 from argus.v2.orchestrator import pipeline
@@ -351,6 +353,31 @@ def test_pr_summary_uses_builder_llm_summary(conn, cfg, tmp_path):
     summary_section = info["body"].split("## Changed Files")[0]
     assert note in summary_section
     assert "file(s):" not in summary_section
+
+
+def test_changed_files_lists_entire_branch_against_upstream(tmp_path):
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True,
+            capture_output=True, text=True,
+        )
+
+    git("init", "-b", "master")
+    git("config", "user.name", "Argus Test")
+    git("config", "user.email", "argus@example.test")
+    (tmp_path / "base.txt").write_text("base\n")
+    git("add", "base.txt")
+    git("commit", "-m", "base")
+    git("checkout", "-b", "feature")
+    git("branch", "--set-upstream-to=master", "feature")
+    (tmp_path / "first.txt").write_text("first\n")
+    git("add", "first.txt")
+    git("commit", "-m", "first")
+    (tmp_path / "second.txt").write_text("second\n")
+    git("add", "second.txt")
+    git("commit", "-m", "second")
+
+    assert pipeline._changed_files(str(tmp_path)) == ["first.txt", "second.txt"]
 
 
 def test_pr_summary_extracts_fix_from_builder_output(conn, cfg, tmp_path):
