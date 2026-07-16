@@ -398,6 +398,27 @@ def test_statements_similar_matches_rewording_not_distinct_themes():
     assert not retro._statements_similar(a, frozenset())
 
 
+def test_qa_sensitive_auto_change_requires_complete_closure_contract():
+    payload = {
+        "evidence_run_ids": ["e1", "e2", "e3"],
+        "confidence": 0.9,
+        "impact": 8,
+    }
+    assert not retro._auto_change_eligible(
+        "dev",
+        "Require QA-sensitive closures to record verification evidence",
+        "qa-fail repeated",
+        payload,
+    )
+    assert retro._auto_change_eligible(
+        "dev",
+        ("Require QA-sensitive closures to record the access path, disposition "
+         "of every item, verification evidence, and unresolved follow-up"),
+        "qa-fail repeated",
+        payload,
+    )
+
+
 def test_company_auto_change_live_work_requires_readiness_proof(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

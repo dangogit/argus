@@ -755,11 +755,32 @@ def _auto_change_eligible(team_id: str, statement: str, trigger: str,
     evidence = _evidence_ids(payload)
     if len(evidence) < 3:
         return False
+    if _is_qa_sensitive(statement, trigger, payload) and not \
+            _has_qa_closure_criteria(statement, trigger, payload):
+        return False
     if team_id == COMPANY_TEAM_ID:
         source_teams = {str(t) for t in payload.get("source_team_ids", []) if str(t)}
         if len(source_teams) < 2 and len(evidence) < 4:
             return False
     return True
+
+
+def _is_qa_sensitive(statement: str, trigger: str, payload: dict) -> bool:
+    text = " ".join((statement, trigger, json.dumps(payload, default=str))).lower()
+    return any(term in text for term in ("qa-sensitive", "qa sensitive", "qa-fail",
+                                          "qa fail", "manual qa", "protected ui"))
+
+
+def _has_qa_closure_criteria(statement: str, trigger: str, payload: dict) -> bool:
+    """Fail closed when a QA-derived auto-change omits its closure contract."""
+    text = " ".join((statement, trigger, json.dumps(payload, default=str))).lower()
+    required = (
+        ("access path", "login path", "verification path"),
+        ("disposition", "covered item", "covered report", "every item"),
+        ("verification evidence", "verification coverage"),
+        ("unresolved follow-up", "follow-up condition", "follow up condition"),
+    )
+    return all(any(term in text for term in alternatives) for alternatives in required)
 
 
 def _auto_change_team(cfg, team_id: str) -> str | None:
