@@ -45,6 +45,10 @@ _PIPELINE_CHECKPOINTS = (
     "- QA-sensitive work cannot close unless the transcript documents the "
     "verification path, every covered report or item, and the post-fix "
     "follow-up condition.\n"
+    "- Protected UI QA tasks cannot claim manual verification is runnable "
+    "unless the transcript records a working preview login path: preview URL, "
+    "login route or steps, non-secret credential source or test account label, "
+    "and observed post-login page or state.\n"
     "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
     "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
@@ -63,7 +67,11 @@ _MANAGER_CHECKPOINTS = (
     "disposition, verification evidence, and any unresolved follow-up.\n"
     "- QA-sensitive work cannot close unless the transcript documents the "
     "verification path, every covered report or item, and the post-fix "
-    "follow-up condition."
+    "follow-up condition.\n"
+    "- Protected UI QA tasks cannot claim manual verification is runnable "
+    "unless the transcript records a working preview login path: preview URL, "
+    "login route or steps, non-secret credential source or test account label, "
+    "and observed post-login page or state."
 )
 
 

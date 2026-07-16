@@ -114,6 +114,17 @@ def test_bundled_project_rules_matches_developer_work():
     assert "verification path" in block
     assert "every covered report or item" in block
     assert "post-fix follow-up condition" in block
+    assert "Protected UI QA tasks cannot claim manual verification is runnable" in block
+    assert "working preview login path" in block
+    assert "preview URL" in block
+    assert "non-secret credential source or test account label" in block
+    assert "post-login page or state" in block
+    assert "Arvuyot-yashir" not in block
+    assert "converse:" not in block
+    assert "retro-change:" not in block
+    assert "ee7afeddb9fac326df4dc4eb" not in block
+    assert "5eca1717dd3ea52c690bed71" not in block
+    assert "4564c37904b5c9ab86d539c5" not in block
 
 
 def test_bundled_support_email_triage_matches_vendor_notice():

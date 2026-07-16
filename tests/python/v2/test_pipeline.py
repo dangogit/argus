@@ -73,6 +73,17 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "verification path" in snap["checkpoints"]
     assert "every covered report or item" in snap["checkpoints"]
     assert "post-fix follow-up condition" in snap["checkpoints"]
+    assert "Protected UI QA tasks cannot claim manual verification is runnable" in snap["checkpoints"]
+    assert "working preview login path" in snap["checkpoints"]
+    assert "preview URL" in snap["checkpoints"]
+    assert "non-secret credential source or test account label" in snap["checkpoints"]
+    assert "observed post-login page or state" in snap["checkpoints"]
+    assert "Arvuyot-yashir" not in snap["checkpoints"]
+    assert "converse:" not in snap["checkpoints"]
+    assert "retro-change:" not in snap["checkpoints"]
+    assert "ee7afeddb9fac326df4dc4eb" not in snap["checkpoints"]
+    assert "5eca1717dd3ea52c690bed71" not in snap["checkpoints"]
+    assert "4564c37904b5c9ab86d539c5" not in snap["checkpoints"]
     assert "manual QA follow-up" in snap["checkpoints"]
 
 
@@ -89,6 +100,17 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "verification path" in snap["checkpoints"]
     assert "every covered report or item" in snap["checkpoints"]
     assert "post-fix follow-up condition" in snap["checkpoints"]
+    assert "Protected UI QA tasks cannot claim manual verification is runnable" in snap["checkpoints"]
+    assert "working preview login path" in snap["checkpoints"]
+    assert "preview URL" in snap["checkpoints"]
+    assert "non-secret credential source or test account label" in snap["checkpoints"]
+    assert "observed post-login page or state" in snap["checkpoints"]
+    assert "Arvuyot-yashir" not in snap["checkpoints"]
+    assert "converse:" not in snap["checkpoints"]
+    assert "retro-change:" not in snap["checkpoints"]
+    assert "ee7afeddb9fac326df4dc4eb" not in snap["checkpoints"]
+    assert "5eca1717dd3ea52c690bed71" not in snap["checkpoints"]
+    assert "4564c37904b5c9ab86d539c5" not in snap["checkpoints"]
 
 
 def test_add_prompt_hash_is_deterministic():

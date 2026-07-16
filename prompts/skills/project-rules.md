@@ -12,3 +12,7 @@ Apply global owner rules from the prompt. If repo rules conflict with owner rule
 
 QA-sensitive work cannot close unless the transcript documents the verification path,
 every covered report or item, and the post-fix follow-up condition.
+Protected UI QA tasks cannot claim manual verification is runnable unless the
+transcript records a working preview login path: preview URL, login route or
+steps, non-secret credential source or test account label, and observed
+post-login page or state.

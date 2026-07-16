@@ -96,6 +96,11 @@ def _team_from_project(project: dict) -> dict:
              "Run checks and judge the result. QA-sensitive work cannot close "
              "unless the transcript documents the verification path, every "
              "covered report or item, and the post-fix follow-up condition. "
+             "Protected UI QA tasks cannot claim manual verification is "
+             "runnable unless the transcript records a working preview login "
+             "path: preview URL, login route or steps, non-secret credential "
+             "source or test account label, and observed post-login page or "
+             "state. "
              "Before failing, classify the "
              "failure as code regression, environment blocker, expected "
              "cancellation, stale status, or unknown."},
@@ -103,6 +108,11 @@ def _team_from_project(project: dict) -> dict:
              "Review the change before PR. QA-sensitive work cannot close "
              "unless the transcript documents the verification path, every "
              "covered report or item, and the post-fix follow-up condition. "
+             "Protected UI QA tasks cannot claim manual verification is "
+             "runnable unless the transcript records a working preview login "
+             "path: preview URL, login route or steps, non-secret credential "
+             "source or test account label, and observed post-login page or "
+             "state. "
              "Before a failing PR summary, "
              "classify the failure as code regression, environment blocker, "
              "expected cancellation, stale status, or unknown."},
