@@ -59,6 +59,11 @@ control merge, deploy, outward messages, destructive work, and secrets.
   retro records owner-escalation evidence on the backlog item instead of leaving
   it as an unhandled gated fix. This includes propose-mode runs and auto-change
   runs where no PM request was queued.
+  The stored payload includes `owner_escalation_source_evidence_ids`,
+  `owner_escalation_fingerprint` (set to `retro-change:<backlog-id>`),
+  `owner_escalation_matching_request_count`,
+  `owner_escalation_matching_action_count`, the escalation reason, and the
+  first escalation timestamp.
 - `infra-flag`: backlog only.
 - Prompt-injection, secret, destructive, and remote shell install patterns are
   quarantined.

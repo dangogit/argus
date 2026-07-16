@@ -198,7 +198,7 @@ def test_propose_authority_never_enqueues_auto_change(conn, tmp_path):
         assert cur.fetchone()[0] == 0
 
 
-def test_gated_auto_change_records_owner_escalation_when_not_self_applied(conn, tmp_path):
+def test_owner_escalation_persists_source_evidence_fingerprint_and_counts(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="propose")
     day = date(2026, 6, 18)
     retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day, candidates=[{
@@ -211,23 +211,73 @@ def test_gated_auto_change_records_owner_escalation_when_not_self_applied(conn, 
         "impact": 8,
         "theme": "closure-evidence",
     }])
+    retro.synthesize(conn, retro_day=day)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id::text FROM retro_backlog WHERE team_id=%s",
+            (retro.COMPANY_TEAM_ID,),
+        )
+        item_id = cur.fetchone()[0]
+    fingerprint = f"retro-change:{item_id}"
+    event_id = events.ingest_message(
+        conn, cfg, team="dev", source="cli",
+        dedup_key="owner-escalation-counts", text="failed retro change",
+    )
+    request_id = pipeline.open_request(
+        conn, cfg, event_id=event_id, team_id="dev",
+        conversation_id=None, fingerprint=fingerprint,
+    )
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET status='failed' WHERE id=%s", (request_id,))
+        cur.execute(
+            "INSERT INTO actions "
+            "(request_id, team_id, type, risk, status, idempotency_key) "
+            "VALUES (%s, 'dev', 'open_pr', 'reversible_internal', 'failed', %s)",
+            (request_id, "owner-escalation-counts"),
+        )
 
-    retro.run(conn, cfg, retro_day=day, company_only=True)
+    assert retro._mark_owner_escalations(conn, cfg) == 1
 
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
-        assert cur.fetchone()[0] == 0
         cur.execute(
-            "SELECT payload->>'owner_escalation_reason', "
-            "payload ? 'owner_escalation_required_at', "
-            "payload->'owner_escalation_evidence_ids' "
+            "SELECT payload "
             "FROM retro_backlog WHERE team_id=%s",
             (retro.COMPANY_TEAM_ID,),
         )
-        reason, has_timestamp, evidence_ids = cur.fetchone()
-    assert reason == "retro-authority-not-auto-changes"
-    assert has_timestamp is True
-    assert evidence_ids == ["a", "b", "c", "d"]
+        payload = cur.fetchone()[0]
+    assert payload["owner_escalation_reason"] == "retro-authority-not-auto-changes"
+    assert payload["owner_escalation_required_at"]
+    assert payload["owner_escalation_source_evidence_ids"] == ["a", "b", "c", "d"]
+    assert payload["owner_escalation_fingerprint"] == fingerprint
+    assert payload["owner_escalation_matching_request_count"] == 1
+    assert payload["owner_escalation_matching_action_count"] == 1
+
+
+def test_owner_escalation_is_not_rewritten(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="propose")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "skill",
+        "statement": "Add focused test checklist skill",
+        "trigger": "same QA miss repeated",
+        "evidence_run_ids": ["a", "b", "c"],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "focused-tests",
+    }])
+    retro.synthesize(conn, retro_day=day)
+
+    assert retro._mark_owner_escalations(conn, cfg) == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM retro_backlog WHERE team_id='dev'")
+        first_payload = cur.fetchone()[0]
+
+    assert retro._mark_owner_escalations(conn, cfg) == 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM retro_backlog WHERE team_id='dev'")
+        second_payload = cur.fetchone()[0]
+
+    assert second_payload == first_payload
 
 
 def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
