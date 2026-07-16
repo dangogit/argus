@@ -677,40 +677,27 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
         payload = payload or {}
         if payload.get("auto_request_id") or payload.get("auto_skipped_at"):
             continue
-        if not _auto_change_eligible(team_id, statement, trigger, payload):
-            continue
         target_team = _auto_change_team(cfg, team_id)
         if not target_team:
             continue
-        fingerprint = f"retro-change:{item_id}"
-        existing = _request_by_fingerprint(conn, target_team, fingerprint)
-        if existing:
+        disposition, existing = _pre_dispatch_gate(
+            conn, item_id=item_id, team_id=team_id, typ=typ,
+            statement=statement, trigger=trigger, payload=payload,
+            target_team=target_team, handled_tokens=handled_tokens,
+        )
+        if disposition == "blocked":
+            continue
+        if disposition == "existing":
             _mark_auto_queued(conn, item_id, existing, target_team)
             continue
+        if disposition == "duplicate":
+            _mark_auto_skipped(conn, item_id, target_team)
+            continue
+        fingerprint = f"retro-change:{item_id}"
         text = _auto_change_text(team_id=team_id, typ=typ, statement=statement,
                                  trigger=trigger, payload=payload)
         metadata = _auto_change_metadata(item_id=item_id, team_id=team_id,
                                          statement=statement, payload=payload)
-        equivalent = pipeline.equivalent_pm_request(
-            conn, target_team, metadata, fingerprint,
-        )
-        if equivalent:
-            _mark_auto_queued(conn, item_id, equivalent, target_team)
-            continue
-        # Fuzzy guard runs only after the exact-fingerprint and equivalent checks
-        # miss: it catches the reworded-daily duplicate whose statement (and thus
-        # backlog id, theme, and evidence ids) drifted enough to slip both.
-        cache_key = (target_team, typ)
-        prior = handled_tokens.get(cache_key)
-        if prior is None:
-            prior = [_statement_tokens(s)
-                     for s in _recent_auto_change_statements(conn, target_team, typ)]
-            handled_tokens[cache_key] = prior
-        tokens = _statement_tokens(statement)
-        if any(_statements_similar(tokens, other) for other in prior):
-            _mark_auto_skipped(conn, item_id, target_team)
-            continue
-        prior.append(tokens)
         event_id = events.ingest_message(
             conn, cfg, team=target_team, source="retro",
             dedup_key=fingerprint, text=text,
@@ -724,6 +711,41 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
             _mark_auto_queued(conn, item_id, request_id, target_team)
             queued += 1
     return queued
+
+
+def _pre_dispatch_gate(
+        conn: psycopg.Connection, *, item_id: str, team_id: str, typ: str,
+        statement: str, trigger: str, payload: dict, target_team: str,
+        handled_tokens: dict[tuple[str, str], list[frozenset[str]]],
+) -> tuple[str, str | None]:
+    """Authoritative auto-change decision before any event or request is made."""
+    if not _auto_change_eligible(team_id, statement, trigger, payload):
+        return "blocked", None
+
+    fingerprint = f"retro-change:{item_id}"
+    existing = _request_by_fingerprint(conn, target_team, fingerprint)
+    if existing:
+        return "existing", existing
+
+    metadata = _auto_change_metadata(item_id=item_id, team_id=team_id,
+                                     statement=statement, payload=payload)
+    equivalent = pipeline.equivalent_pm_request(
+        conn, target_team, metadata, fingerprint,
+    )
+    if equivalent:
+        return "existing", equivalent
+
+    cache_key = (target_team, typ)
+    prior = handled_tokens.get(cache_key)
+    if prior is None:
+        prior = [_statement_tokens(value) for value in
+                 _recent_auto_change_statements(conn, target_team, typ)]
+        handled_tokens[cache_key] = prior
+    tokens = _statement_tokens(statement)
+    if any(_statements_similar(tokens, other) for other in prior):
+        return "duplicate", None
+    prior.append(tokens)
+    return "dispatch", None
 
 
 def _auto_change_metadata(*, item_id: str, team_id: str, statement: str,

@@ -419,6 +419,73 @@ def test_qa_sensitive_auto_change_requires_complete_closure_contract():
     )
 
 
+def test_pre_dispatch_gate_accepts_supplied_qa_failed_evidence(monkeypatch):
+    payload = {
+        "evidence_run_ids": [
+            "retro-change:c749b6338097abd9387aabdc",
+            "retro-change:b0879a7567c1ac24f9977dbf",
+            "retro-change:e3d046e4c372455df82bfe30",
+            "retro-change:5f423b90d23f1eb832787065",
+            "retro-change:9f323e58d1358303106bbd2f",
+            "retro-change:2a84a3dad1f87f5477e6e677",
+        ],
+        "source_team_ids": ["argus", "content"],
+        "confidence": 0.9,
+        "impact": 8,
+    }
+
+    monkeypatch.setattr(retro, "_request_by_fingerprint", lambda *args: None)
+    monkeypatch.setattr(pipeline, "equivalent_pm_request", lambda *args: None)
+    monkeypatch.setattr(retro, "_recent_auto_change_statements", lambda *args: [])
+    disposition, request_id = retro._pre_dispatch_gate(
+        None,
+        item_id="new-gate",
+        team_id=retro.COMPANY_TEAM_ID,
+        typ="process-edit",
+        statement=("Require QA-sensitive closure to record the verification path, "
+                   "disposition of every covered report, verification coverage, "
+                   "and post-fix follow-up condition"),
+        trigger="six related qa-fail lessons",
+        payload=payload,
+        target_team="dev",
+        handled_tokens={},
+    )
+
+    assert (disposition, request_id) == ("dispatch", None)
+
+
+def test_pre_dispatch_gate_blocks_supplied_repeated_content(monkeypatch):
+    statement = "Require supporting evidence before dispatching repeated content findings"
+    payload = {
+        "evidence_run_ids": [
+            ("content-team-run:2026-07-16:content-system_agent-runs_2026-07-16-"
+             "0723-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee"),
+            ("content-team-run:2026-07-16:content-system_agent-runs_2026-07-16-"
+             "0743-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee"),
+            "content-review:27e228d5ee",
+        ],
+        "confidence": 0.9,
+        "impact": 8,
+    }
+    handled_tokens = {("dev", "process-edit"): [retro._statement_tokens(statement)]}
+
+    monkeypatch.setattr(retro, "_request_by_fingerprint", lambda *args: None)
+    monkeypatch.setattr(pipeline, "equivalent_pm_request", lambda *args: None)
+    disposition, request_id = retro._pre_dispatch_gate(
+        None,
+        item_id="repeated-content",
+        team_id="dev",
+        typ="process-edit",
+        statement=statement,
+        trigger="same rejected content appeared in two runs",
+        payload=payload,
+        target_team="dev",
+        handled_tokens=handled_tokens,
+    )
+
+    assert (disposition, request_id) == ("duplicate", None)
+
+
 def test_company_auto_change_live_work_requires_readiness_proof(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
