@@ -222,6 +222,7 @@ def run(conn: psycopg.Connection, cfg, *, retro_day: date | None = None,
     synthesized = synthesize(conn, retro_day=day)
     bridged = bridge_lessons(conn, cfg)
     _enqueue_auto_changes(conn, cfg)
+    _mark_owner_escalations(conn, cfg)
     return synthesized, bridged
 
 
@@ -816,6 +817,56 @@ def _mark_auto_skipped(conn: psycopg.Connection, item_id: str,
                 "auto_target_team": target_team,
             }), item_id),
         )
+
+
+def _mark_owner_escalations(conn: psycopg.Connection, cfg) -> int:
+    retro_cfg = getattr(cfg, "retro", None)
+    authority = getattr(retro_cfg, "authority", "propose")
+    reason = ("retro-authority-not-auto-changes" if authority != "auto-changes"
+              else "auto-change-not-queued")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT b.id::text, b.payload,
+                   (SELECT count(*) FROM requests r
+                    WHERE r.fingerprint = 'retro-change:' || b.id),
+                   (SELECT count(*) FROM actions a
+                    JOIN requests r ON r.id=a.request_id
+                    WHERE r.fingerprint = 'retro-change:' || b.id)
+            FROM retro_backlog b
+            WHERE b.status='gated'
+              AND b.type=ANY(%s)
+              AND NOT (b.payload ? 'auto_request_id')
+              AND NOT (b.payload ? 'auto_skipped_at')
+              AND NOT (b.payload ? 'owner_escalation_required_at')
+            """,
+            (list(_AUTO_TYPES),),
+        )
+        rows = cur.fetchall()
+        marked = 0
+        for item_id, payload, request_count, action_count in rows:
+            fingerprint = f"retro-change:{item_id}"
+            escalation = {
+                "owner_escalation_required_at": datetime.now(timezone.utc).isoformat(),
+                "owner_escalation_reason": reason,
+                "owner_escalation_source_evidence_ids": sorted(
+                    _evidence_ids(payload or {})
+                ),
+                "owner_escalation_fingerprint": fingerprint,
+                "owner_escalation_matching_request_count": int(request_count),
+                "owner_escalation_matching_action_count": int(action_count),
+            }
+            cur.execute(
+                """
+                UPDATE retro_backlog
+                SET payload = payload || %s::jsonb, updated_at=clock_timestamp()
+                WHERE id=%s
+                  AND NOT (payload ? 'owner_escalation_required_at')
+                """,
+                (Json(escalation), item_id),
+            )
+            marked += int(cur.rowcount)
+        return marked
 
 
 def _statement_tokens(text: str) -> frozenset[str]:
