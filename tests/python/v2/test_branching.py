@@ -107,7 +107,9 @@ def test_exhausted_qa_with_diff_opens_draft_pr(conn, cfg_project, monkeypatch, t
 
     monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
     monkeypatch.setattr(workspace, "diff", lambda project, cwd: "+fixed\n")
-    monkeypatch.setattr(pipeline, "_changed_files", lambda cwd: ["src/email.ts"])
+    monkeypatch.setattr(
+        pipeline, "_changed_files", lambda cwd, **kwargs: ["src/email.ts"],
+    )
 
     _finish_stage(conn, "developer", {
         "has_diff": True,
@@ -144,7 +146,9 @@ def test_exhausted_qa_reconciles_latest_pass_before_recording_failure(
 
     monkeypatch.setattr(workspace, "_wt_path", lambda request_id: tmp_path)
     monkeypatch.setattr(workspace, "diff", lambda project, cwd: "+fixed\n")
-    monkeypatch.setattr(pipeline, "_changed_files", lambda cwd: ["src/pipeline.py"])
+    monkeypatch.setattr(
+        pipeline, "_changed_files", lambda cwd, **kwargs: ["src/pipeline.py"],
+    )
 
     _finish_stage(conn, "developer", {"has_diff": True, "parsed": {"ready": True}})
     pipeline.on_job_done(conn, cfg_project, _reload_last(conn)); conn.commit()
@@ -226,6 +230,12 @@ def test_qa_pass_then_senior_approve_completes(conn, cfg_project):
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM requests WHERE id=%s", (rid,))
         assert cur.fetchone()[0] in ("done", "awaiting_approval")  # done, or gated on PR-merge
+        cur.execute(
+            "SELECT payload->'changed_files' FROM actions "
+            "WHERE request_id=%s AND type='open_pr'",
+            (rid,),
+        )
+        assert cur.fetchone()[0] == []
 
 
 # helpers
