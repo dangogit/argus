@@ -63,6 +63,9 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
         snap = cur.fetchone()[0]
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
     assert "external side effects" in snap["checkpoints"]
+    assert "every required action has a recorded disposition" in snap["checkpoints"]
+    assert "verification evidence" in snap["checkpoints"]
+    assert "unresolved follow-up" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
     assert "transcript documents" in snap["checkpoints"]
     assert "verification path" in snap["checkpoints"]
@@ -76,6 +79,9 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     pipeline._add_manager_checkpoints(snap)
     assert "manual QA follow-up" in snap.get("checkpoints", "")
     assert "fixed and deployed" in snap["checkpoints"]
+    assert "every required action has a recorded disposition" in snap["checkpoints"]
+    assert "verification evidence" in snap["checkpoints"]
+    assert "unresolved follow-up" in snap["checkpoints"]
     assert "QA-sensitive work cannot close" in snap["checkpoints"]
     assert "transcript documents" in snap["checkpoints"]
     assert "verification path" in snap["checkpoints"]
