@@ -854,7 +854,10 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                 )
                 _fail(conn, cfg, job.request_id, reason)
                 return
-            pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd)
+            pr_info = _pr_info(
+                conn, cfg, job.request_id, cwd=cwd,
+                base_ref=workspace._resolve_base_ref(project, cwd),
+            )
             _record_memory_outcome(conn, job.request_id, "qa-pass", pr_info["summary_short"])
             cur.execute(
                 "INSERT INTO actions "
@@ -922,7 +925,10 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
     classification = _failure_classification(reason)
     risk = (f"needs review: {failure_label}; failure classification: {classification}; "
             f"{reason} Opened as draft so the diff is inspectable.")
-    pr_info = _pr_info(conn, cfg, job.request_id, cwd=cwd, risk_summary=risk)
+    pr_info = _pr_info(
+        conn, cfg, job.request_id, cwd=cwd, risk_summary=risk,
+        base_ref=workspace._resolve_base_ref(project, cwd),
+    )
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO actions "
@@ -1082,9 +1088,10 @@ def _failure_classification(text: str) -> str:
 
 
 def _pr_info(conn: psycopg.Connection, cfg, request_id: str, *, cwd: str,
-             risk_summary: str | None = None) -> dict:
+             risk_summary: str | None = None,
+             base_ref: str | None = None) -> dict:
     request = _request_text_for_request(conn, request_id)
-    files = _changed_files(cwd)
+    files = _changed_files(cwd, base_ref=base_ref)
     checks = _checks_summary(conn, request_id)
     batch_count = _batch_bug_count(conn, request_id)
     title = (f"Argus: Investigate {batch_count} open bug reports" if batch_count
@@ -1208,8 +1215,11 @@ def _result_failure_text(role: str, result) -> str:
     return " ".join(part for part in details if part) or str(role)
 
 
-def _changed_files(cwd: str) -> list[str]:
-    commands = [
+def _changed_files(cwd: str, *, base_ref: str | None = None) -> list[str]:
+    commands = []
+    if base_ref:
+        commands.append(["git", "diff", "--name-only", f"{base_ref}...HEAD"])
+    commands += [
         ["git", "diff", "--name-only", "@{upstream}...HEAD"],
         ["git", "diff", "--name-only", "HEAD~1..HEAD"],
         ["git", "diff", "--name-only", "--cached"],
