@@ -1202,6 +1202,7 @@ def _result_failure_text(role: str, result) -> str:
 
 def _changed_files(cwd: str) -> list[str]:
     commands = [
+        ["git", "diff", "--name-only", "@{upstream}...HEAD"],
         ["git", "diff", "--name-only", "HEAD~1..HEAD"],
         ["git", "diff", "--name-only", "--cached"],
         ["git", "status", "--short"],
