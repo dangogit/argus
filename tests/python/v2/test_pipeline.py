@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 from psycopg.types.json import Json
 
@@ -400,6 +401,72 @@ def test_changed_files_lists_entire_branch_against_upstream(tmp_path):
     git("commit", "-m", "second")
 
     assert pipeline._changed_files(str(tmp_path)) == ["first.txt", "second.txt"]
+
+
+def test_approve_done_lists_entire_normal_worktree_branch_without_upstream(
+        conn, cfg_project, tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGUS_RUN_ROOT", str(tmp_path / "run"))
+    project_repo = tmp_path / "project"
+    project_repo.mkdir()
+
+    def git(cwd, *args, check=True):
+        return subprocess.run(
+            ["git", *args], cwd=cwd, check=check,
+            capture_output=True, text=True,
+        )
+
+    git(project_repo, "init", "-b", "main")
+    git(project_repo, "config", "user.name", "Argus Test")
+    git(project_repo, "config", "user.email", "argus@example.test")
+    (project_repo / "base.txt").write_text("base\n")
+    git(project_repo, "add", "base.txt")
+    git(project_repo, "commit", "-m", "base")
+
+    project = cfg_project.team("dev").project
+    project.repo = str(project_repo)
+    project.base_branch = "main"
+    project.work_branch_prefix = "argus/dev"
+
+    eid = events.ingest_message(
+        conn, cfg_project, team="dev", source="cli",
+        dedup_key="full-branch-diff", text="change two files",
+    )
+    rid = pipeline.open_request(
+        conn, cfg_project, event_id=eid, team_id="dev", conversation_id=None,
+    )
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE request_id=%s LIMIT 1", (rid,))
+        job_id = cur.fetchone()[0]
+
+    wt = workspace.create_worktree(project, rid)
+    try:
+        upstream = git(wt.path, "rev-parse", "@{upstream}", check=False)
+        assert upstream.returncode != 0
+
+        (Path(wt.path) / "first.txt").write_text("first\n")
+        assert workspace.commit_all(wt.path, "first") is True
+        (Path(wt.path) / "second.txt").write_text("second\n")
+        assert workspace.commit_all(wt.path, "second") is True
+
+        job = Job(
+            id=job_id, request_id=rid, event_id=eid, conversation_id=None,
+            team_id="dev", role="senior", stage=2, kind="pipeline",
+            status="done", attempts=0, max_attempts=3, claim_token=None,
+            exec_snapshot={}, payload={},
+        )
+        pipeline._approve_done(conn, cfg_project, job)
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload->'changed_files' FROM actions "
+                "WHERE request_id=%s AND type='open_pr'",
+                (rid,),
+            )
+            assert cur.fetchone()[0] == ["first.txt", "second.txt"]
+    finally:
+        workspace.remove(wt)
 
 
 def test_pr_summary_extracts_fix_from_builder_output(conn, cfg, tmp_path):
