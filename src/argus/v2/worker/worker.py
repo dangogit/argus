@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import json
 import os
+import re
 import subprocess
+from email.utils import parseaddr
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
@@ -144,7 +146,22 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
                 result["parsed"] = contracts.parse_result(run.output or "")
             if memory_fingerprints:
                 result["memory_fingerprints"] = memory_fingerprints
-            actions = _harden_actions(cfg, job, actions)
+            actions, rejected_action_types = _harden_actions(
+                cfg, job, actions, report_rejected=True)
+            if job.kind == "converse" and rejected_action_types:
+                capability = ", ".join(sorted(set(rejected_action_types)))
+                result["parsed"] = {
+                    "action": "capability_gap",
+                    "reply": "",
+                    "capability": capability,
+                    "reason": (
+                        f"Action type {capability} is not permitted for this Slack agent."
+                    ),
+                    "task": (
+                        "Add a safe, audited, server-scoped Argus action for "
+                        f"{capability}."
+                    ),
+                }
             if test_exit is not None:
                 result["test_exit"] = test_exit
                 result["test_output"] = test_context
@@ -247,7 +264,7 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
         conn.close()
 
 
-def _harden_actions(cfg, job, actions):
+def _harden_actions(cfg, job, actions, *, report_rejected: bool = False):
     """Security boundary for model-emitted actions (ARGUS_ACTIONS).
 
     For EVERY job the risk is recomputed server-side (executor.risk_for) so the
@@ -256,21 +273,29 @@ def _harden_actions(cfg, job, actions):
     and their target repo + number are forced server-side (never trust the
     model's repo, or it could close PRs in any repo the gh token can reach)."""
     if not actions:
-        return actions
+        return (actions, []) if report_rejected else actions
     from dataclasses import replace
     from argus.v2.actions.executor import (
         risk_for, _CONVERSE_ALLOWLIST, _CONVERSE_PERSONAL_ALLOWLIST,
-        _CONVERSE_TEAM_EMAIL_ALLOWLIST, _PR_NUMBER_OPS)
+        _CONVERSE_TEAM_EMAIL_ALLOWLIST, _CONVERSE_FIREBASE_ALLOWLIST,
+        _PR_NUMBER_OPS)
     repo = front._gh_owner_repo(cfg, job.team_id) if job.kind == "converse" else None
     out = []
+    rejected_action_types = []
     for a in actions:
+        if a.type == "set_user_balance" and job.kind != "converse":
+            continue
         if job.kind == "converse":
             allowed = _CONVERSE_ALLOWLIST
             if _has_team_email_source(cfg, job.team_id):
                 allowed = allowed | _CONVERSE_TEAM_EMAIL_ALLOWLIST
+            firebase_source = _firebase_account_source(cfg, job.team_id)
+            if firebase_source:
+                allowed = allowed | _CONVERSE_FIREBASE_ALLOWLIST
             if job.team_id == "personal":
                 allowed = allowed | _CONVERSE_PERSONAL_ALLOWLIST
             if a.type not in allowed:
+                rejected_action_types.append(a.type)
                 continue  # not a manager-permitted op
             if a.type in _PR_NUMBER_OPS:
                 if not repo:
@@ -285,7 +310,39 @@ def _harden_actions(cfg, job, actions):
                 payload["number"] = n
                 payload["repo"] = repo  # server-scoped; the model's repo is ignored
                 a = replace(a, payload=payload)
+            elif a.type == "set_user_balance":
+                context = (job.payload or {}).get("support_context") or {}
+                email = parseaddr(str(context.get("sender") or ""))[1].strip().lower()
+                if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) \
+                        or not firebase_source or not job.event_id:
+                    continue
+                raw_balance = (a.payload or {}).get("balance")
+                if isinstance(raw_balance, bool) or not isinstance(raw_balance, (int, str)):
+                    continue
+                if isinstance(raw_balance, str) and not raw_balance.isdigit():
+                    continue
+                balance = int(raw_balance)
+                if balance < 0 or balance > 1_000_000:
+                    continue
+                context_id = str(context.get("context_id") or "")
+                channel_ref = str(context.get("channel_ref") or "")
+                if not context_id or not channel_ref:
+                    continue
+                a = replace(
+                    a,
+                    destination_ref=channel_ref,
+                    payload={
+                        "email": email,
+                        "balance": balance,
+                        "source_name": firebase_source.name,
+                        "approval_proof": f"owner control event {job.event_id}",
+                        "support_context_id": context_id,
+                        "idempotency_key": a.idempotency_key,
+                    },
+                )
         out.append(replace(a, risk=risk_for(a.type)))
+    if report_rejected:
+        return out, rejected_action_types
     return out
 
 
@@ -301,6 +358,21 @@ def _has_team_email_source(cfg, team_id: str | None) -> bool:
         if source.type in email_types and (source.scope == "team" or source.team in (None, team_id)):
             return True
     return False
+
+
+def _firebase_account_source(cfg, team_id: str | None):
+    if cfg is None or not team_id:
+        return None
+    try:
+        team = cfg.team(team_id)
+    except KeyError:
+        return None
+    for source in list(team.sources) + list(cfg.company.sources):
+        scoped = source.team in (None, team_id)
+        actions = (source.config or {}).get("account_actions") or []
+        if source.type == "firebase" and scoped and "set_user_balance" in actions:
+            return source
+    return None
 
 
 def _safe_int(value, *, default: int) -> int:

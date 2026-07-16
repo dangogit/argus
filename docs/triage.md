@@ -124,6 +124,23 @@ Firebase CLI auth. If `secret_ref` is omitted, Argus reads
 `firebase-tools.json` from `firebase login` and refreshes the access token when
 needed. Set `config.auth_file` only when that file lives in a non-standard path.
 
+Firebase account mutations are disabled by default. To let an authenticated
+project control channel apply an owner-approved support credit adjustment, opt
+the production source in explicitly:
+
+```yaml
+config:
+  project: my-production-project
+  account_actions:
+    - set_user_balance
+```
+
+`set_user_balance` only runs from a manager conversation with an active support
+case. Argus resolves the customer email from server-held support context,
+ignores model-supplied targets, validates the integer balance, reads before the
+write, verifies after the write, and records the result in the action outbox.
+Pipeline workers and unscoped Firebase sources cannot emit this action.
+
 Deep connector statuses:
 
 - `ok`: configured and dry-run passed.

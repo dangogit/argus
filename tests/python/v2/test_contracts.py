@@ -67,6 +67,18 @@ def test_converse_decision_ignore():
     assert task == ""
 
 
+def test_converse_decision_learn_uses_guidance():
+    action, reply, task = contracts.converse_decision({
+        "action": "learn",
+        "reply": "Understood. I'll use that rule next time.",
+        "guidance": "Refund failed generations only after checking usage.",
+    })
+
+    assert action == "learn"
+    assert reply == "Understood. I'll use that rule next time."
+    assert task == "Refund failed generations only after checking usage."
+
+
 def test_converse_decision_missing_action_defaults_ignore():
     action, reply, task = contracts.converse_decision({})
     assert action == "ignore"

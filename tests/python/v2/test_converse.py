@@ -268,6 +268,127 @@ def test_converse_answer_idempotent(conn, cfg_converse, monkeypatch):
         assert cur.fetchone()[0] == 1
 
 
+def test_converse_capability_gap_reports_limit_and_waits_for_fix_approval(
+        conn, cfg_converse, monkeypatch):
+    import json
+
+    result = {
+        "action": "capability_gap",
+        "reply": "",
+        "capability": "Stripe refund execution",
+        "reason": "No approved Stripe refund action is available.",
+        "task": "Add an approval-gated, audited Stripe refund action.",
+    }
+    monkeypatch.setattr(
+        pipeline,
+        "_role_snapshot_extra",
+        lambda _role: {"scripted_output": f"ARGUS_RESULT: {json.dumps(result)}"},
+    )
+    _ingest(
+        conn,
+        cfg_converse,
+        text="Refund this customer in Stripe now.",
+        key="cap-gap-1",
+    )
+    conn.commit()
+
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse)
+        conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        reconcile.sweep_once(conn, cfg_converse)
+        conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, destination_ref, payload FROM actions "
+            "WHERE type='capability_gap'"
+        )
+        gap = cur.fetchone()
+        cur.execute(
+            "SELECT payload->>'text' FROM actions "
+            "WHERE type='reply' AND idempotency_key LIKE 'converse:%%'"
+        )
+        reply = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM requests")
+        request_count = cur.fetchone()[0]
+        cur.execute("SELECT prompt FROM runs WHERE role='manager'")
+        prompt = cur.fetchone()[0]
+
+    assert gap is not None
+    assert gap[0] == "awaiting_approval"
+    assert gap[1] == "whatsapp:grp1"
+    assert gap[2]["capability"] == "Stripe refund execution"
+    assert gap[2]["reason"] == "No approved Stripe refund action is available."
+    assert gap[2]["task"] == "Add an approval-gated, audited Stripe refund action."
+    assert "can't perform Stripe refund execution yet" in reply
+    assert "fix it" in reply
+    assert request_count == 0
+    assert "capability_gap" in prompt
+    assert "Never claim an unsupported operation succeeded" in prompt
+
+
+def test_converse_unsupported_action_overrides_false_success_with_gap(
+        conn, cfg_converse, monkeypatch):
+    import json
+
+    unsupported = [{
+        "type": "stripe_refund",
+        "risk": "reversible_internal",
+        "destination_ref": "stripe:customer",
+        "payload": {"amount": 100},
+    }]
+    result = {"action": "answer", "reply": "Refund completed.", "task": ""}
+    scripted = (
+        f"ARGUS_ACTIONS: {json.dumps(unsupported)}\n"
+        f"ARGUS_RESULT: {json.dumps(result)}"
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_role_snapshot_extra",
+        lambda _role: {"scripted_output": scripted},
+    )
+    _ingest(
+        conn,
+        cfg_converse,
+        text="Refund this customer in Stripe now.",
+        key="cap-gap-dropped-action",
+    )
+    conn.commit()
+
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse)
+        conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        reconcile.sweep_once(conn, cfg_converse)
+        conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, payload->>'capability', payload->>'reason' "
+            "FROM actions WHERE type='capability_gap'"
+        )
+        gap = cur.fetchone()
+        cur.execute(
+            "SELECT payload->>'text' FROM actions "
+            "WHERE type='reply' AND idempotency_key LIKE 'converse:%%'"
+        )
+        reply = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM actions WHERE type='stripe_refund'")
+        unsupported_count = cur.fetchone()[0]
+
+    assert gap == (
+        "awaiting_approval",
+        "stripe_refund",
+        "Action type stripe_refund is not permitted for this Slack agent.",
+    )
+    assert "can't perform stripe_refund yet" in reply
+    assert "Refund completed" not in reply
+    assert unsupported_count == 0
+
+
 # ---------------------------------------------------------------------------
 # C5: on_job_done dispatch branch
 # ---------------------------------------------------------------------------
