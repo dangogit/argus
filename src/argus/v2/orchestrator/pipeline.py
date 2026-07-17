@@ -33,6 +33,13 @@ log = logging.getLogger("argus.pipeline")
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
 
+_QA_CLOSURE_GATE = (
+    "- QA-sensitive work cannot close, and neither can other multi-step work, "
+    "until the transcript records the access path, every covered report or "
+    "item's disposition, verification coverage and evidence, and any unresolved "
+    "follow-up, including post-fix checks.\n"
+)
+
 _PIPELINE_CHECKPOINTS = (
     "CHECKPOINTS:\n"
     "- Send a short progress update when you start, after each risky external "
@@ -40,11 +47,7 @@ _PIPELINE_CHECKPOINTS = (
     "- For merge, deploy, repair, or live ops work, name completed milestones "
     "when applicable: investigated, changed, deployed, repaired-live-state, "
     "verified, summary-ready.\n"
-    "- Multi-step work cannot close until every required action has a recorded "
-    "disposition, verification evidence, and any unresolved follow-up.\n"
-    "- QA-sensitive work cannot close unless the transcript documents the "
-    "verification path, every covered report or item, and the post-fix "
-    "follow-up condition.\n"
+    + _QA_CLOSURE_GATE +
     "- Protected UI QA tasks cannot claim manual verification is runnable "
     "unless the transcript records a working preview login path: preview URL, "
     "login route or steps, non-secret credential source or test account label, "
@@ -63,11 +66,7 @@ _MANAGER_CHECKPOINTS = (
     "- If a REVIEW item is already fixed and deployed but awaiting owner/manual "
     "QA confirmation, do not silently ignore it. Reply with a manual QA "
     "follow-up asking the owner to confirm.\n"
-    "- Multi-step work cannot close until every required action has a recorded "
-    "disposition, verification evidence, and any unresolved follow-up.\n"
-    "- QA-sensitive work cannot close unless the transcript documents the "
-    "verification path, every covered report or item, and the post-fix "
-    "follow-up condition.\n"
+    + _QA_CLOSURE_GATE +
     "- Protected UI QA tasks cannot claim manual verification is runnable "
     "unless the transcript records a working preview login path: preview URL, "
     "login route or steps, non-secret credential source or test account label, "
