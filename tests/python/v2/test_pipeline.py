@@ -65,6 +65,8 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
         cur.execute("SELECT exec_snapshot FROM jobs WHERE request_id=%s AND stage=0", (rid,))
         snap = cur.fetchone()[0]
     assert "CHECKPOINTS:" in snap.get("checkpoints", "")
+    assert "reject findings already recorded as resolved or rejected" in snap["checkpoints"]
+    assert "repeated unresolved findings through this one closure gate" in snap["checkpoints"]
     assert "external side effects" in snap["checkpoints"]
     assert "every required action has a recorded disposition" in snap["checkpoints"]
     assert "verification evidence" in snap["checkpoints"]
@@ -93,6 +95,8 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     pipeline._add_manager_checkpoints(snap)
     assert "manual QA follow-up" in snap.get("checkpoints", "")
     assert "fixed and deployed" in snap["checkpoints"]
+    assert "reject findings already recorded as resolved or rejected" in snap["checkpoints"]
+    assert "repeated unresolved findings through this one closure gate" in snap["checkpoints"]
     assert "every required action has a recorded disposition" in snap["checkpoints"]
     assert "verification evidence" in snap["checkpoints"]
     assert "unresolved follow-up" in snap["checkpoints"]

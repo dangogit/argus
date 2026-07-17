@@ -33,13 +33,9 @@ log = logging.getLogger("argus.pipeline")
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
 
-_PIPELINE_CHECKPOINTS = (
-    "CHECKPOINTS:\n"
-    "- Send a short progress update when you start, after each risky external "
-    "side effect, and before the final response.\n"
-    "- For merge, deploy, repair, or live ops work, name completed milestones "
-    "when applicable: investigated, changed, deployed, repaired-live-state, "
-    "verified, summary-ready.\n"
+_QA_CLOSURE_GATE = (
+    "- Before selecting work, reject findings already recorded as resolved or "
+    "rejected. Route repeated unresolved findings through this one closure gate.\n"
     "- Multi-step work cannot close until every required action has a recorded "
     "disposition, verification evidence, and any unresolved follow-up.\n"
     "- QA-sensitive work cannot close unless the transcript documents the "
@@ -48,7 +44,17 @@ _PIPELINE_CHECKPOINTS = (
     "- Protected UI QA tasks cannot claim manual verification is runnable "
     "unless the transcript records a working preview login path: preview URL, "
     "login route or steps, non-secret credential source or test account label, "
-    "and observed post-login page or state.\n"
+    "and observed post-login page or state."
+)
+
+_PIPELINE_CHECKPOINTS = (
+    "CHECKPOINTS:\n"
+    "- Send a short progress update when you start, after each risky external "
+    "side effect, and before the final response.\n"
+    "- For merge, deploy, repair, or live ops work, name completed milestones "
+    "when applicable: investigated, changed, deployed, repaired-live-state, "
+    "verified, summary-ready.\n"
+    f"{_QA_CLOSURE_GATE}\n"
     "- For REVIEW items marked fixed and deployed, keep an explicit manual QA "
     "follow-up until owner or manual QA confirmation arrives.\n"
     "- Before emitting qa-fail or a failing PR summary, classify each failure as "
@@ -63,15 +69,7 @@ _MANAGER_CHECKPOINTS = (
     "- If a REVIEW item is already fixed and deployed but awaiting owner/manual "
     "QA confirmation, do not silently ignore it. Reply with a manual QA "
     "follow-up asking the owner to confirm.\n"
-    "- Multi-step work cannot close until every required action has a recorded "
-    "disposition, verification evidence, and any unresolved follow-up.\n"
-    "- QA-sensitive work cannot close unless the transcript documents the "
-    "verification path, every covered report or item, and the post-fix "
-    "follow-up condition.\n"
-    "- Protected UI QA tasks cannot claim manual verification is runnable "
-    "unless the transcript records a working preview login path: preview URL, "
-    "login route or steps, non-secret credential source or test account label, "
-    "and observed post-login page or state."
+    f"{_QA_CLOSURE_GATE}"
 )
 
 
