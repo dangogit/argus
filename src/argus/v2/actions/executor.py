@@ -412,7 +412,7 @@ def _suppress_duplicate_low_disk_notify(
         return None
     cur.execute(
         """
-        SELECT id::text
+        SELECT id::text, payload
         FROM actions
         WHERE id<>%s
           AND type='notify'
@@ -421,7 +421,6 @@ def _suppress_duplicate_low_disk_notify(
           AND provider_ref IS NOT NULL
           AND provider_ref NOT LIKE 'suppressed:%%'
           AND payload->'system_health_fingerprints' ? %s
-          AND updated_at > now() - make_interval(secs => %s)
         ORDER BY updated_at DESC
         LIMIT 1
         """,
@@ -429,13 +428,14 @@ def _suppress_duplicate_low_disk_notify(
             action_id,
             destination_ref,
             fingerprint,
-            _LOW_DISK_NOTIFY_DEDUPE_SECONDS,
         ),
     )
     row = cur.fetchone()
     if not row:
         return None
     prior_action_id = str(row[0])
+    if _notification_state(payload) != _notification_state(row[1] or {}):
+        return None
     cur.execute(
         """
         INSERT INTO alerts (severity, project, fingerprint, message, channel, payload)
@@ -464,6 +464,19 @@ def _low_disk_fingerprint(payload: dict) -> str | None:
         if value.startswith("disk:low:"):
             return value
     return None
+
+
+def _notification_state(payload: dict) -> tuple[str, str, str]:
+    """Comparable state for a notification lineage.
+
+    A recovery or higher escalation changes this tuple and re-arms delivery.
+    Legacy disk actions have the stable defaults below.
+    """
+    return (
+        str(payload.get("notification_type") or "system_health"),
+        str(payload.get("notification_state") or "active"),
+        str(payload.get("escalation_level") or payload.get("severity") or ""),
+    )
 
 
 def _execute_status(cur, action_id: str, cfg, payload: dict, existing,

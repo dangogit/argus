@@ -362,21 +362,9 @@ def draft_decision(conn, cfg, team_id: str, *, thread: str, sender: str, subject
         _restore_env("ARGUS_AGENT_CWD", prev_cwd)
         _restore_env("ARGUS_PROJECT", prev_project)
     parsed = _parse_json(output)
-    if not parsed or parsed.get("should_escalate") is True:
-        if not parsed:
-            _set_failure(failure_out, "invalid_json")
-            return None
-        return DraftDecision(
-            reply=_reply_to_text(str(parsed.get("reply") or "")),
-            should_escalate=True,
-            category=_category(parsed),
-            reason=str(parsed.get("reason") or ""),
-            risk=str(parsed.get("risk") or "high").lower(),
-            confidence=_float(parsed.get("confidence")),
-            needs_guidance=bool(parsed.get("needs_guidance")),
-            guidance_question=str(parsed.get("guidance_question") or ""),
-        )
-    reply = parsed.get("reply")
+    if not parsed:
+        _set_failure(failure_out, "invalid_json")
+        return None
     category = _category(parsed)
     if category == "non_support":
         return DraftDecision(
@@ -389,6 +377,18 @@ def draft_decision(conn, cfg, team_id: str, *, thread: str, sender: str, subject
             needs_guidance=bool(parsed.get("needs_guidance")),
             guidance_question=str(parsed.get("guidance_question") or ""),
         )
+    if parsed.get("should_escalate") is True:
+        return DraftDecision(
+            reply=_reply_to_text(str(parsed.get("reply") or "")),
+            should_escalate=True,
+            category=_category(parsed),
+            reason=str(parsed.get("reason") or ""),
+            risk=str(parsed.get("risk") or "high").lower(),
+            confidence=_float(parsed.get("confidence")),
+            needs_guidance=bool(parsed.get("needs_guidance")),
+            guidance_question=str(parsed.get("guidance_question") or ""),
+        )
+    reply = parsed.get("reply")
     if not isinstance(reply, str) or not reply.strip():
         _set_failure(failure_out, "empty_reply")
         return None

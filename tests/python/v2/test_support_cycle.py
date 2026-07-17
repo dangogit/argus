@@ -176,6 +176,30 @@ def test_vendor_notice_is_read_then_llm_classified_non_support(tmp_path, monkeyp
         assert cur.fetchone()[0] == 0
 
 
+def test_vendor_compliance_notice_cannot_be_escalated_as_customer_complaint(
+    tmp_path, monkeypatch, conn
+):
+    cfg = _support_cfg(tmp_path)
+    monkeypatch.setattr(
+        cycle,
+        "run_agent",
+        lambda *_a, **_k: type("Out", (), {
+            "text": '{"category":"vendor_notice","reply":"",'
+                    '"should_escalate":true,"reason":"compliance update",'
+                    '"risk":"high","confidence":0.9}'
+        })(),
+    )
+
+    decision = cycle.draft_decision(
+        conn, cfg, "luma", "neutral", "vendor@example.com",
+        "Compliance notice", "Terms have changed", None,
+    )
+
+    assert decision is not None
+    assert decision.category == "non_support"
+    assert decision.should_escalate is False
+
+
 def test_handle_email_skips_already_escalated(monkeypatch):
     team = type("Team", (), {"name": "luma", "project": None})()
     source = type("Source", (), {"type": "support_apps_script"})()

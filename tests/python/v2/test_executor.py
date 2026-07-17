@@ -347,3 +347,63 @@ def test_duplicate_low_disk_whatsapp_notify_suppresses_second_send(
     assert provider_ref.startswith("suppressed:duplicate_low_disk:")
     assert reason == "duplicate_low_disk_notify"
     assert suppressed_fingerprint == "disk:low:argus-run"
+
+
+def test_unchanged_low_disk_notify_stays_suppressed_after_old_cooldown(
+    conn, tmp_path, monkeypatch
+):
+    from argus.v2.channels import send as _send
+    from argus.v2.config import loader
+
+    cfg_path = tmp_path / "wa-old.yaml"
+    cfg_path.write_text(
+        "company: { name: c, defaults: { engine: { engine: echo }, "
+        "autonomy: { reversible_internal: auto }, notifications: { quiet_hours: false } } }\n"
+        "teams:\n  - name: dev\n    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n"
+        "    channels: [ { type: whatsapp, role: control, channel_id: owner } ]\n",
+        encoding="utf-8",
+    )
+    cfg = loader.load(cfg_path)
+    calls = []
+    monkeypatch.setattr(_send, "deliver", lambda *_a: calls.append(_a) or "wa:sent")
+    payload = json.dumps({
+        "text": "disk remains low",
+        "system_health_fingerprints": ["disk:low:argus-run"],
+    })
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO actions (team_id,type,risk,destination_ref,idempotency_key,"
+            "payload,status,provider_ref,updated_at) VALUES "
+            "('dev','notify','reversible_internal','whatsapp:owner','old-disk',"
+            "%s::jsonb,'done','wa:old',now()-interval '1 day')",
+            (payload,),
+        )
+        cur.execute(
+            "INSERT INTO actions (team_id,type,risk,destination_ref,idempotency_key,payload) "
+            "VALUES ('dev','notify','reversible_internal','whatsapp:owner','new-disk',%s::jsonb)",
+            (payload,),
+        )
+    conn.commit()
+
+    executor.process_proposed(conn, cfg)
+    conn.commit()
+
+    assert calls == []
+    with conn.cursor() as cur:
+        cur.execute("SELECT provider_ref FROM actions WHERE idempotency_key='new-disk'")
+        assert cur.fetchone()[0].startswith("suppressed:duplicate_low_disk:")
+
+
+def test_low_disk_recovery_or_escalation_rearms_notification():
+    base = {"system_health_fingerprints": ["disk:low:argus-run"]}
+
+    assert executor._notification_state(base) == (
+        "system_health", "active", ""
+    )
+    assert executor._notification_state({**base, "notification_state": "recovered"}) != (
+        executor._notification_state(base)
+    )
+    assert executor._notification_state({**base, "escalation_level": "critical"}) != (
+        executor._notification_state(base)
+    )

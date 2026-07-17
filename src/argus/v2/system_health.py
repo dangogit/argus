@@ -406,6 +406,12 @@ def notify_findings(
     idem = f"system_health:{alert_ids[0]}"
     action_payload = {
         "text": text,
+        "notification_type": "system_health",
+        "notification_state": "active",
+        "escalation_level": max(
+            (finding.severity for finding in new_findings),
+            key=lambda value: ("info", "warn", "error", "critical").index(value),
+        ),
         "system_health_fingerprints": [
             finding.fingerprint for finding in new_findings
         ],
