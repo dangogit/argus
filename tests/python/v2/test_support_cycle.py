@@ -177,8 +177,9 @@ def test_vendor_notice_is_read_then_llm_classified_non_support(tmp_path, monkeyp
 
 
 def test_vendor_compliance_notice_cannot_be_escalated_as_customer_complaint(
-    tmp_path, monkeypatch, conn
+    tmp_path, monkeypatch
 ):
+    # Regression: support-escalate:myopenclaw-cloud:19f6c2bf4f29a85b.
     cfg = _support_cfg(tmp_path)
     monkeypatch.setattr(
         cycle,
@@ -191,8 +192,14 @@ def test_vendor_compliance_notice_cannot_be_escalated_as_customer_complaint(
     )
 
     decision = cycle.draft_decision(
-        conn, cfg, "luma", "neutral", "vendor@example.com",
-        "Compliance notice", "Terms have changed", None,
+        None,
+        cfg,
+        "luma",
+        tone="neutral",
+        sender="vendor@example.com",
+        subject="Compliance notice",
+        thread="Terms have changed",
+        repo=None,
     )
 
     assert decision is not None

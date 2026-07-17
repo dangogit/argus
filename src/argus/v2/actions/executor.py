@@ -434,7 +434,7 @@ def _suppress_duplicate_low_disk_notify(
     if not row:
         return None
     prior_action_id = str(row[0])
-    if _notification_state(payload) != _notification_state(row[1] or {}):
+    if _notification_rearmed(payload, row[1] or {}):
         return None
     cur.execute(
         """
@@ -472,11 +472,26 @@ def _notification_state(payload: dict) -> tuple[str, str, str]:
     A recovery or higher escalation changes this tuple and re-arms delivery.
     Legacy disk actions have the stable defaults below.
     """
+    notification_type = str(payload.get("notification_type") or "system_health")
+    escalation_level = payload.get("escalation_level") or payload.get("severity")
+    if escalation_level is None and notification_type == "system_health":
+        escalation_level = "warn"
     return (
-        str(payload.get("notification_type") or "system_health"),
+        notification_type,
         str(payload.get("notification_state") or "active"),
-        str(payload.get("escalation_level") or payload.get("severity") or ""),
+        str(escalation_level or ""),
     )
+
+
+def _notification_rearmed(payload: dict, prior_payload: dict) -> bool:
+    current_type, current_state, current_level = _notification_state(payload)
+    prior_type, prior_state, prior_level = _notification_state(prior_payload)
+    if current_type != prior_type:
+        return False
+    if current_state == "recovered" and prior_state != "recovered":
+        return True
+    levels = {"info": 0, "warn": 1, "warning": 1, "error": 2, "critical": 3}
+    return levels.get(current_level, -1) > levels.get(prior_level, -1)
 
 
 def _execute_status(cur, action_id: str, cfg, payload: dict, existing,

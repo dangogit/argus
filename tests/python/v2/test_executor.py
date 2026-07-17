@@ -273,6 +273,7 @@ def test_generic_pm_error_notify_stays_held(conn, tmp_path):
 def test_duplicate_low_disk_whatsapp_notify_suppresses_second_send(
     conn, tmp_path, monkeypatch
 ):
+    # Regression: disk:low:suppressed:8b9cb6a71913.
     from argus.v2.channels import send as _send
     from argus.v2.config import loader
 
@@ -352,6 +353,7 @@ def test_duplicate_low_disk_whatsapp_notify_suppresses_second_send(
 def test_unchanged_low_disk_notify_stays_suppressed_after_old_cooldown(
     conn, tmp_path, monkeypatch
 ):
+    # Regression: disk:low:2a969bc5353e.
     from argus.v2.channels import send as _send
     from argus.v2.config import loader
 
@@ -399,11 +401,21 @@ def test_low_disk_recovery_or_escalation_rearms_notification():
     base = {"system_health_fingerprints": ["disk:low:argus-run"]}
 
     assert executor._notification_state(base) == (
-        "system_health", "active", ""
+        "system_health", "active", "warn"
     )
-    assert executor._notification_state({**base, "notification_state": "recovered"}) != (
-        executor._notification_state(base)
+    assert executor._notification_state(base) == executor._notification_state({
+        **base,
+        "notification_type": "system_health",
+        "notification_state": "active",
+        "escalation_level": "warn",
+    })
+    assert executor._notification_rearmed(
+        {**base, "notification_state": "recovered"}, base
     )
-    assert executor._notification_state({**base, "escalation_level": "critical"}) != (
-        executor._notification_state(base)
+    assert executor._notification_rearmed(
+        {**base, "escalation_level": "critical"}, base
+    )
+    assert not executor._notification_rearmed(base, base)
+    assert not executor._notification_rearmed(
+        base, {**base, "escalation_level": "critical"}
     )
