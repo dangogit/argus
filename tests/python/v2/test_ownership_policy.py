@@ -129,6 +129,32 @@ def test_policy_blocks_when_one_required_check_is_missing():
     assert "build" in decision.reason
 
 
+@pytest.mark.parametrize(("configured", "reason"), [
+    ([""], "blank after trim"),
+    (["   "], "blank after trim"),
+    (["test\x00name"], "control characters"),
+])
+def test_policy_denies_invalid_configured_required_check_names(
+        configured, reason):
+    decision = policy.assess_pr(
+        _team(required_checks=configured),
+        _pr(checks=["test"]),
+    )
+
+    assert decision.allowed is False
+    assert reason in decision.reason
+    assert decision.evidence["configured_required_checks"] == tuple(configured)
+
+
+def test_policy_allows_valid_normalized_configured_required_check_names():
+    decision = policy.assess_pr(
+        _team(required_checks=["  test  ", "build"]),
+        _pr(checks=["test", "build"]),
+    )
+
+    assert decision.allowed is True
+
+
 def test_policy_blocks_production_base_even_when_config_lists_it():
     team = _team(bases=["main"], auto_merge=False)
 

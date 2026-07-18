@@ -42,22 +42,36 @@ class PolicyDecision:
         }
 
 
-def _evidence(pr: PullRequestState) -> Mapping[str, EvidenceValue]:
-    return MappingProxyType({
+def _evidence(
+    pr: PullRequestState,
+    *,
+    configured_required_checks: tuple[str, ...] | None = None,
+) -> Mapping[str, EvidenceValue]:
+    evidence: dict[str, EvidenceValue] = {
         "pr": pr.number,
         "base": pr.base,
         "head": pr.head,
         "head_sha": pr.head_sha,
         "changed_files": pr.changed_files,
         "checks": pr.checks,
-    })
+    }
+    if configured_required_checks is not None:
+        evidence["configured_required_checks"] = configured_required_checks
+    return MappingProxyType(evidence)
 
 
-def _decision(pr: PullRequestState, allowed: bool, reason: str) -> PolicyDecision:
+def _decision(
+    pr: PullRequestState,
+    allowed: bool,
+    reason: str,
+    *,
+    configured_required_checks: tuple[str, ...] | None = None,
+) -> PolicyDecision:
     return PolicyDecision(
         allowed=allowed,
         reason=reason,
-        evidence=_evidence(pr),
+        evidence=_evidence(
+            pr, configured_required_checks=configured_required_checks),
     )
 
 
@@ -118,11 +132,23 @@ def assess_pr(team, pr: PullRequestState) -> PolicyDecision:
         if _blocked_path(team, path):
             return _decision(pr, False, f"blocked changed path: {path}")
 
-    required = {
-        normalized
-        for name in team.ownership.code.required_checks
-        if (normalized := normalize_check_name(name))
-    }
+    configured_required_checks = tuple(team.ownership.code.required_checks)
+    normalized_required_checks: list[str] = []
+    for index, name in enumerate(configured_required_checks):
+        normalized = normalize_check_name(name)
+        if not normalized:
+            detail = (
+                "blank after trim" if not name.strip()
+                else "contains control characters"
+            )
+            return _decision(
+                pr,
+                False,
+                f"configured required check at index {index} is {detail}",
+                configured_required_checks=configured_required_checks,
+            )
+        normalized_required_checks.append(normalized)
+    required = set(normalized_required_checks)
     if not pr.checks or any(not name for name in pr.checks):
         return _decision(
             pr, False, "required checks have incomplete check-name evidence")
