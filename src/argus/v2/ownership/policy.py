@@ -10,7 +10,11 @@ from argus.v2.config.schema import (
     MANDATORY_OWNERSHIP_BLOCKED_GLOBS,
     PROTECTED_AUTO_MERGE_BRANCHES,
 )
-from argus.v2.ownership.github import PullRequestState
+from argus.v2.ownership.github import (
+    PullRequestState,
+    normalize_branch_name,
+    normalize_check_name,
+)
 
 
 HARD_BLOCKED_GLOBS = MANDATORY_OWNERSHIP_BLOCKED_GLOBS
@@ -94,12 +98,15 @@ def assess_pr(team, pr: PullRequestState) -> PolicyDecision:
     if base.lower() in PROTECTED_AUTO_MERGE_BRANCHES:
         return _decision(
             pr, False, f"production base branch is blocked: {pr.base}")
-    allowed_bases = {branch.strip() for branch in
-                     team.ownership.code.allowed_base_branches if branch.strip()}
+    allowed_bases = {
+        normalized
+        for branch in team.ownership.code.allowed_base_branches
+        if (normalized := normalize_branch_name(branch))
+    }
     if base not in allowed_bases:
         return _decision(pr, False, f"base branch is not allowlisted: {pr.base}")
 
-    prefix = team.project.work_branch_prefix.strip().rstrip("/")
+    prefix = normalize_branch_name(team.project.work_branch_prefix)
     if not prefix or not (pr.head == prefix or pr.head.startswith(f"{prefix}/")):
         return _decision(
             pr, False, f"PR does not use configured branch prefix: {pr.head}")
@@ -112,8 +119,9 @@ def assess_pr(team, pr: PullRequestState) -> PolicyDecision:
             return _decision(pr, False, f"blocked changed path: {path}")
 
     required = {
-        name.strip() for name in team.ownership.code.required_checks
-        if name.strip()
+        normalized
+        for name in team.ownership.code.required_checks
+        if (normalized := normalize_check_name(name))
     }
     if not pr.checks or any(not name for name in pr.checks):
         return _decision(

@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 Runner = Callable[..., str]
@@ -17,7 +17,10 @@ _PR_FIELDS = (
     "headRefOid,mergeCommit,files,statusCheckRollup"
 )
 _DEPLOY_FIELDS = "databaseId,status,conclusion,url,headSha"
-_GIT_OBJECT_ID = re.compile(r"^[0-9a-fA-F]{7,64}$")
+_GIT_OBJECT_ID = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+_REPO_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+_BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_BAD_REF_CHARACTERS = frozenset("~^:?*[\\")
 
 
 def _string(value) -> str:
@@ -45,6 +48,26 @@ def _https_url(value) -> str:
     return text
 
 
+def _has_control(value: str) -> bool:
+    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+
+
+def _repo_segment(value: str) -> str:
+    if not value or _BAD_PERCENT_ESCAPE.search(value):
+        return ""
+    decoded = unquote(value)
+    if (
+        not decoded
+        or decoded in {".", ".."}
+        or "/" in decoded
+        or "\\" in decoded
+        or _has_control(decoded)
+        or not _REPO_SEGMENT.fullmatch(decoded)
+    ):
+        return ""
+    return decoded
+
+
 def _pr_url_parts(value) -> tuple[str, str, int] | None:
     text = _https_url(value)
     if not text:
@@ -60,7 +83,15 @@ def _pr_url_parts(value) -> tuple[str, str, int] | None:
         or not parts[-1].isdigit()
     ):
         return None
-    return text, f"{parts[-4]}/{parts[-3]}", int(parts[-1])
+    owner = _repo_segment(parts[-4])
+    repo = _repo_segment(parts[-3])
+    if not owner or not repo:
+        return None
+    host = parsed.netloc
+    selector = f"{owner}/{repo}"
+    if parsed.hostname and parsed.hostname.lower() != "github.com":
+        selector = f"{host}/{selector}"
+    return text, selector, int(parts[-1])
 
 
 def _pr_url(value, number: int) -> str:
@@ -73,6 +104,40 @@ def _pr_url(value, number: int) -> str:
 def _object_id(value) -> str:
     text = _string(value)
     return text if _GIT_OBJECT_ID.fullmatch(text) else ""
+
+
+def normalize_branch_name(value) -> str:
+    raw = value if isinstance(value, str) else ""
+    text = raw.strip()
+    if (
+        not text
+        or _has_control(raw)
+        or any(char.isspace() for char in text)
+        or any(char in _BAD_REF_CHARACTERS for char in text)
+        or ".." in text
+        or "@{" in text
+        or text == "@"
+        or text.startswith("-")
+        or text.startswith("/")
+        or text.endswith("/")
+        or "//" in text
+        or text.endswith(".")
+    ):
+        return ""
+    components = text.split("/")
+    if any(
+        component.startswith(".") or component.lower().endswith(".lock")
+        for component in components
+    ):
+        return ""
+    return text
+
+
+def normalize_check_name(value) -> str:
+    raw = value if isinstance(value, str) else ""
+    if _has_control(raw):
+        return ""
+    return raw.strip()
 
 
 def _repo_path(value) -> str:
@@ -110,7 +175,7 @@ class PullRequestState:
         files = tuple(_repo_path(path) for path in self.changed_files)
         if not files or any(not path for path in files):
             files = ()
-        checks = tuple(_string(name) for name in self.checks)
+        checks = tuple(normalize_check_name(name) for name in self.checks)
         if not checks or any(not name for name in checks):
             checks = ()
         state = _string(self.state).upper()
@@ -122,8 +187,8 @@ class PullRequestState:
         object.__setattr__(
             self, "draft", self.draft if isinstance(self.draft, bool) else None)
         object.__setattr__(self, "clean", self.clean is True)
-        object.__setattr__(self, "base", _string(self.base))
-        object.__setattr__(self, "head", _string(self.head))
+        object.__setattr__(self, "base", normalize_branch_name(self.base))
+        object.__setattr__(self, "head", normalize_branch_name(self.head))
         object.__setattr__(self, "head_sha", _object_id(self.head_sha))
         object.__setattr__(self, "merge_sha", _object_id(self.merge_sha))
         object.__setattr__(self, "changed_files", files)
@@ -197,7 +262,10 @@ def _parse_files(value) -> tuple[str, ...]:
 
 
 def _check_result(row: dict) -> tuple[str, bool]:
-    name = _string(row.get("name")) or _string(row.get("context"))
+    name = (
+        normalize_check_name(row.get("name"))
+        or normalize_check_name(row.get("context"))
+    )
     if not name:
         return "", False
 

@@ -15,6 +15,8 @@ from argus.v2.config.schema import (
 from argus.v2.ownership.github import PullRequestState
 from argus.v2.ownership import policy
 
+SHA40 = "a" * 40
+
 
 def _team(*, enabled=True, bases=None, required_checks=None, blocked_globs=None,
           prefix="argus", auto_merge=True):
@@ -38,7 +40,7 @@ def _team(*, enabled=True, bases=None, required_checks=None, blocked_globs=None,
 
 def _pr(*, number=42, url="https://github.com/acme/luma/pull/42",
         state="OPEN", draft=True, clean=True, base="staging",
-        head="argus/req-1", head_sha="abc1234", files=None, checks=None,
+        head="argus/req-1", head_sha=SHA40, files=None, checks=None,
         checks_passed=True):
     return PullRequestState(
         number=number,
@@ -159,7 +161,7 @@ def test_policy_decision_contains_machine_readable_evidence():
         "pr": 42,
         "base": "staging",
         "head": "argus/req-1",
-        "head_sha": "abc1234",
+        "head_sha": SHA40,
         "changed_files": ("src/App.tsx",),
         "checks": ("test",),
     }
@@ -168,7 +170,7 @@ def test_policy_decision_contains_machine_readable_evidence():
         "pr": 42,
         "base": "staging",
         "head": "argus/req-1",
-        "head_sha": "abc1234",
+        "head_sha": SHA40,
         "changed_files": ["src/App.tsx"],
         "checks": ["test"],
     }
@@ -190,7 +192,7 @@ def test_pull_request_state_normalizes_surrounding_whitespace_before_policy():
         url="  https://github.com/acme/luma/pull/42  ",
         base="  staging  ",
         head="  argus/req-1  ",
-        head_sha="  abc1234  ",
+        head_sha=f"  {SHA40}  ",
         files=["  src/App.tsx  "],
         checks=["  test  "],
     )
@@ -209,11 +211,15 @@ def test_pull_request_state_normalizes_surrounding_whitespace_before_policy():
     {"head_sha": "not-a-hex-sha"},
     {"base": "   "},
     {"head": "   "},
+    {"head": "argus/../req"},
+    {"head": "argus/bad name"},
+    {"head": "argus/foo.lock/req"},
     {"files": ["   "]},
     {"files": ["/etc/passwd"]},
     {"files": ["src/../secret.txt"]},
     {"files": ["src/\x00App.tsx"]},
     {"checks": ["   "]},
+    {"checks": ["test\x00name"]},
 ])
 def test_policy_denies_malformed_manually_constructed_pr_state(change):
     decision = policy.assess_pr(_team(), _pr(**change))

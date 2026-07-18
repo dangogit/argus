@@ -9,6 +9,10 @@ PR_FIELDS = (
     "number,url,state,isDraft,mergeStateStatus,baseRefName,headRefName,"
     "headRefOid,mergeCommit,files,statusCheckRollup"
 )
+SHA40 = "a" * 40
+MERGE_SHA40 = "d" * 40
+OTHER_SHA40 = "b" * 40
+SHA64 = "c" * 64
 
 
 class FakeRunner:
@@ -30,7 +34,7 @@ def _pr_payload(**overrides):
         "mergeStateStatus": "CLEAN",
         "baseRefName": "staging",
         "headRefName": "argus/req-1",
-        "headRefOid": "abc1234",
+        "headRefOid": SHA40,
         "mergeCommit": None,
         "files": [{"path": "src/App.tsx"}],
         "statusCheckRollup": [{
@@ -81,13 +85,13 @@ def test_inspect_pr_reads_merge_commit_for_merged_pr():
     runner = FakeRunner(json.dumps(_pr_payload(
         state="MERGED",
         mergeStateStatus="UNKNOWN",
-        mergeCommit={"oid": "def1234"},
+        mergeCommit={"oid": MERGE_SHA40},
     )))
 
     pr = github.inspect_pr(cwd="/repo", pr_ref="42", runner=runner)
 
     assert pr.state == "MERGED"
-    assert pr.merge_sha == "def1234"
+    assert pr.merge_sha == MERGE_SHA40
     assert pr.clean is False
 
 
@@ -129,7 +133,7 @@ def test_inspect_pr_normalizes_provider_string_whitespace():
         url="  https://github.com/acme/luma/pull/42  ",
         baseRefName="  staging  ",
         headRefName="  argus/req-1  ",
-        headRefOid="  abc1234  ",
+        headRefOid=f"  {SHA40}  ",
         files=[{"path": "  src/App.tsx  "}],
         statusCheckRollup=[{
             "name": "  test  ",
@@ -143,7 +147,7 @@ def test_inspect_pr_normalizes_provider_string_whitespace():
     assert pr.url == "https://github.com/acme/luma/pull/42"
     assert pr.base == "staging"
     assert pr.head == "argus/req-1"
-    assert pr.head_sha == "abc1234"
+    assert pr.head_sha == SHA40
     assert pr.changed_files == ("src/App.tsx",)
     assert pr.checks == ("test",)
     assert pr.checks_passed is True
@@ -168,6 +172,14 @@ def test_inspect_pr_rejects_blank_provider_fields(field, value, attribute):
     "https:///acme/luma/pull/42",
     "https://github.com/acme/luma/issues/42",
     "https://github.com/acme/luma/pull/43",
+    "https://github.com//luma/pull/42",
+    "https://github.com/%2E/luma/pull/42",
+    "https://github.com/%2E%2E/luma/pull/42",
+    "https://github.com/ac%2Fme/luma/pull/42",
+    "https://github.com/ac%00me/luma/pull/42",
+    "https://github.com/ac%20me/luma/pull/42",
+    "https://github.com/ac%ZZme/luma/pull/42",
+    "https://github.com/acme!/luma/pull/42",
 ])
 def test_inspect_pr_rejects_malformed_or_mismatched_url(url):
     runner = FakeRunner(json.dumps(_pr_payload(url=url)))
@@ -177,13 +189,29 @@ def test_inspect_pr_rejects_malformed_or_mismatched_url(url):
     assert pr.url == ""
 
 
-@pytest.mark.parametrize("sha", ["abc123", "not-a-hex-sha", "g123456"])
+@pytest.mark.parametrize("sha", [
+    "a" * 7,
+    "a" * 39,
+    "a" * 41,
+    "a" * 63,
+    "a" * 65,
+    "g" * 40,
+])
 def test_inspect_pr_rejects_invalid_head_sha(sha):
     runner = FakeRunner(json.dumps(_pr_payload(headRefOid=sha)))
 
     pr = github.inspect_pr(cwd="/repo", pr_ref="42", runner=runner)
 
     assert pr.head_sha == ""
+
+
+@pytest.mark.parametrize("sha", [SHA40, SHA64])
+def test_inspect_pr_accepts_full_git_object_id_boundaries(sha):
+    runner = FakeRunner(json.dumps(_pr_payload(headRefOid=sha)))
+
+    pr = github.inspect_pr(cwd="/repo", pr_ref="42", runner=runner)
+
+    assert pr.head_sha == sha
 
 
 @pytest.mark.parametrize("path", [
@@ -212,6 +240,71 @@ def test_inspect_pr_rejects_blank_check_name():
     assert pr.checks_passed is False
 
 
+@pytest.mark.parametrize("name", ["test\x00name", "test\nname", "test\x7fname"])
+def test_inspect_pr_rejects_control_characters_in_check_name(name):
+    runner = FakeRunner(json.dumps(_pr_payload(statusCheckRollup=[{
+        "name": name, "status": "COMPLETED", "conclusion": "SUCCESS",
+    }])))
+
+    pr = github.inspect_pr(cwd="/repo", pr_ref="42", runner=runner)
+
+    assert pr.checks == ()
+    assert pr.checks_passed is False
+
+
+def test_inspect_pr_accepts_non_control_check_name_spacing():
+    runner = FakeRunner(json.dumps(_pr_payload(statusCheckRollup=[{
+        "name": "CI / test", "status": "COMPLETED", "conclusion": "SUCCESS",
+    }])))
+
+    pr = github.inspect_pr(cwd="/repo", pr_ref="42", runner=runner)
+
+    assert pr.checks == ("CI / test",)
+    assert pr.checks_passed is True
+
+
+@pytest.mark.parametrize("branch", [
+    "-argus/req",
+    "argus/../req",
+    "argus/@{req",
+    "argus/bad name",
+    "argus/bad~name",
+    "argus/bad^name",
+    "argus/bad:name",
+    "argus/bad?name",
+    "argus/bad*name",
+    "argus/bad[name",
+    "argus/bad\\name",
+    "/argus/req",
+    "argus/req/",
+    "argus//req",
+    "argus/req.",
+    "argus/foo.lock/req",
+    "argus/.hidden/req",
+    "argus/\x01req",
+])
+@pytest.mark.parametrize("field", ["baseRefName", "headRefName"])
+def test_inspect_pr_rejects_unsafe_git_branch_name(field, branch):
+    runner = FakeRunner(json.dumps(_pr_payload(**{field: branch})))
+
+    pr = github.inspect_pr(cwd="/repo", pr_ref="42", runner=runner)
+
+    attribute = "base" if field == "baseRefName" else "head"
+    assert getattr(pr, attribute) == ""
+
+
+def test_inspect_pr_accepts_safe_git_branch_boundaries():
+    runner = FakeRunner(json.dumps(_pr_payload(
+        baseRefName="release/v1.2.3",
+        headRefName="argus/request-1",
+    )))
+
+    pr = github.inspect_pr(cwd="/repo", pr_ref="42", runner=runner)
+
+    assert pr.base == "release/v1.2.3"
+    assert pr.head == "argus/request-1"
+
+
 def test_inspect_pr_accepts_github_enterprise_https_pr_url():
     url = "https://github.corp.example/acme/luma/pull/42"
     runner = FakeRunner(json.dumps(_pr_payload(url=url)))
@@ -229,7 +322,23 @@ def test_inspect_pr_derives_repo_from_github_enterprise_url_without_checkout():
 
     assert runner.calls == [
         ([
-            "gh", "pr", "view", "42", "--repo", "acme/luma",
+            "gh", "pr", "view", "42", "--repo",
+            "github.corp.example/acme/luma",
+            "--json", PR_FIELDS,
+        ], None),
+    ]
+
+
+def test_inspect_pr_decodes_safe_repo_segments_for_repo_selector():
+    url = "https://github.corp.example/%61cme/lu%6Da/pull/42"
+    runner = FakeRunner(json.dumps(_pr_payload(url=url)))
+
+    github.inspect_pr(cwd=None, pr_ref=url, runner=runner)
+
+    assert runner.calls == [
+        ([
+            "gh", "pr", "view", "42", "--repo",
+            "github.corp.example/acme/luma",
             "--json", PR_FIELDS,
         ], None),
     ]
@@ -242,21 +351,21 @@ def test_inspect_deploy_parses_matching_run_with_exact_request():
             "status": "completed",
             "conclusion": "success",
             "url": "https://github.com/acme/luma/actions/runs/99",
-            "headSha": "def1234",
+            "headSha": MERGE_SHA40,
         },
     ]))
 
     deploy = github.inspect_deploy(
         cwd="/repo",
         workflow="Deploy to Staging",
-        commit_sha="def1234",
+        commit_sha=MERGE_SHA40,
         runner=runner,
     )
 
     assert runner.calls == [
         ([
             "gh", "run", "list", "--workflow", "Deploy to Staging",
-            "--commit", "def1234", "--json",
+            "--commit", MERGE_SHA40, "--json",
             "databaseId,status,conclusion,url,headSha", "--limit", "10",
         ], "/repo"),
     ]
@@ -273,11 +382,11 @@ def test_inspect_deploy_returns_not_found_without_exact_commit_match():
         "status": "completed",
         "conclusion": "success",
         "url": "https://github.com/acme/luma/actions/runs/99",
-        "headSha": "abc9876",
+        "headSha": OTHER_SHA40,
     }]))
 
     deploy = github.inspect_deploy(
-        cwd="/repo", workflow="Deploy", commit_sha="def1234", runner=runner)
+        cwd="/repo", workflow="Deploy", commit_sha=MERGE_SHA40, runner=runner)
 
     assert deploy.found is False
     assert deploy.successful is False
@@ -290,11 +399,11 @@ def test_inspect_deploy_treats_completed_non_success_as_failed():
         "status": "completed",
         "conclusion": "cancelled",
         "url": "https://github.com/acme/luma/actions/runs/100",
-        "headSha": "def1234",
+        "headSha": MERGE_SHA40,
     }]))
 
     deploy = github.inspect_deploy(
-        cwd="/repo", workflow="Deploy", commit_sha="def1234", runner=runner)
+        cwd="/repo", workflow="Deploy", commit_sha=MERGE_SHA40, runner=runner)
 
     assert deploy.completed is True
     assert deploy.successful is False
