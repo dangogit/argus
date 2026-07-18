@@ -33,6 +33,29 @@ log = logging.getLogger("argus.pipeline")
 # failed QA, and pinged the owner (owner-reported feedback loop, 2026-06-19).
 _SIGNAL_NOISE = ("produced no findings", "skipped or empty", "no new findings")
 
+_CORRECTIVE_FAILURE_EVIDENCE = (
+    "retro-change:2a84a3dad1f87f5477e6e677",
+    "retro-change:1805d3739130a90361190deb",
+    "retro-change:c749b6338097abd9387aabdc",
+    "retro-change:d813cf5ab4649e660dcb6360",
+    "retro-change:1fa7a51769d58923273a9239",
+    "content-team-run:2026-07-18:content-system_agent-runs_2026-07-18-0625-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee",
+    "content-team-run:2026-07-17:content-system_agent-runs_2026-07-17-0625-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee",
+    "retro-change:937df0c7fc1e1dd9d8e1a86c",
+    "retro-change:71455f7cee71885bc7795a77",
+    "content-team-run:2026-07-16:content-system_agent-runs_2026-07-16-0743-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee",
+)
+
+_CORRECTIVE_CLOSURE_GATE = (
+    "- Corrective work cannot close until every known recurring failure has "
+    "been replayed against the change. Enumerate each evidence item with its "
+    "recorded disposition and verification result:\n"
+    + "".join(f"  - {item}\n" for item in _CORRECTIVE_FAILURE_EVIDENCE)
+    + "- Reject closure if any listed failure recurs or any evidence item lacks "
+    "a recorded disposition or verification result. Every replayed failure must "
+    "be rejected with recorded evidence.\n"
+)
+
 _PIPELINE_CHECKPOINTS = (
     "CHECKPOINTS:\n"
     "- Send a short progress update when you start, after each risky external "
@@ -42,9 +65,8 @@ _PIPELINE_CHECKPOINTS = (
     "verified, summary-ready.\n"
     "- Multi-step work cannot close until every required action has a recorded "
     "disposition, verification evidence, and any unresolved follow-up.\n"
-    "- Corrective work cannot close until every known recurring failure has "
-    "been replayed against the change and rejected with recorded evidence.\n"
-    "- QA-sensitive work cannot close unless the transcript documents the "
+    + _CORRECTIVE_CLOSURE_GATE
+    + "- QA-sensitive work cannot close unless the transcript documents the "
     "verification path, every covered report or item, and the post-fix "
     "follow-up condition.\n"
     "- Protected UI QA tasks cannot claim manual verification is runnable "
@@ -67,9 +89,8 @@ _MANAGER_CHECKPOINTS = (
     "follow-up asking the owner to confirm.\n"
     "- Multi-step work cannot close until every required action has a recorded "
     "disposition, verification evidence, and any unresolved follow-up.\n"
-    "- Corrective work cannot close until every known recurring failure has "
-    "been replayed against the change and rejected with recorded evidence.\n"
-    "- QA-sensitive work cannot close unless the transcript documents the "
+    + _CORRECTIVE_CLOSURE_GATE
+    + "- QA-sensitive work cannot close unless the transcript documents the "
     "verification path, every covered report or item, and the post-fix "
     "follow-up condition.\n"
     "- Protected UI QA tasks cannot claim manual verification is runnable "

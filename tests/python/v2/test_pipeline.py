@@ -84,7 +84,6 @@ def test_enqueue_stage_sets_checkpoint_guidance_in_snapshot(conn, cfg):
     assert "observed post-login page or state" in snap["checkpoints"]
     assert "Arvuyot-yashir" not in snap["checkpoints"]
     assert "converse:" not in snap["checkpoints"]
-    assert "retro-change:" not in snap["checkpoints"]
     assert "ee7afeddb9fac326df4dc4eb" not in snap["checkpoints"]
     assert "5eca1717dd3ea52c690bed71" not in snap["checkpoints"]
     assert "4564c37904b5c9ab86d539c5" not in snap["checkpoints"]
@@ -114,10 +113,31 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "observed post-login page or state" in snap["checkpoints"]
     assert "Arvuyot-yashir" not in snap["checkpoints"]
     assert "converse:" not in snap["checkpoints"]
-    assert "retro-change:" not in snap["checkpoints"]
     assert "ee7afeddb9fac326df4dc4eb" not in snap["checkpoints"]
     assert "5eca1717dd3ea52c690bed71" not in snap["checkpoints"]
     assert "4564c37904b5c9ab86d539c5" not in snap["checkpoints"]
+
+
+def test_corrective_closure_gate_covers_every_supplied_failure():
+    evidence = (
+        "retro-change:2a84a3dad1f87f5477e6e677",
+        "retro-change:1805d3739130a90361190deb",
+        "retro-change:c749b6338097abd9387aabdc",
+        "retro-change:d813cf5ab4649e660dcb6360",
+        "retro-change:1fa7a51769d58923273a9239",
+        "content-team-run:2026-07-18:content-system_agent-runs_2026-07-18-0625-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee",
+        "content-team-run:2026-07-17:content-system_agent-runs_2026-07-17-0625-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee",
+        "retro-change:937df0c7fc1e1dd9d8e1a86c",
+        "retro-change:71455f7cee71885bc7795a77",
+        "content-team-run:2026-07-16:content-system_agent-runs_2026-07-16-0743-content-team-run.md:whatsapp-seed:2026-07-12:27e228d5ee",
+    )
+
+    assert pipeline._CORRECTIVE_FAILURE_EVIDENCE == evidence
+    for item in evidence:
+        assert item in pipeline._PIPELINE_CHECKPOINTS
+        assert item in pipeline._MANAGER_CHECKPOINTS
+    assert "Reject closure if any listed failure recurs" in pipeline._CORRECTIVE_CLOSURE_GATE
+    assert "lacks a recorded disposition or verification result" in pipeline._CORRECTIVE_CLOSURE_GATE
 
 
 def test_add_prompt_hash_is_deterministic():
