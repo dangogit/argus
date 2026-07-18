@@ -11,6 +11,7 @@ import subprocess
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 from argus.v2.actions import mergeability
 from argus.v2.ownership.github import inspect_pr
@@ -28,6 +29,9 @@ def _default_runner(argv, cwd=None) -> str:  # pragma: no cover
 
 _CONFLICT_TITLE_PREFIX = "[conflicts] "
 _ARGUS_PR_SIGNATURE_PREFIX = "argus-pr-signature:"
+_GIT_OBJECT_ID = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+_CANONICAL_PR_NUMBER = re.compile(r"^[1-9][0-9]*$")
+_REPOSITORY_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def build_open_pr(*, branch, base, remote, title, body, draft=False):
@@ -132,20 +136,183 @@ def _apply_conflict_prefix(title: str, body: str, check: mergeability.MergeCheck
     return prefixed_title, conflict_body
 
 
-def _assess_owned_pr(payload: dict, *, runner: Callable, cfg, team_id: str):
+def _canonical_pr_number(value) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    if isinstance(value, str) and _CANONICAL_PR_NUMBER.fullmatch(value):
+        return int(value)
+    raise RuntimeError("ownership action requires a positive canonical PR number")
+
+
+def _expected_head_sha(payload: dict) -> str:
+    value = payload.get("expected_head_sha")
+    if not isinstance(value, str) or not _GIT_OBJECT_ID.fullmatch(value):
+        raise RuntimeError("ownership action requires a full expected_head_sha")
+    return value
+
+
+def _absolute_checkout(value, *, label: str) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise RuntimeError(f"{label} must be an absolute checkout path")
+    expanded = os.path.expanduser(value)
+    if not os.path.isabs(expanded):
+        raise RuntimeError(f"{label} must be an absolute checkout path")
+    return os.path.realpath(expanded)
+
+
+def _git_common_dir(runner: Callable, cwd: str, *, action_cwd: bool) -> str:
+    try:
+        raw = runner(
+            [
+                "git", "rev-parse", "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            cwd=cwd,
+        )
+    except Exception as exc:
+        label = "ownership action cwd" if action_cwd else "configured project repo"
+        raise RuntimeError(f"cannot verify {label}") from exc
+    value = raw.strip() if isinstance(raw, str) else ""
+    if not value or "\x00" in value or not os.path.isabs(value):
+        label = "ownership action cwd" if action_cwd else "configured project repo"
+        raise RuntimeError(f"cannot verify {label}")
+    return os.path.realpath(value)
+
+
+def _validated_action_cwd(team, payload: dict, runner: Callable) -> str:
+    project_repo = _absolute_checkout(
+        team.project.repo, label="configured project repo")
+    action_cwd = _absolute_checkout(
+        payload.get("cwd"), label="ownership action cwd")
+    project_common = _git_common_dir(
+        runner, project_repo, action_cwd=False)
+    action_common = _git_common_dir(
+        runner, action_cwd, action_cwd=True)
+    if action_common != project_common:
+        raise RuntimeError(
+            "ownership action cwd is not the configured project checkout "
+            "or one of its linked worktrees")
+    return action_cwd
+
+
+def _repository_identity(value: str) -> tuple[str, str, str] | None:
+    text = value.strip() if isinstance(value, str) else ""
+    if not text or "\x00" in text:
+        return None
+    host = ""
+    path = ""
+    if "://" in text:
+        try:
+            parsed = urlsplit(text)
+            parsed.port
+        except ValueError:
+            return None
+        if parsed.scheme.lower() not in {"https", "ssh", "git"} or not parsed.hostname:
+            return None
+        host = parsed.hostname.lower()
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        path = parsed.path.strip("/")
+    elif re.fullmatch(r"[^@/:\s]+@[^/:\s]+:.+", text):
+        _user, remainder = text.split("@", 1)
+        host, path = remainder.split(":", 1)
+        host = host.lower()
+    else:
+        parts = text.strip("/").split("/")
+        if len(parts) == 2:
+            host = "github.com"
+            path = text
+        elif len(parts) == 3:
+            host, path = parts[0].lower(), "/".join(parts[1:])
+        else:
+            return None
+    parts = path.strip("/").split("/")
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not all(_REPOSITORY_SEGMENT.fullmatch(part) for part in (owner, repo)):
+        return None
+    if not host or any(char.isspace() for char in host):
+        return None
+    return host.lower(), owner.lower(), repo.lower()
+
+
+def _pr_repository_identity(url: str) -> tuple[str, str, str] | None:
+    try:
+        parsed = urlsplit(url)
+        parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return None
+    parts = parsed.path.split("/")
+    if len(parts) != 5 or parts[3] != "pull" or not parts[4].isdigit():
+        return None
+    host = parsed.hostname.lower()
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return host, parts[1].lower(), parts[2].lower()
+
+
+def _configured_repository(team, runner: Callable, project_repo: str):
+    configured = team.project.github_repo
+    if configured:
+        identity = _repository_identity(configured)
+    else:
+        try:
+            remote_url = runner(
+                ["git", "remote", "get-url", team.project.remote],
+                cwd=project_repo,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "cannot resolve configured GitHub repository") from exc
+        identity = _repository_identity(remote_url)
+    if identity is None:
+        raise RuntimeError("cannot resolve configured GitHub repository")
+    return identity
+
+
+def _inspect_owned_pr(payload: dict, *, runner: Callable, cfg, team_id: str):
     if cfg is None or not team_id:
         raise RuntimeError("ownership action requires team configuration")
     team = cfg.team(team_id)
+    if not team.ownership.enabled:
+        raise RuntimeError("blocked by ownership policy: team ownership is disabled")
+    if team.project is None:
+        raise RuntimeError(
+            "blocked by ownership policy: team project configuration is missing")
+    number = _canonical_pr_number(payload.get("pr"))
+    expected_head_sha = _expected_head_sha(payload)
+    cwd = _validated_action_cwd(team, payload, runner)
+    expected_repo = _configured_repository(
+        team, runner, _absolute_checkout(
+            team.project.repo, label="configured project repo"))
     pr = inspect_pr(
-        cwd=payload.get("cwd"),
-        pr_ref=payload["pr"],
+        cwd=cwd,
+        pr_ref=str(number),
         runner=runner,
     )
+    if pr.number != number:
+        raise RuntimeError("inspected PR number does not match requested PR number")
+    if _pr_repository_identity(pr.url) != expected_repo:
+        raise RuntimeError("PR is not in the configured GitHub repository")
+    if pr.head_sha != expected_head_sha:
+        raise RuntimeError("inspected PR head SHA does not match expected_head_sha")
+    return team, pr, number, expected_head_sha, cwd
+
+
+def _require_owned_pr_policy(team, pr) -> None:
     decision = assess_pr(team, pr)
     if not decision.allowed:
         raise RuntimeError(
             f"blocked by ownership policy: {decision.reason}")
-    return pr
+
+
+def _ownership_provider_ref(action: str, pr, expected_head_sha: str) -> str:
+    return f"{action}:{pr.url}@{expected_head_sha}"
 
 
 def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
@@ -181,28 +348,40 @@ def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
             out = runner(cmd, cwd=cwd)
         return (out or "").strip()
     if action_type == "ready_pr":
-        pr = _assess_owned_pr(
+        team, pr, _number, expected_head_sha, cwd = _inspect_owned_pr(
             payload, runner=runner, cfg=cfg, team_id=team_id)
-        if pr.state != "OPEN" or pr.draft is not True:
+        _require_owned_pr_policy(team, pr)
+        provider_ref = _ownership_provider_ref(
+            "ready", pr, expected_head_sha)
+        if pr.draft is False:
+            return provider_ref
+        if pr.draft is not True:
             raise RuntimeError("ready_pr requires an open draft PR")
-        out = runner(
-            ["gh", "pr", "ready", str(payload["pr"])],
-            cwd=payload.get("cwd"),
+        runner(
+            ["gh", "pr", "ready", str(pr.number)],
+            cwd=cwd,
         )
-        return (out or f"ready:{payload['pr']}").strip()
+        return provider_ref
     if action_type == "merge_pr":
-        pr = _assess_owned_pr(
+        team, pr, _number, expected_head_sha, cwd = _inspect_owned_pr(
             payload, runner=runner, cfg=cfg, team_id=team_id)
+        provider_ref = _ownership_provider_ref(
+            "merged", pr, expected_head_sha)
+        if pr.state == "MERGED":
+            return provider_ref
+        if pr.state == "CLOSED":
+            raise RuntimeError("merge_pr target closed without merge")
+        _require_owned_pr_policy(team, pr)
         if pr.draft is not False:
             raise RuntimeError("merge_pr requires a non-draft PR")
-        out = runner(
+        runner(
             [
-                "gh", "pr", "merge", str(payload["pr"]),
+                "gh", "pr", "merge", str(pr.number),
                 "--squash", "--delete-branch",
             ],
-            cwd=payload.get("cwd"),
+            cwd=cwd,
         )
-        return (out or f"merged:{payload['pr']}").strip()
+        return provider_ref
     if action_type == "deploy":
         return runner(["bash", "-lc", payload["command"]], cwd=payload.get("cwd")).strip()
     if action_type == "close_pr":

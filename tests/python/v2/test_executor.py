@@ -40,6 +40,19 @@ def test_ready_pr_is_reversible_internal():
     assert executor.risk_for("ready_pr") == "reversible_internal"
 
 
+def test_ownership_mutations_are_absent_from_conversational_allowlists():
+    forbidden = {"ready_pr", "merge_pr", "deploy"}
+    allowlists = {
+        name: values
+        for name, values in vars(executor).items()
+        if name.startswith("_CONVERSE") and name.endswith("ALLOWLIST")
+    }
+
+    assert allowlists
+    for name, values in allowlists.items():
+        assert forbidden.isdisjoint(values), name
+
+
 def test_reversible_action_auto_executes(conn, cfg):
     rid = _request(conn, cfg)
     _proposed(conn, "reversible_internal", rid); conn.commit()

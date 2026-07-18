@@ -9,6 +9,8 @@ from argus.v2.support.apps_script import EmailSummary
 
 
 SHA40 = "a" * 40
+OTHER_SHA40 = "b" * 40
+SHA64 = "c" * 64
 
 
 @pytest.fixture()
@@ -28,6 +30,7 @@ def cfg_ownership(tmp_path):
         "        required_checks: [test]\n"
         "    project:\n"
         "      repo: /repo\n"
+        "      github_repo: acme/luma\n"
         "      work_branch_prefix: argus\n"
         "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
         "    pipeline: { stages: [developer] }\n",
@@ -38,27 +41,53 @@ def cfg_ownership(tmp_path):
 
 @pytest.fixture()
 def fake_runner():
-    calls = []
+    class Runner:
+        def __init__(self):
+            self.calls = []
+            self.common_dirs = {
+                "/repo": "/repo/.git",
+                "/repo-worktree": "/repo/.git",
+                "/foreign": "/foreign/.git",
+            }
+            self.remote_url = "git@github.com:acme/luma.git"
 
-    def runner(argv, cwd=None):
-        calls.append((argv, cwd))
-        return "ok\n"
+        def __call__(self, argv, cwd=None):
+            self.calls.append((argv, cwd))
+            if argv == [
+                "git", "rev-parse", "--path-format=absolute", "--git-common-dir",
+            ]:
+                if cwd not in self.common_dirs:
+                    raise RuntimeError("not a git checkout")
+                return f"{self.common_dirs[cwd]}\n"
+            if argv[:3] == ["git", "remote", "get-url"]:
+                return f"{self.remote_url}\n"
+            return "ok\n"
 
-    runner.calls = calls
-    return runner
+        @property
+        def mutations(self):
+            return [
+                call for call in self.calls
+                if call[0][:3] in (
+                    ["gh", "pr", "ready"],
+                    ["gh", "pr", "merge"],
+                )
+            ]
+
+    return Runner()
 
 
-def _owned_pr(*, draft=True, clean=True, checks_passed=True,
-              base="staging", head="argus/req-1", files=None):
+def _owned_pr(*, number=42, url=None, state="OPEN", draft=True, clean=True,
+              checks_passed=True, base="staging", head="argus/req-1",
+              head_sha=SHA40, files=None):
     return PullRequestState(
-        number=42,
-        url="https://github.com/acme/luma/pull/42",
-        state="OPEN",
+        number=number,
+        url=url or f"https://github.com/acme/luma/pull/{number}",
+        state=state,
         draft=draft,
         clean=clean,
         base=base,
         head=head,
-        head_sha=SHA40,
+        head_sha=head_sha,
         changed_files=tuple(files if files is not None else ["src/App.tsx"]),
         checks=("test",),
         checks_passed=checks_passed,
@@ -70,29 +99,34 @@ def test_ready_pr_command(fake_runner, cfg_ownership, monkeypatch):
 
     handlers.run(
         "ready_pr",
-        {"pr": "42", "cwd": "/repo"},
+        {"pr": "42", "cwd": "/repo", "expected_head_sha": SHA40},
         runner=fake_runner,
         cfg=cfg_ownership,
         team_id="dev",
     )
 
-    assert fake_runner.calls == [(["gh", "pr", "ready", "42"], "/repo")]
+    assert fake_runner.mutations == [
+        (["gh", "pr", "ready", "42"], "/repo")
+    ]
 
 
-def test_ready_pr_requires_draft(fake_runner, cfg_ownership, monkeypatch):
+def test_ready_pr_requires_open_pr(fake_runner, cfg_ownership, monkeypatch):
     monkeypatch.setattr(
-        handlers, "inspect_pr", lambda **_: _owned_pr(draft=False))
+        handlers,
+        "inspect_pr",
+        lambda **_: _owned_pr(state="CLOSED", draft=True, clean=False),
+    )
 
-    with pytest.raises(RuntimeError, match="open draft"):
+    with pytest.raises(RuntimeError, match="blocked by ownership policy"):
         handlers.run(
             "ready_pr",
-            {"pr": "42", "cwd": "/repo"},
+            {"pr": "42", "cwd": "/repo", "expected_head_sha": SHA40},
             runner=fake_runner,
             cfg=cfg_ownership,
             team_id="dev",
         )
 
-    assert fake_runner.calls == []
+    assert fake_runner.mutations == []
 
 
 def test_merge_pr_command(fake_runner, cfg_ownership, monkeypatch):
@@ -101,13 +135,13 @@ def test_merge_pr_command(fake_runner, cfg_ownership, monkeypatch):
 
     handlers.run(
         "merge_pr",
-        {"pr": "42", "cwd": "/repo"},
+        {"pr": "42", "cwd": "/repo", "expected_head_sha": SHA40},
         runner=fake_runner,
         cfg=cfg_ownership,
         team_id="dev",
     )
 
-    assert fake_runner.calls == [
+    assert fake_runner.mutations == [
         (["gh", "pr", "merge", "42", "--squash", "--delete-branch"], "/repo")
     ]
 
@@ -120,13 +154,13 @@ def test_merge_pr_rechecks_policy_before_command(
     with pytest.raises(RuntimeError, match="blocked by ownership policy"):
         handlers.run(
             "merge_pr",
-            {"pr": "42", "cwd": "/repo"},
+            {"pr": "42", "cwd": "/repo", "expected_head_sha": SHA40},
             runner=fake_runner,
             cfg=cfg_ownership,
             team_id="dev",
         )
 
-    assert fake_runner.calls == []
+    assert fake_runner.mutations == []
 
 
 def test_merge_pr_requires_non_draft(fake_runner, cfg_ownership, monkeypatch):
@@ -135,13 +169,267 @@ def test_merge_pr_requires_non_draft(fake_runner, cfg_ownership, monkeypatch):
     with pytest.raises(RuntimeError, match="non-draft"):
         handlers.run(
             "merge_pr",
-            {"pr": "42", "cwd": "/repo"},
+            {"pr": "42", "cwd": "/repo", "expected_head_sha": SHA40},
             runner=fake_runner,
             cfg=cfg_ownership,
             team_id="dev",
         )
 
-    assert fake_runner.calls == []
+    assert fake_runner.mutations == []
+
+
+@pytest.mark.parametrize("pr_ref", [
+    "https://github.com/acme/luma/pull/42",
+    "argus/req-1",
+    "--repo",
+    " 42",
+    "42 ",
+    "01",
+    "0",
+    0,
+    -1,
+    True,
+])
+def test_ownership_actions_reject_noncanonical_pr_refs(
+        pr_ref, fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(handlers, "inspect_pr", lambda **_: _owned_pr())
+
+    with pytest.raises(RuntimeError, match="positive canonical PR number"):
+        handlers.run(
+            "ready_pr",
+            {"pr": pr_ref, "cwd": "/repo", "expected_head_sha": SHA40},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+@pytest.mark.parametrize("expected_head_sha", [
+    "", "a" * 39, "a" * 41, "g" * 40, f" {SHA40}", 42,
+])
+def test_ownership_actions_require_full_expected_head_sha(
+        expected_head_sha, fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(handlers, "inspect_pr", lambda **_: _owned_pr())
+
+    with pytest.raises(RuntimeError, match="expected_head_sha"):
+        handlers.run(
+            "ready_pr",
+            {"pr": 42, "cwd": "/repo", "expected_head_sha": expected_head_sha},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+def test_ownership_action_rejects_foreign_checkout(
+        fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(handlers, "inspect_pr", lambda **_: _owned_pr())
+
+    with pytest.raises(RuntimeError, match="configured project checkout"):
+        handlers.run(
+            "ready_pr",
+            {"pr": 42, "cwd": "/foreign", "expected_head_sha": SHA40},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+def test_ownership_action_rejects_unprovable_checkout(
+        fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(handlers, "inspect_pr", lambda **_: _owned_pr())
+
+    with pytest.raises(RuntimeError, match="cannot verify ownership action cwd"):
+        handlers.run(
+            "ready_pr",
+            {"pr": 42, "cwd": "/missing", "expected_head_sha": SHA40},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+@pytest.mark.parametrize("cwd", ["/repo", "/repo-worktree"])
+def test_ownership_action_accepts_configured_repo_or_linked_worktree(
+        cwd, fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(handlers, "inspect_pr", lambda **_: _owned_pr())
+
+    handlers.run(
+        "ready_pr",
+        {"pr": 42, "cwd": cwd, "expected_head_sha": SHA40},
+        runner=fake_runner,
+        cfg=cfg_ownership,
+        team_id="dev",
+    )
+
+    assert fake_runner.mutations == [
+        (["gh", "pr", "ready", "42"], cwd)
+    ]
+
+
+def test_ownership_action_rejects_foreign_repository_url(
+        fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(
+        handlers,
+        "inspect_pr",
+        lambda **_: _owned_pr(url="https://github.com/acme/other/pull/42"),
+    )
+
+    with pytest.raises(RuntimeError, match="configured GitHub repository"):
+        handlers.run(
+            "ready_pr",
+            {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA40},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+def test_ownership_action_rejects_inspected_number_mismatch(
+        fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(
+        handlers, "inspect_pr", lambda **_: _owned_pr(number=43))
+
+    with pytest.raises(RuntimeError, match="inspected PR number does not match"):
+        handlers.run(
+            "ready_pr",
+            {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA40},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+def test_ownership_action_derives_enterprise_repo_from_configured_remote(
+        fake_runner, cfg_ownership, monkeypatch):
+    cfg_ownership.team("dev").project.github_repo = None
+    fake_runner.remote_url = "git@ghe.example.com:acme/luma.git"
+    monkeypatch.setattr(
+        handlers,
+        "inspect_pr",
+        lambda **_: _owned_pr(url="https://ghe.example.com/acme/luma/pull/42"),
+    )
+
+    handlers.run(
+        "ready_pr",
+        {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA40},
+        runner=fake_runner,
+        cfg=cfg_ownership,
+        team_id="dev",
+    )
+
+    assert fake_runner.mutations == [
+        (["gh", "pr", "ready", "42"], "/repo")
+    ]
+
+
+def test_ready_pr_reconciles_external_success_without_second_mutation(
+        fake_runner, cfg_ownership, monkeypatch):
+    states = iter([_owned_pr(draft=True), _owned_pr(draft=False)])
+    monkeypatch.setattr(handlers, "inspect_pr", lambda **_: next(states))
+    payload = {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA40}
+
+    first_ref = handlers.run(
+        "ready_pr", payload, runner=fake_runner,
+        cfg=cfg_ownership, team_id="dev")
+    retry_ref = handlers.run(
+        "ready_pr", payload, runner=fake_runner,
+        cfg=cfg_ownership, team_id="dev")
+
+    assert retry_ref == first_ref
+    assert fake_runner.mutations == [
+        (["gh", "pr", "ready", "42"], "/repo")
+    ]
+
+
+def test_merge_pr_reconciles_external_success_without_second_mutation(
+        fake_runner, cfg_ownership, monkeypatch):
+    states = iter([
+        _owned_pr(draft=False),
+        _owned_pr(state="MERGED", draft=False, clean=False),
+    ])
+    monkeypatch.setattr(handlers, "inspect_pr", lambda **_: next(states))
+    payload = {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA40}
+
+    first_ref = handlers.run(
+        "merge_pr", payload, runner=fake_runner,
+        cfg=cfg_ownership, team_id="dev")
+    retry_ref = handlers.run(
+        "merge_pr", payload, runner=fake_runner,
+        cfg=cfg_ownership, team_id="dev")
+
+    assert retry_ref == first_ref
+    assert fake_runner.mutations == [
+        (["gh", "pr", "merge", "42", "--squash", "--delete-branch"], "/repo")
+    ]
+
+
+@pytest.mark.parametrize("action_type", ["ready_pr", "merge_pr"])
+def test_ownership_action_rejects_live_head_mismatch(
+        action_type, fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(
+        handlers, "inspect_pr", lambda **_: _owned_pr(head_sha=OTHER_SHA40))
+
+    with pytest.raises(RuntimeError, match="head SHA does not match"):
+        handlers.run(
+            action_type,
+            {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA40},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+def test_merge_pr_rejects_closed_unmerged_retry(
+        fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(
+        handlers,
+        "inspect_pr",
+        lambda **_: _owned_pr(state="CLOSED", draft=False, clean=False),
+    )
+
+    with pytest.raises(RuntimeError, match="closed without merge"):
+        handlers.run(
+            "merge_pr",
+            {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA40},
+            runner=fake_runner,
+            cfg=cfg_ownership,
+            team_id="dev",
+        )
+
+    assert fake_runner.mutations == []
+
+
+def test_ownership_action_accepts_sha256_expected_head(
+        fake_runner, cfg_ownership, monkeypatch):
+    monkeypatch.setattr(
+        handlers, "inspect_pr", lambda **_: _owned_pr(head_sha=SHA64))
+
+    handlers.run(
+        "ready_pr",
+        {"pr": 42, "cwd": "/repo", "expected_head_sha": SHA64},
+        runner=fake_runner,
+        cfg=cfg_ownership,
+        team_id="dev",
+    )
+
+    assert fake_runner.mutations == [
+        (["gh", "pr", "ready", "42"], "/repo")
+    ]
 
 
 def test_open_pr_builds_ready_push_and_gh_commands():
