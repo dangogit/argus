@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Callable
 
 from argus.v2.actions import mergeability
+from argus.v2.ownership.github import inspect_pr
+from argus.v2.ownership.policy import assess_pr
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +132,22 @@ def _apply_conflict_prefix(title: str, body: str, check: mergeability.MergeCheck
     return prefixed_title, conflict_body
 
 
+def _assess_owned_pr(payload: dict, *, runner: Callable, cfg, team_id: str):
+    if cfg is None or not team_id:
+        raise RuntimeError("ownership action requires team configuration")
+    team = cfg.team(team_id)
+    pr = inspect_pr(
+        cwd=payload.get("cwd"),
+        pr_ref=payload["pr"],
+        runner=runner,
+    )
+    decision = assess_pr(team, pr)
+    if not decision.allowed:
+        raise RuntimeError(
+            f"blocked by ownership policy: {decision.reason}")
+    return pr
+
+
 def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
         cfg=None, team_id: str | None = None) -> str:
     """Execute an action; return its provider_ref (e.g. the PR URL)."""
@@ -162,8 +180,29 @@ def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
                                  draft=bool(payload.get("draft"))):
             out = runner(cmd, cwd=cwd)
         return (out or "").strip()
+    if action_type == "ready_pr":
+        pr = _assess_owned_pr(
+            payload, runner=runner, cfg=cfg, team_id=team_id)
+        if pr.state != "OPEN" or pr.draft is not True:
+            raise RuntimeError("ready_pr requires an open draft PR")
+        out = runner(
+            ["gh", "pr", "ready", str(payload["pr"])],
+            cwd=payload.get("cwd"),
+        )
+        return (out or f"ready:{payload['pr']}").strip()
     if action_type == "merge_pr":
-        return runner(["gh", "pr", "merge", payload["pr"], "--squash"], cwd=payload.get("cwd")).strip()
+        pr = _assess_owned_pr(
+            payload, runner=runner, cfg=cfg, team_id=team_id)
+        if pr.draft is not False:
+            raise RuntimeError("merge_pr requires a non-draft PR")
+        out = runner(
+            [
+                "gh", "pr", "merge", str(payload["pr"]),
+                "--squash", "--delete-branch",
+            ],
+            cwd=payload.get("cwd"),
+        )
+        return (out or f"merged:{payload['pr']}").strip()
     if action_type == "deploy":
         return runner(["bash", "-lc", payload["command"]], cwd=payload.get("cwd")).strip()
     if action_type == "close_pr":

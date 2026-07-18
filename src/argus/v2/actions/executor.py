@@ -21,7 +21,8 @@ from argus.v2.config.schema import Autonomy
 log = logging.getLogger(__name__)
 
 _REAL = {
-    "open_pr", "merge_pr", "deploy", "close_pr", "comment_pr", "reopen_pr",
+    "open_pr", "ready_pr", "merge_pr", "deploy", "close_pr", "comment_pr",
+    "reopen_pr",
     "calendar_list", "calendar_get", "calendar_create", "calendar_update",
     "calendar_delete", "email_list", "email_search", "email_read", "email_reply",
     "email_archive", "email_draft", "content_queue", "social_publish",
@@ -33,8 +34,8 @@ _REAL = {
 # converse-emitted actions; executor.risk_for is applied instead so the model can
 # never mark an irreversible operation as reversible to auto-run it.
 _REVERSIBLE = frozenset({
-    "open_pr", "close_pr", "comment_pr", "reopen_pr", "remember", "reply", "notify",
-    "status",
+    "open_pr", "ready_pr", "close_pr", "comment_pr", "reopen_pr", "remember",
+    "reply", "notify", "status",
     "calendar_list", "calendar_get", "email_list", "email_search", "email_read", "email_draft",
     "bug_writeback",
     "set_user_balance",
@@ -88,6 +89,11 @@ def _team_autonomy(cfg, team_id: str) -> Autonomy:
     return team.autonomy or cfg.company.defaults.autonomy
 
 
+def _mode_for(autonomy: Autonomy, action_type: str, risk: str) -> str:
+    """Resolve the narrow action policy before the risk-wide fallback."""
+    return autonomy.actions.get(action_type, getattr(autonomy, risk))
+
+
 def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable] = None) -> int:
     _release_held(conn)
     with conn.cursor() as cur:
@@ -110,7 +116,7 @@ def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable
                     (risk, action_id, risk),
                 )
             autonomy = _team_autonomy(cfg, team_id)
-            mode = getattr(autonomy, risk)
+            mode = _mode_for(autonomy, atype, risk)
             if mode == "auto":
                 if _hold_for_quiet_hours(conn, str(action_id), cfg, team_id=team_id,
                                          action_type=atype,
@@ -287,7 +293,7 @@ def _destination_channel_role(cfg, destination_ref: Optional[str]) -> Optional[s
 
 def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
              runner: Optional[Callable] = None) -> None:
-    """Idempotent execution. Real action types (open_pr/merge_pr/deploy) are
+    """Idempotent execution. Real action types (open_pr/ready_pr/merge_pr/deploy) are
     dispatched to handlers via an injectable runner; reply/notify attempt a
     channel send via send.deliver when cfg + destination_ref resolve to a known
     channel binding; otherwise fall back to the slice-1 local: no-op."""

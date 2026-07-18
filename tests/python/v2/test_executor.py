@@ -1,6 +1,7 @@
 import json
 
 from argus.v2.actions import executor
+from argus.v2.config.schema import Autonomy
 from argus.v2.ingress import events
 from argus.v2.orchestrator import pipeline
 
@@ -21,6 +22,22 @@ def _request(conn, cfg):
                                 dedup_key="m1", text="t")
     return pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
                                  conversation_id=None)
+
+
+def test_action_override_is_narrower_than_risk_policy():
+    autonomy = Autonomy(
+        irreversible_outward="approval",
+        actions={"merge_pr": "auto"},
+    )
+
+    assert executor._mode_for(
+        autonomy, "merge_pr", "irreversible_outward") == "auto"
+    assert executor._mode_for(
+        autonomy, "deploy", "irreversible_outward") == "approval"
+
+
+def test_ready_pr_is_reversible_internal():
+    assert executor.risk_for("ready_pr") == "reversible_internal"
 
 
 def test_reversible_action_auto_executes(conn, cfg):
