@@ -104,6 +104,9 @@ def transition(
     reason: str,
     evidence: dict[str, Any] | None = None,
 ) -> Obligation:
+    if conn.autocommit:
+        raise ValueError("obligation transition requires autocommit=False")
+
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
@@ -115,12 +118,32 @@ def transition(
             (obligation_id,),
         )
         current = _required(cur.fetchone(), obligation_id)
+        event_evidence = evidence or {}
         if to_status == current.status:
-            return current
-        if to_status not in LEGAL_TRANSITIONS.get(current.status, frozenset()):
+            cur.execute(
+                """
+                SELECT to_status, reason, evidence
+                FROM team_obligation_events
+                WHERE obligation_id=%s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (obligation_id,),
+            )
+            latest_event = cur.fetchone()
+            if latest_event is not None and (
+                latest_event["to_status"] == to_status
+                and latest_event["reason"] == reason
+                and latest_event["evidence"] == event_evidence
+            ):
+                return current
+            if current.status in {"done", "failed"}:
+                raise ValueError(
+                    f"terminal obligation update differs: {current.status} -> {to_status}"
+                )
+        elif to_status not in LEGAL_TRANSITIONS.get(current.status, frozenset()):
             raise ValueError(f"illegal obligation transition: {current.status} -> {to_status}")
 
-        event_evidence = evidence or {}
         terminal = to_status in {"done", "failed"}
         cur.execute(
             f"""

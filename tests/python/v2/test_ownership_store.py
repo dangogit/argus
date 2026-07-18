@@ -7,14 +7,14 @@ import pytest
 from argus.v2.ownership import store
 
 
-def _obligation(conn):
+def _obligation(conn, *, kind="code", fingerprint="sentry:abc"):
     return store.upsert(
         conn,
         team_id="dev",
-        kind="code",
-        fingerprint="sentry:abc",
+        kind=kind,
+        fingerprint=fingerprint,
         title="Fix crash",
-        source_ref="sentry:abc",
+        source_ref=fingerprint,
         definition_of_done={"pr": True},
     )
 
@@ -86,6 +86,7 @@ def test_concurrent_upsert_returns_one_obligation(pg_dsn, conn):
 def test_transition_records_event_and_terminal_timestamp(conn):
     item = _obligation(conn)
     store.transition(conn, item.id, to_status="working", reason="request queued")
+    store.transition(conn, item.id, to_status="verifying", reason="preview ready")
     done = store.transition(
         conn,
         item.id,
@@ -98,6 +99,25 @@ def test_transition_records_event_and_terminal_timestamp(conn):
     assert _events(conn, item.id)[-1]["evidence"]["status_code"] == 200
 
 
+def test_transition_rejects_autocommit_without_mutation(pg_dsn, conn):
+    item = _obligation(conn)
+    conn.commit()
+
+    with psycopg.connect(pg_dsn, autocommit=True) as autocommit_conn:
+        with pytest.raises(ValueError, match="autocommit"):
+            store.transition(
+                autocommit_conn,
+                item.id,
+                to_status="working",
+                reason="unsafe transaction",
+                evidence={"request_id": "req-1"},
+            )
+
+    assert store.get(conn, item.id).status == "open"
+    assert store.get(conn, item.id).evidence == {}
+    assert _events(conn, item.id) == []
+
+
 def test_illegal_transition_fails_closed(conn):
     item = _obligation(conn)
 
@@ -106,6 +126,66 @@ def test_illegal_transition_fails_closed(conn):
 
     assert store.get(conn, item.id).status == "open"
     assert _events(conn, item.id) == []
+
+
+@pytest.mark.parametrize("kind", ["code", "support", "maintenance"])
+def test_obligation_cannot_complete_from_working(conn, kind):
+    item = _obligation(conn, kind=kind, fingerprint=f"{kind}:working")
+    store.transition(conn, item.id, to_status="working", reason="work started")
+
+    with pytest.raises(ValueError, match="working -> done"):
+        store.transition(
+            conn,
+            item.id,
+            to_status="done",
+            reason="unverified completion",
+            evidence={"claimed_done": True},
+        )
+
+    assert store.get(conn, item.id).status == "working"
+    assert store.get(conn, item.id).evidence == {}
+    assert len(_events(conn, item.id)) == 1
+
+
+def test_code_cannot_complete_from_awaiting_approval(conn):
+    item = _obligation(conn)
+    store.transition(
+        conn,
+        item.id,
+        to_status="awaiting_approval",
+        reason="owner decision needed",
+    )
+
+    with pytest.raises(ValueError, match="awaiting_approval -> done"):
+        store.transition(
+            conn,
+            item.id,
+            to_status="done",
+            reason="approval assumed",
+            evidence={"approved": False},
+        )
+
+    assert store.get(conn, item.id).status == "awaiting_approval"
+    assert store.get(conn, item.id).evidence == {}
+    assert len(_events(conn, item.id)) == 1
+
+
+def test_code_completes_from_verifying_with_evidence(conn):
+    item = _obligation(conn)
+    store.transition(conn, item.id, to_status="working", reason="work started")
+    store.transition(conn, item.id, to_status="verifying", reason="preview ready")
+
+    done = store.transition(
+        conn,
+        item.id,
+        to_status="done",
+        reason="verification passed",
+        evidence={"status_code": 200},
+    )
+
+    assert done.status == "done"
+    assert done.evidence == {"status_code": 200}
+    assert done.completed_at is not None
 
 
 def test_same_status_transition_is_idempotent_under_concurrency(pg_dsn, conn):
@@ -128,6 +208,89 @@ def test_same_status_transition_is_idempotent_under_concurrency(pg_dsn, conn):
 
     assert statuses == ["working", "working"]
     assert len(_events(conn, item.id)) == 1
+
+
+def test_same_status_transition_records_new_reason_and_evidence(conn):
+    item = _obligation(conn)
+    store.transition(
+        conn,
+        item.id,
+        to_status="working",
+        reason="request queued",
+        evidence={"request_id": "req-1"},
+    )
+
+    updated = store.transition(
+        conn,
+        item.id,
+        to_status="working",
+        reason="worker claimed",
+        evidence={"worker_id": "worker-1"},
+    )
+    repeated = store.transition(
+        conn,
+        item.id,
+        to_status="working",
+        reason="worker claimed",
+        evidence={"worker_id": "worker-1"},
+    )
+
+    events = _events(conn, item.id)
+    assert updated.evidence == {"request_id": "req-1", "worker_id": "worker-1"}
+    assert repeated == updated
+    assert len(events) == 2
+    assert events[-1] == {
+        "from_status": "working",
+        "to_status": "working",
+        "reason": "worker claimed",
+        "evidence": {"worker_id": "worker-1"},
+    }
+
+
+def test_concurrent_same_status_updates_preserve_differing_events(pg_dsn, conn):
+    item = _obligation(conn)
+    store.transition(
+        conn,
+        item.id,
+        to_status="working",
+        reason="request queued",
+        evidence={"request_id": "req-1"},
+    )
+    conn.commit()
+    barrier = Barrier(2)
+
+    def record(update):
+        reason, evidence = update
+        with psycopg.connect(pg_dsn) as worker_conn:
+            barrier.wait()
+            return store.transition(
+                worker_conn,
+                item.id,
+                to_status="working",
+                reason=reason,
+                evidence=evidence,
+            ).status
+
+    updates = [
+        ("worker heartbeat", {"heartbeat": "one"}),
+        ("review attached", {"review": "ready"}),
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(record, updates))
+
+    events = _events(conn, item.id)
+    current = store.get(conn, item.id)
+    assert statuses == ["working", "working"]
+    assert len(events) == 3
+    assert {event["reason"] for event in events[1:]} == {
+        "worker heartbeat",
+        "review attached",
+    }
+    assert current.evidence == {
+        "request_id": "req-1",
+        "heartbeat": "one",
+        "review": "ready",
+    }
 
 
 def test_get_returns_none_for_missing_obligation(conn):
