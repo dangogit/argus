@@ -191,6 +191,31 @@ def test_batch_signal_produces_a_single_dispatch_from_n_bugs(conn, tmp_path):
         assert str(cur.fetchone()[0]) == str(rid)
 
 
+def test_batch_prompt_requires_evidence_for_every_supplied_item():
+    ids = [
+        "supabase-tadam-agents-bug_reports-batch-85c0cf6ee7e7ae71",
+        "26dd2ac7f4783dc062ab1453",
+        "a64a33be8e81f6c041b3e991",
+        "retro-change:0da901e759011fb8053321bf",
+        "5a988017a078fef44c36b680",
+        "02767ee5e5a09da6a3c70119",
+        "retro-change:21c0007a1c65de6259b3492c",
+        "21c0007a1c65de6259b3492c",
+        "0da901e759011fb8053321bf",
+    ]
+    payload = {
+        "kind": "bug_batch",
+        "rows": [{"row": {"id": item}, "message": f"bug {item}"} for item in ids],
+    }
+
+    prompt = pipeline._batch_signal_text("sb-bugs", payload)
+
+    assert all(f"id={item} " in prompt for item in ids)
+    assert "Do not claim completion until" in prompt
+    assert "enumerate every bug by id" in prompt
+    assert "disposition and supporting evidence" in prompt
+
+
 def test_batch_writeback_proposes_one_action_per_bug(conn, tmp_path):
     cfg = _cfg(tmp_path)
     _terminal_batch_request(conn, cfg, status="done", dedup="batch-2",
