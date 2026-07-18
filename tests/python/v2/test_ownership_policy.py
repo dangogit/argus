@@ -1,3 +1,4 @@
+import json
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -35,12 +36,13 @@ def _team(*, enabled=True, bases=None, required_checks=None, blocked_globs=None,
     )
 
 
-def _pr(*, state="OPEN", draft=True, clean=True, base="staging",
-        head="argus/req-1", head_sha="abc123", files=None, checks=None,
+def _pr(*, number=42, url="https://github.com/acme/luma/pull/42",
+        state="OPEN", draft=True, clean=True, base="staging",
+        head="argus/req-1", head_sha="abc1234", files=None, checks=None,
         checks_passed=True):
     return PullRequestState(
-        number=42,
-        url="https://github.com/acme/luma/pull/42",
+        number=number,
+        url=url,
         state=state,
         draft=draft,
         clean=clean,
@@ -157,10 +159,66 @@ def test_policy_decision_contains_machine_readable_evidence():
         "pr": 42,
         "base": "staging",
         "head": "argus/req-1",
-        "head_sha": "abc123",
+        "head_sha": "abc1234",
+        "changed_files": ("src/App.tsx",),
+        "checks": ("test",),
+    }
+
+    assert json.loads(json.dumps(decision.evidence_dict())) == {
+        "pr": 42,
+        "base": "staging",
+        "head": "argus/req-1",
+        "head_sha": "abc1234",
         "changed_files": ["src/App.tsx"],
         "checks": ["test"],
     }
+
+
+def test_policy_evidence_is_deeply_immutable():
+    evidence = policy.assess_pr(_team(), _pr()).evidence
+
+    with pytest.raises(TypeError):
+        evidence["pr"] = 7
+    with pytest.raises(TypeError):
+        evidence["changed_files"][0] = "src/Other.tsx"
+    with pytest.raises(AttributeError):
+        evidence["checks"].append("build")
+
+
+def test_pull_request_state_normalizes_surrounding_whitespace_before_policy():
+    pr = _pr(
+        url="  https://github.com/acme/luma/pull/42  ",
+        base="  staging  ",
+        head="  argus/req-1  ",
+        head_sha="  abc1234  ",
+        files=["  src/App.tsx  "],
+        checks=["  test  "],
+    )
+
+    decision = policy.assess_pr(_team(), pr)
+
+    assert decision.allowed is True
+    assert decision.evidence["changed_files"] == ("src/App.tsx",)
+
+
+@pytest.mark.parametrize("change", [
+    {"url": "   "},
+    {"url": "http://github.com/acme/luma/pull/42"},
+    {"url": "https://github.com/acme/luma/pull/7"},
+    {"head_sha": "   "},
+    {"head_sha": "not-a-hex-sha"},
+    {"base": "   "},
+    {"head": "   "},
+    {"files": ["   "]},
+    {"files": ["/etc/passwd"]},
+    {"files": ["src/../secret.txt"]},
+    {"files": ["src/\x00App.tsx"]},
+    {"checks": ["   "]},
+])
+def test_policy_denies_malformed_manually_constructed_pr_state(change):
+    decision = policy.assess_pr(_team(), _pr(**change))
+
+    assert decision.allowed is False
 
 
 def test_github_and_policy_dataclasses_are_frozen():

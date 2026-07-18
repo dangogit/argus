@@ -5,7 +5,9 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Callable
+from urllib.parse import urlsplit
 
 
 Runner = Callable[..., str]
@@ -15,9 +17,75 @@ _PR_FIELDS = (
     "headRefOid,mergeCommit,files,statusCheckRollup"
 )
 _DEPLOY_FIELDS = "databaseId,status,conclusion,url,headSha"
-_PR_URL = re.compile(
-    r"^https://github\.com/(?P<repo>[^/]+/[^/]+)/pull/(?P<number>\d+)/?$"
-)
+_GIT_OBJECT_ID = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _string(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _https_url(value) -> str:
+    text = _string(value)
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(char.isspace() for char in parsed.netloc)
+    ):
+        return ""
+    return text
+
+
+def _pr_url_parts(value) -> tuple[str, str, int] | None:
+    text = _https_url(value)
+    if not text:
+        return None
+    parsed = urlsplit(text)
+    if parsed.query or parsed.fragment or not parsed.path.startswith("/"):
+        return None
+    parts = parsed.path.split("/")
+    if (
+        len(parts) < 5
+        or any(not part for part in parts[1:])
+        or parts[-2] != "pull"
+        or not parts[-1].isdigit()
+    ):
+        return None
+    return text, f"{parts[-4]}/{parts[-3]}", int(parts[-1])
+
+
+def _pr_url(value, number: int) -> str:
+    parts = _pr_url_parts(value)
+    if parts is None or parts[2] != number:
+        return ""
+    return parts[0]
+
+
+def _object_id(value) -> str:
+    text = _string(value)
+    return text if _GIT_OBJECT_ID.fullmatch(text) else ""
+
+
+def _repo_path(value) -> str:
+    text = _string(value)
+    if not text or "\x00" in text or "\\" in text:
+        return ""
+    parts = text.split("/")
+    if any(not part.strip() or part in {".", ".."} for part in parts):
+        return ""
+    path = PurePosixPath(text)
+    if path.is_absolute():
+        return ""
+    return text
 
 
 @dataclass(frozen=True)
@@ -35,6 +103,34 @@ class PullRequestState:
     checks: tuple[str, ...] = ()
     checks_passed: bool = False
 
+    def __post_init__(self) -> None:
+        number = self.number
+        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+            number = 0
+        files = tuple(_repo_path(path) for path in self.changed_files)
+        if not files or any(not path for path in files):
+            files = ()
+        checks = tuple(_string(name) for name in self.checks)
+        if not checks or any(not name for name in checks):
+            checks = ()
+        state = _string(self.state).upper()
+        if state not in {"OPEN", "CLOSED", "MERGED"}:
+            state = "UNKNOWN"
+        object.__setattr__(self, "number", number)
+        object.__setattr__(self, "url", _pr_url(self.url, number))
+        object.__setattr__(self, "state", state)
+        object.__setattr__(
+            self, "draft", self.draft if isinstance(self.draft, bool) else None)
+        object.__setattr__(self, "clean", self.clean is True)
+        object.__setattr__(self, "base", _string(self.base))
+        object.__setattr__(self, "head", _string(self.head))
+        object.__setattr__(self, "head_sha", _object_id(self.head_sha))
+        object.__setattr__(self, "merge_sha", _object_id(self.merge_sha))
+        object.__setattr__(self, "changed_files", files)
+        object.__setattr__(self, "checks", checks)
+        object.__setattr__(
+            self, "checks_passed", self.checks_passed is True and bool(checks))
+
 
 @dataclass(frozen=True)
 class DeployState:
@@ -45,6 +141,15 @@ class DeployState:
     conclusion: str = "UNKNOWN"
     url: str = ""
     head_sha: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "workflow", _string(self.workflow))
+        object.__setattr__(self, "commit_sha", _object_id(self.commit_sha))
+        object.__setattr__(self, "status", _string(self.status).upper() or "UNKNOWN")
+        object.__setattr__(
+            self, "conclusion", _string(self.conclusion).upper() or "UNKNOWN")
+        object.__setattr__(self, "url", _https_url(self.url))
+        object.__setattr__(self, "head_sha", _object_id(self.head_sha))
 
     @property
     def found(self) -> bool:
@@ -77,18 +182,17 @@ def _default_runner(argv: list[str], cwd=None) -> str:  # pragma: no cover
     return proc.stdout
 
 
-def _string(value) -> str:
-    return value if isinstance(value, str) and value else ""
-
-
 def _parse_files(value) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
         return ()
     paths: list[str] = []
     for row in value:
-        if not isinstance(row, dict) or not _string(row.get("path")):
+        if not isinstance(row, dict):
             return ()
-        paths.append(row["path"])
+        path = _repo_path(row.get("path"))
+        if not path:
+            return ()
+        paths.append(path)
     return tuple(paths)
 
 
@@ -150,7 +254,7 @@ def _parse_pr(raw) -> PullRequestState:
         clean=merge_state == "CLEAN",
         base=_string(raw.get("baseRefName")),
         head=_string(raw.get("headRefName")),
-        head_sha=_string(raw.get("headRefOid")),
+        head_sha=_object_id(raw.get("headRefOid")),
         merge_sha=merge_sha,
         changed_files=_parse_files(raw.get("files")),
         checks=checks,
@@ -161,15 +265,16 @@ def _parse_pr(raw) -> PullRequestState:
 def inspect_pr(*, cwd, pr_ref, runner: Runner | None = None) -> PullRequestState:
     """Read exactly the PR fields needed by the ownership policy."""
     runner = runner or _default_runner
-    ref = str(pr_ref)
+    ref = str(pr_ref).strip()
     argv = ["gh", "pr", "view", ref]
     if cwd is None:
-        match = _PR_URL.fullmatch(ref)
-        if match is None:
+        parts = _pr_url_parts(ref)
+        if parts is None:
             return PullRequestState()
-        ref = match.group("number")
+        _url, repo, number = parts
+        ref = str(number)
         argv = [
-            "gh", "pr", "view", ref, "--repo", match.group("repo")]
+            "gh", "pr", "view", ref, "--repo", repo]
     argv += ["--json", _PR_FIELDS]
     try:
         raw = json.loads(runner(argv, cwd=cwd) or "")
@@ -182,8 +287,8 @@ def inspect_deploy(*, cwd, workflow, commit_sha,
                    runner: Runner | None = None) -> DeployState:
     """Read workflow runs for one exact merge commit."""
     runner = runner or _default_runner
-    workflow = str(workflow)
-    commit_sha = str(commit_sha)
+    workflow = _string(workflow)
+    commit_sha = _object_id(commit_sha)
     unknown = DeployState(workflow=workflow, commit_sha=commit_sha)
     if not cwd or not workflow or not commit_sha:
         return unknown
@@ -198,7 +303,7 @@ def inspect_deploy(*, cwd, workflow, commit_sha,
     if not isinstance(rows, list):
         return unknown
     for row in rows:
-        if not isinstance(row, dict) or _string(row.get("headSha")) != commit_sha:
+        if not isinstance(row, dict) or _object_id(row.get("headSha")) != commit_sha:
             continue
         run_id = row.get("databaseId")
         if (
