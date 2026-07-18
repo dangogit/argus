@@ -1,10 +1,87 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from argus.v2.config import loader
 
 FIX = Path(__file__).parent / "fixtures" / "argus.yaml"
+
+
+def _load_yaml(tmp_path, contents):
+    path = tmp_path / "argus.yaml"
+    path.write_text(contents, encoding="utf-8")
+    return loader.load(path)
+
+
+def test_ownership_defaults_are_disabled():
+    team = loader.load(FIX).team("dev")
+
+    assert team.ownership.enabled is False
+    assert team.ownership.code.auto_ready is False
+    assert team.ownership.code.auto_merge is False
+    assert team.ownership.support.auto_send_low_risk is False
+    assert team.ownership.maintenance.enabled is False
+
+
+def test_action_autonomy_and_ownership_policy_load(tmp_path):
+    cfg = _load_yaml(tmp_path, """
+company:
+  name: c
+  defaults:
+    engine: {engine: echo}
+teams:
+  - name: luma-website
+    roles: [{name: developer, kind: builder, prompt: build}]
+    pipeline: {stages: [developer]}
+    autonomy:
+      actions:
+        ready_pr: auto
+        merge_pr: auto
+        support_reply: auto
+    ownership:
+      enabled: true
+      cycle_seconds: 300
+      code:
+        auto_ready: true
+        auto_merge: true
+        allowed_base_branches: [staging]
+        required_checks: [test]
+        deploy_workflow: Deploy to Staging
+        live_url: https://luma-web-ai-staging.web.app
+        smoke_paths: [/]
+      support:
+        auto_send_low_risk: true
+        min_confidence: 0.92
+""")
+    team = cfg.team("luma-website")
+
+    assert team.autonomy.actions["merge_pr"] == "auto"
+    assert team.ownership.code.allowed_base_branches == ["staging"]
+    assert team.ownership.support.min_confidence == 0.92
+
+
+@pytest.mark.parametrize("ownership", [
+    {"support": {"min_confidence": -0.01}},
+    {"support": {"min_confidence": 1.01}},
+    {"cycle_seconds": 0},
+    {"maintenance": {"interval_hours": 0}},
+    {"code": {"deployment_timeout_minutes": 0}},
+    {"code": {"auto_merge": True}},
+    {"code": {"auto_merge": True, "allowed_base_branches": ["main"]}},
+    {"code": {"deploy_workflow": "Deploy"}},
+])
+def test_invalid_ownership_policy_is_rejected(ownership):
+    with pytest.raises(ValidationError):
+        loader.Config.model_validate({
+            "company": {"name": "c", "defaults": {"engine": {"engine": "echo"}}},
+            "teams": [{
+                "name": "t",
+                "roles": [{"name": "r", "kind": "builder", "prompt": "p"}],
+                "pipeline": {"stages": ["r"]},
+                "ownership": ownership,
+            }],
+        })
 
 
 def test_webhook_secret_resolves_env_ref(tmp_path, monkeypatch):
