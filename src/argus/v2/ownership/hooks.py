@@ -55,6 +55,33 @@ def _title(payload: dict[str, Any], kind: str, dedup_key: str) -> str:
     return f"{kind} obligation for {dedup_key}"
 
 
+def existing_nonterminal_request_for_event(
+    conn: psycopg.Connection,
+    cfg,
+    *,
+    event_id,
+    team_id,
+) -> str | None:
+    if not _enabled(cfg, team_id):
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT o.request_id
+            FROM events e
+            JOIN team_obligations o
+              ON o.team_id=%s
+             AND o.fingerprint='event:' || e.dedup_key
+            WHERE e.id=%s
+              AND o.status NOT IN ('done', 'failed')
+              AND o.request_id IS NOT NULL
+            """,
+            (team_id, event_id),
+        )
+        row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
 def open_for_request(
     conn: psycopg.Connection,
     cfg,

@@ -120,6 +120,12 @@ def _stage_key(request_id: str, stage_index: int, branch_iter: int) -> str:
 def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
                  conversation_id: Optional[str] = None, fingerprint: Optional[str] = None,
                  dedup_terminal: bool = False) -> Optional[str]:
+    from argus.v2.ownership import hooks as ownership_hooks
+    owned_request_id = ownership_hooks.existing_nonterminal_request_for_event(
+        conn, cfg, event_id=event_id, team_id=team_id,
+    )
+    if owned_request_id is not None:
+        return owned_request_id
     with conn.cursor() as cur:
         if fingerprint and dedup_terminal:
             # Signal-origin work: a connector row maps to one fingerprint for its
@@ -175,7 +181,6 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         if not row:
             return None  # active request already exists for this fingerprint
         request_id = str(row[0])
-    from argus.v2.ownership import hooks as ownership_hooks
     ownership_hooks.open_for_request(
         conn,
         cfg,
@@ -989,13 +994,14 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
         conn, cfg, job.request_id, cwd=cwd, risk_summary=risk,
         base_refs=_configured_base_refs(project),
     )
+    action_id = None
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO actions "
             "(request_id, job_id, team_id, type, risk, "
             " destination_ref, idempotency_key, payload) "
             "VALUES (%s,%s,%s,'open_pr','reversible_internal',%s,%s,%s) "
-            "ON CONFLICT (idempotency_key) DO NOTHING",
+            "ON CONFLICT (idempotency_key) DO NOTHING RETURNING id",
             (
                 job.request_id,
                 job.id,
@@ -1016,8 +1022,25 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
                       "cwd": cwd}),
             ),
         )
+        action_row = cur.fetchone()
+        if action_row:
+            action_id = action_row[0]
+        else:
+            cur.execute(
+                "SELECT id FROM actions WHERE idempotency_key=%s",
+                (f"open_pr:{job.request_id}",),
+            )
+            action_id = cur.fetchone()[0]
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                     (job.request_id,))
+    from argus.v2.ownership import hooks as ownership_hooks
+    ownership_hooks.on_pr_proposed(
+        conn,
+        cfg,
+        request_id=job.request_id,
+        action_id=action_id,
+        team_id=job.team_id,
+    )
     return True
 
 
