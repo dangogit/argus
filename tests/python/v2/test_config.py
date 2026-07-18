@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from argus.v2.config import loader
+from argus.v2.config import loader, schema
 
 FIX = Path(__file__).parent / "fixtures" / "argus.yaml"
 
@@ -12,6 +12,18 @@ def _load_yaml(tmp_path, contents):
     path = tmp_path / "argus.yaml"
     path.write_text(contents, encoding="utf-8")
     return loader.load(path)
+
+
+def _validate_ownership(ownership):
+    return loader.Config.model_validate({
+        "company": {"name": "c", "defaults": {"engine": {"engine": "echo"}}},
+        "teams": [{
+            "name": "t",
+            "roles": [{"name": "r", "kind": "builder", "prompt": "p"}],
+            "pipeline": {"stages": ["r"]},
+            "ownership": ownership,
+        }],
+    }).team("t").ownership
 
 
 def test_ownership_defaults_are_disabled():
@@ -64,24 +76,64 @@ teams:
 @pytest.mark.parametrize("ownership", [
     {"support": {"min_confidence": -0.01}},
     {"support": {"min_confidence": 1.01}},
-    {"cycle_seconds": 0},
-    {"maintenance": {"interval_hours": 0}},
-    {"code": {"deployment_timeout_minutes": 0}},
     {"code": {"auto_merge": True}},
     {"code": {"auto_merge": True, "allowed_base_branches": ["main"]}},
     {"code": {"deploy_workflow": "Deploy"}},
 ])
 def test_invalid_ownership_policy_is_rejected(ownership):
     with pytest.raises(ValidationError):
-        loader.Config.model_validate({
-            "company": {"name": "c", "defaults": {"engine": {"engine": "echo"}}},
-            "teams": [{
-                "name": "t",
-                "roles": [{"name": "r", "kind": "builder", "prompt": "p"}],
-                "pipeline": {"stages": ["r"]},
-                "ownership": ownership,
-            }],
+        _validate_ownership(ownership)
+
+
+@pytest.mark.parametrize("branch", ["main", "master", "production", "prod"])
+def test_auto_merge_rejects_protected_production_branches(branch):
+    with pytest.raises(ValidationError, match="protected production branch"):
+        _validate_ownership({
+            "code": {
+                "auto_merge": True,
+                "allowed_base_branches": [branch],
+                "required_checks": ["test"],
+            },
         })
+
+
+@pytest.mark.parametrize(("ownership", "field"), [
+    ({"cycle_seconds": 0}, "cycle_seconds"),
+    ({"cycle_seconds": -1}, "cycle_seconds"),
+    ({"max_active_obligations": 0}, "max_active_obligations"),
+    ({"max_active_obligations": -1}, "max_active_obligations"),
+    ({"max_attempts": 0}, "max_attempts"),
+    ({"max_attempts": -1}, "max_attempts"),
+    ({"stale_minutes": 0}, "stale_minutes"),
+    ({"stale_minutes": -1}, "stale_minutes"),
+    ({"maintenance": {"interval_hours": 0}}, "interval_hours"),
+    ({"maintenance": {"interval_hours": -1}}, "interval_hours"),
+    ({"maintenance": {"max_open": 0}}, "max_open"),
+    ({"maintenance": {"max_open": -1}}, "max_open"),
+    ({"code": {"deployment_timeout_minutes": 0}}, "deployment_timeout_minutes"),
+    ({"code": {"deployment_timeout_minutes": -1}}, "deployment_timeout_minutes"),
+])
+def test_ownership_positive_values_reject_zero_and_negative(ownership, field):
+    with pytest.raises(ValidationError, match=field):
+        _validate_ownership(ownership)
+
+
+@pytest.mark.parametrize("configured", [[], ["docs/private/**"]])
+def test_code_blocked_globs_preserve_mandatory_baseline(configured):
+    policy = _validate_ownership({"code": {"blocked_globs": configured}})
+
+    assert set(schema.MANDATORY_OWNERSHIP_BLOCKED_GLOBS) <= set(
+        policy.code.blocked_globs)
+    assert set(configured) <= set(policy.code.blocked_globs)
+
+
+@pytest.mark.parametrize("configured", [[], ["feature_request"]])
+def test_support_blocked_categories_preserve_mandatory_baseline(configured):
+    policy = _validate_ownership({"support": {"blocked_categories": configured}})
+
+    assert set(schema.MANDATORY_OWNERSHIP_BLOCKED_CATEGORIES) <= set(
+        policy.support.blocked_categories)
+    assert set(configured) <= set(policy.support.blocked_categories)
 
 
 def test_webhook_secret_resolves_env_ref(tmp_path, monkeypatch):

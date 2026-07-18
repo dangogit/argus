@@ -12,6 +12,19 @@ AutonomyMode = Literal["auto", "approval"]
 QuietHoursDelivery = Literal["hold", "deliver"]
 RetroAuthority = Literal["propose", "auto-changes"]
 
+PROTECTED_AUTO_MERGE_BRANCHES = frozenset({"main", "master", "production", "prod"})
+MANDATORY_OWNERSHIP_BLOCKED_GLOBS = (
+    ".github/**", "**/.env*", "**/*secret*", "**/*credential*",
+    "**/migrations/**", "**/auth/**", "**/billing/**", "**/payments/**",
+    "functions/**", "package.json", "package-lock.json", "pnpm-lock.yaml",
+    "yarn.lock", "firebase.json", "firestore.rules", "storage.rules",
+    "firestore.indexes.json",
+)
+MANDATORY_OWNERSHIP_BLOCKED_CATEGORIES = (
+    "billing", "refund", "account_access", "security", "privacy", "legal",
+    "deletion", "charge_dispute",
+)
+
 
 class EngineSpec(BaseModel):
     engine: EngineName
@@ -113,13 +126,15 @@ class OwnershipCodePolicy(BaseModel):
     live_url: Optional[str] = None
     smoke_paths: List[str] = Field(default_factory=lambda: ["/"])
     deployment_timeout_minutes: int = 30
-    blocked_globs: List[str] = Field(default_factory=lambda: [
-        ".github/**", "**/.env*", "**/*secret*", "**/*credential*",
-        "**/migrations/**", "**/auth/**", "**/billing/**",
-        "**/payments/**", "functions/**", "package.json", "package-lock.json",
-        "pnpm-lock.yaml", "yarn.lock", "firebase.json", "firestore.rules",
-        "storage.rules", "firestore.indexes.json",
-    ])
+    blocked_globs: List[str] = Field(
+        default_factory=lambda: list(MANDATORY_OWNERSHIP_BLOCKED_GLOBS))
+
+    @field_validator("blocked_globs", mode="before")
+    @classmethod
+    def preserve_mandatory_blocked_globs(cls, value):
+        if not isinstance(value, list):
+            return value
+        return list(dict.fromkeys((*MANDATORY_OWNERSHIP_BLOCKED_GLOBS, *value)))
 
     @field_validator("deployment_timeout_minutes")
     @classmethod
@@ -134,6 +149,13 @@ class OwnershipCodePolicy(BaseModel):
             raise ValueError("auto_merge requires allowed_base_branches")
         if self.auto_merge and not self.required_checks:
             raise ValueError("auto_merge requires required_checks")
+        protected_branches = {
+            branch.strip().lower() for branch in self.allowed_base_branches
+        } & PROTECTED_AUTO_MERGE_BRANCHES
+        if self.auto_merge and protected_branches:
+            branches = ", ".join(sorted(protected_branches))
+            raise ValueError(
+                f"auto_merge cannot target protected production branch: {branches}")
         if self.deploy_workflow and not self.live_url:
             raise ValueError("deploy_workflow requires live_url")
         return self
@@ -142,10 +164,15 @@ class OwnershipCodePolicy(BaseModel):
 class OwnershipSupportPolicy(BaseModel):
     auto_send_low_risk: bool = False
     min_confidence: float = 0.90
-    blocked_categories: List[str] = Field(default_factory=lambda: [
-        "billing", "refund", "account_access", "security", "privacy",
-        "legal", "deletion", "charge_dispute",
-    ])
+    blocked_categories: List[str] = Field(
+        default_factory=lambda: list(MANDATORY_OWNERSHIP_BLOCKED_CATEGORIES))
+
+    @field_validator("blocked_categories", mode="before")
+    @classmethod
+    def preserve_mandatory_blocked_categories(cls, value):
+        if not isinstance(value, list):
+            return value
+        return list(dict.fromkeys((*MANDATORY_OWNERSHIP_BLOCKED_CATEGORIES, *value)))
 
     @field_validator("min_confidence")
     @classmethod
