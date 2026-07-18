@@ -191,8 +191,7 @@ def test_batch_signal_produces_a_single_dispatch_from_n_bugs(conn, tmp_path):
         assert str(cur.fetchone()[0]) == str(rid)
 
 
-def test_batch_prompt_requires_evidence_for_every_supplied_item():
-    ids = [
+EVIDENCE_IDS = [
         "supabase-tadam-agents-bug_reports-batch-85c0cf6ee7e7ae71",
         "26dd2ac7f4783dc062ab1453",
         "a64a33be8e81f6c041b3e991",
@@ -202,7 +201,11 @@ def test_batch_prompt_requires_evidence_for_every_supplied_item():
         "retro-change:21c0007a1c65de6259b3492c",
         "21c0007a1c65de6259b3492c",
         "0da901e759011fb8053321bf",
-    ]
+]
+
+
+def test_batch_prompt_requires_evidence_for_every_supplied_item():
+    ids = EVIDENCE_IDS
     payload = {
         "kind": "bug_batch",
         "rows": [{"row": {"id": item}, "message": f"bug {item}"} for item in ids],
@@ -214,6 +217,41 @@ def test_batch_prompt_requires_evidence_for_every_supplied_item():
     assert "Do not claim completion until" in prompt
     assert "enumerate every bug by id" in prompt
     assert "disposition and supporting evidence" in prompt
+    assert "id=<id> disposition=<disposition> evidence=<evidence>" in prompt
+
+
+def test_batch_completion_accepts_all_nine_evidence_entries():
+    payload = {"kind": "bug_batch", "rows": [
+        {"row": {"id": item}} for item in EVIDENCE_IDS
+    ]}
+    claim = "\n".join(
+        f"- id={item} disposition=fixed evidence=test passed" for item in EVIDENCE_IDS
+    )
+
+    assert pipeline._incomplete_batch_items(payload, claim) == []
+
+
+@pytest.mark.parametrize("missing_id", EVIDENCE_IDS)
+def test_batch_completion_rejects_each_missing_evidence_entry(missing_id):
+    payload = {"kind": "bug_batch", "rows": [
+        {"row": {"id": item}} for item in EVIDENCE_IDS
+    ]}
+    claim = "\n".join(
+        f"- id={item} disposition=fixed evidence=test passed"
+        for item in EVIDENCE_IDS if item != missing_id
+    )
+
+    assert pipeline._incomplete_batch_items(payload, claim) == [missing_id]
+
+
+@pytest.mark.parametrize("missing_field", ["disposition", "evidence"])
+def test_batch_completion_rejects_item_without_required_support(missing_field):
+    item = EVIDENCE_IDS[0]
+    payload = {"kind": "bug_batch", "rows": [{"row": {"id": item}}]}
+    claim = f"- id={item} disposition=fixed evidence=test passed"
+    claim = claim.replace(f" {missing_field}=", f" omitted-{missing_field}=")
+
+    assert pipeline._incomplete_batch_items(payload, claim) == [item]
 
 
 def test_batch_writeback_proposes_one_action_per_bug(conn, tmp_path):

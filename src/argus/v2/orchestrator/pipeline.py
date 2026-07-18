@@ -396,6 +396,19 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
     advisory = getattr(team, "project", None) is None
 
     if role == _stage_role(team, 0):
+        payload = _request_payload(conn, job.event_id)
+        claim = "\n".join((
+            str((result or {}).get("output") or ""),
+            json.dumps(parsed, default=str),
+        ))
+        incomplete = _incomplete_batch_items(payload, claim)
+        if incomplete:
+            _loop_back(
+                conn, cfg, job, team, to_role=role,
+                detail=("Incomplete batch completion claim. Record disposition and "
+                        "evidence for: " + ", ".join(incomplete)),
+            )
+            return
         # developer: if it investigated and no fix is warranted (ready=false in a
         # project team), close cleanly with the analysis - no qa/senior, no PR,
         # no fabricated change. Otherwise advance to qa.
@@ -1511,6 +1524,8 @@ def _batch_signal_text(source: str, payload: dict) -> str:
         "PR, not one PR per bug.",
         "Do not claim completion until you enumerate every bug by id with its "
         "disposition and supporting evidence.",
+        "Use one line per bug in this exact form: "
+        "id=<id> disposition=<disposition> evidence=<evidence>.",
         "",
         "Bugs:",
     ]
@@ -1521,6 +1536,24 @@ def _batch_signal_text(source: str, payload: dict) -> str:
         severity = finding.get("severity") or "warn"
         lines.append(f"- id={bug_id} severity={severity}: {title}")
     return "\n".join(lines)
+
+
+def _incomplete_batch_items(payload: dict, claim: str) -> list[str]:
+    """Return batch ids without a complete per-item completion record."""
+    if payload.get("kind") != "bug_batch":
+        return []
+    lines = (claim or "").splitlines()
+    missing = []
+    for finding in payload.get("rows") or []:
+        item = str((finding.get("row") or {}).get("id") or "").strip()
+        if not item:
+            continue
+        item_lines = [line for line in lines if f"id={item}" in line]
+        if not any(re.search(r"(?:^|\s)disposition=\S", line)
+                   and re.search(r"(?:^|\s)evidence=\S", line)
+                   for line in item_lines):
+            missing.append(item)
+    return missing
 
 
 def _config_hash(cfg) -> str:
