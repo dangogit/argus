@@ -1,18 +1,22 @@
 import json
 
 from argus.v2.actions import executor
+from argus.v2.config import loader
+from argus.v2.config.schema import Autonomy
 from argus.v2.ingress import events
 from argus.v2.orchestrator import pipeline
+from argus.v2.ownership import support as ownership_support
+from argus.v2.support.cycle import DraftDecision
 
 
 def _proposed(conn, risk, request_id, idem="a0", dest=None, payload="{}",
-              status="proposed"):
+              status="proposed", team_id="dev"):
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO actions (request_id, team_id, type, risk, destination_ref,
                                     idempotency_key, payload, status)
-               VALUES (%s,'dev','notify',%s,%s,%s,%s::jsonb,%s) RETURNING id""",
-            (request_id, risk, dest, idem, payload, status))
+               VALUES (%s,%s,'notify',%s,%s,%s,%s::jsonb,%s) RETURNING id""",
+            (request_id, team_id, risk, dest, idem, payload, status))
         return str(cur.fetchone()[0])
 
 
@@ -21,6 +25,39 @@ def _request(conn, cfg):
                                 dedup_key="m1", text="t")
     return pipeline.open_request(conn, cfg, event_id=eid, team_id="dev",
                                  conversation_id=None)
+
+
+def test_action_override_is_narrower_than_risk_policy():
+    autonomy = Autonomy(
+        irreversible_outward="approval",
+        actions={"merge_pr": "auto"},
+    )
+
+    assert executor._mode_for(
+        autonomy, "merge_pr", "irreversible_outward") == "auto"
+    assert executor._mode_for(
+        autonomy, "deploy", "irreversible_outward") == "approval"
+
+
+def test_ready_pr_is_reversible_internal():
+    assert executor.risk_for("ready_pr") == "reversible_internal"
+
+
+def test_support_reply_is_personal_outward():
+    assert executor.risk_for("support_reply") == "personal_outward"
+
+
+def test_ownership_mutations_are_absent_from_conversational_allowlists():
+    forbidden = {"ready_pr", "merge_pr", "deploy", "support_reply"}
+    allowlists = {
+        name: values
+        for name, values in vars(executor).items()
+        if name.startswith("_CONVERSE") and name.endswith("ALLOWLIST")
+    }
+
+    assert allowlists
+    for name, values in allowlists.items():
+        assert forbidden.isdisjoint(values), name
 
 
 def test_reversible_action_auto_executes(conn, cfg):
@@ -51,6 +88,112 @@ def test_executor_is_idempotent(conn, cfg):
     executor.process_proposed(conn, cfg); conn.commit()
     n = executor.process_proposed(conn, cfg); conn.commit()  # nothing left
     assert n == 0
+
+
+def test_team_scoped_executor_leaves_foreign_proposed_and_held_actions_untouched(
+    conn, cfg
+):
+    rid = _request(conn, cfg)
+    _proposed(conn, "reversible_internal", rid, idem="dev-action")
+    _proposed(
+        conn,
+        "reversible_internal",
+        None,
+        idem="foreign-proposed",
+        team_id="other",
+    )
+    _proposed(
+        conn,
+        "reversible_internal",
+        None,
+        idem="foreign-held",
+        team_id="other",
+        status="held",
+        payload='{"quiet_hold_until":"2000-01-01T00:00:00+00:00"}',
+    )
+    conn.commit()
+
+    assert executor.process_proposed(conn, cfg, team_id="dev") == 1
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT idempotency_key, status FROM actions "
+            "WHERE idempotency_key IN "
+            "('dev-action', 'foreign-proposed', 'foreign-held') "
+            "ORDER BY idempotency_key"
+        )
+        assert cur.fetchall() == [
+            ("dev-action", "done"),
+            ("foreign-held", "held"),
+            ("foreign-proposed", "proposed"),
+        ]
+
+
+def test_support_reply_auto_executes_through_durable_handler(
+        conn, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPPORT_KEY", "test-key")
+    path = tmp_path / "support-executor.yaml"
+    path.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "  sources:\n"
+        "    - { type: support_apps_script, name: luma-mail, team: luma, "
+        "secret_ref: '${env:SUPPORT_KEY}', config: { url: 'https://support.test' } }\n"
+        "teams:\n  - name: luma\n"
+        "    autonomy: { actions: { support_reply: auto } }\n"
+        "    ownership:\n"
+        "      enabled: true\n"
+        "      support: { auto_send_low_risk: true, min_confidence: 0.92 }\n"
+        "    roles: [ { name: support, kind: worker, prompt: p } ]\n"
+        "    pipeline: { stages: [support] }\n",
+        encoding="utf-8",
+    )
+    cfg_support = loader.load(path)
+    team = cfg_support.team("luma")
+    source = cfg_support.company.sources[0]
+    decision = DraftDecision(
+        reply="Open Settings and choose Export.", category="how_to",
+        risk="low", confidence=0.96,
+    )
+    obligation = ownership_support.open_or_update_obligation(
+        conn, team=team, source=source, thread_id="T-executor",
+        sender="user@example.com", subject="Export",
+        raw_thread="How do I export?", decision=decision,
+    )
+    action_id, _inserted = ownership_support.queue_reply_action(
+        conn, team=team, source=source, obligation=obligation,
+        decision=decision,
+    )
+    conn.commit()
+    sent = []
+
+    class Transport:
+        def __init__(self, **_kwargs):
+            pass
+
+        def reply(self, thread_id, body):
+            sent.append((thread_id, body))
+
+        def mark_read(self, _thread_id):
+            pass
+
+        def archive(self, _thread_id):
+            pass
+
+    monkeypatch.setattr(ownership_support, "AppsScriptTransport", Transport)
+
+    executor.process_proposed(conn, cfg_support)
+    conn.commit()
+
+    assert sent == [("T-executor", "Open Settings and choose Export.")]
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, provider_ref FROM actions WHERE id=%s", (action_id,))
+        assert cur.fetchone() == ("done", "support:T-executor")
+        cur.execute(
+            "SELECT status, provider_ref FROM team_obligations WHERE id=%s",
+            (obligation.id,),
+        )
+        assert cur.fetchone() == ("done", "support:T-executor")
 
 
 def test_open_pr_enqueues_control_summary(conn, cfg):

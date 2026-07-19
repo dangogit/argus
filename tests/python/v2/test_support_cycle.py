@@ -25,6 +25,31 @@ def _support_cfg(tmp_path):
     return loader.load(cfg_path)
 
 
+def _support_ownership_cfg(tmp_path):
+    from argus.v2.config import loader
+    os.environ.setdefault("SUPPORT_KEY", "k")
+    cfg_path = tmp_path / "argus-ownership.yaml"
+    cfg_path.write_text(
+        "company:\n"
+        "  name: c\n"
+        "  defaults: { engine: { engine: echo } }\n"
+        "  sources:\n"
+        "    - { type: support_apps_script, name: luma-mail, team: luma, "
+        "secret_ref: '${env:SUPPORT_KEY}', config: { url: 'https://support.test', "
+        "notify_destination: 'cli:local' } }\n"
+        "teams:\n"
+        "  - name: luma\n"
+        "    autonomy: { actions: { support_reply: auto } }\n"
+        "    ownership:\n"
+        "      enabled: true\n"
+        "      support: { auto_send_low_risk: true, min_confidence: 0.92 }\n"
+        "    roles: [ { name: support, kind: worker, prompt: p } ]\n"
+        "    pipeline: { stages: [support] }\n",
+        encoding="utf-8",
+    )
+    return loader.load(cfg_path)
+
+
 def _support_cfg_with_dev_pipeline(tmp_path):
     """A support team that also has a build pipeline (developer/qa/senior), so
     an escalate-dispatched investigation has a real stage-0 role to enqueue
@@ -285,31 +310,35 @@ def test_support_escalation_registers_guidance_context(tmp_path, monkeypatch, co
     assert context == ("active", "From: u@example.com\nPlease refund my unused subscription.")
 
 
-def test_support_auto_sends_low_risk_after_guidance(tmp_path, monkeypatch, conn, cfg):
+def test_support_auto_send_routes_one_durable_action_without_transport_reply(
+        tmp_path, monkeypatch, conn):
     monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
-    for idx in range(2):
-        g = state.register_guidance_request("luma", f"OLD{idx}", "u@example.com",
-                                            "Export", "q", "reply", "thread")
-        state.resolve_guidance("luma", g.id, "Use export button.", status="sent")
-    team = type("Team", (), {"name": "luma", "project": None})()
-    source = type("Source", (), {"type": "support_apps_script"})()
-    scfg = {
-        "notify_destination": "cli:local",
-        "auto_send_low_risk": True,
-        "auto_send_min_guidance": 2,
-        "auto_send_confidence": 0.85,
-    }
+    cfg = _support_ownership_cfg(tmp_path)
+    team = cfg.team("luma")
+    source = cfg.company.sources[0]
+    scfg = source.config
     email = EmailSummary("T2", "u@example.com", "Export", "help")
     transport = FakeTransport()
     monkeypatch.setattr(cycle, "draft_decision", lambda *a, **k: cycle.DraftDecision(
-        reply="Use the export button.", risk="low", confidence=0.95))
+        reply="Use the export button.", category="how_to",
+        risk="low", confidence=0.95))
 
-    result = cycle._handle_email(conn, cfg, team, source, scfg, transport, email,
-                                 cycle.SupportResult())
+    first = cycle._handle_email(
+        conn, cfg, team, source, scfg, transport, email, cycle.SupportResult())
+    second = cycle._handle_email(
+        conn, cfg, team, source, scfg, transport, email, cycle.SupportResult())
 
-    assert result.sent == 1
-    assert transport.replies == [("T2", "Use the export button.")]
-    assert state.latest_action("luma", "T2") == "auto_replied"
+    assert first.proposed == 1
+    assert second.proposed == 1
+    assert transport.replies == []
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE type='support_reply'")
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT status, action_id IS NOT NULL FROM team_obligations "
+            "WHERE fingerprint='support:luma-mail:T2'"
+        )
+        assert cur.fetchone() == ("working", True)
 
 
 def test_guidance_only_routes_draft_to_guidance(tmp_path, monkeypatch, conn, cfg):
@@ -337,7 +366,8 @@ def test_guidance_only_routes_draft_to_guidance(tmp_path, monkeypatch, conn, cfg
     assert "OK to send?" in text
 
 
-def test_guidance_only_auto_reply_logs_instead_of_notifying(tmp_path, monkeypatch, conn, cfg):
+def test_legacy_source_auto_send_flag_does_not_bypass_ownership_policy(
+        tmp_path, monkeypatch, conn, cfg):
     monkeypatch.setenv("ARGUS_SUPPORT_DIR", str(tmp_path / "support"))
     for idx in range(2):
         g = state.register_guidance_request("luma", f"OLDA{idx}", "u@example.com",
@@ -361,12 +391,14 @@ def test_guidance_only_auto_reply_logs_instead_of_notifying(tmp_path, monkeypatc
                                  cycle.SupportResult())
     conn.commit()
 
-    assert result.sent == 1
+    assert result.proposed == 1
+    assert result.sent == 0
+    assert transport.replies == []
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM actions WHERE payload->>'text' LIKE '%auto-replied%'")
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT count(*) FROM alerts WHERE fingerprint LIKE 'support-auto-replied:%'")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 0
 
 
 def test_guidance_reply_learns_without_sending_by_default(tmp_path, monkeypatch, conn):

@@ -21,20 +21,22 @@ from argus.v2.config.schema import Autonomy
 log = logging.getLogger(__name__)
 
 _REAL = {
-    "open_pr", "merge_pr", "deploy", "close_pr", "comment_pr", "reopen_pr",
+    "open_pr", "ready_pr", "merge_pr", "deploy", "close_pr", "comment_pr",
+    "reopen_pr",
     "calendar_list", "calendar_get", "calendar_create", "calendar_update",
     "calendar_delete", "email_list", "email_search", "email_read", "email_reply",
     "email_archive", "email_draft", "content_queue", "social_publish",
     "bug_writeback",
     "set_user_balance",
+    "support_reply",
 }
 
 # Server-side risk classification. The model's self-declared risk is ignored for
 # converse-emitted actions; executor.risk_for is applied instead so the model can
 # never mark an irreversible operation as reversible to auto-run it.
 _REVERSIBLE = frozenset({
-    "open_pr", "close_pr", "comment_pr", "reopen_pr", "remember", "reply", "notify",
-    "status",
+    "open_pr", "ready_pr", "close_pr", "comment_pr", "reopen_pr", "remember",
+    "reply", "notify", "status",
     "calendar_list", "calendar_get", "email_list", "email_search", "email_read", "email_draft",
     "bug_writeback",
     "set_user_balance",
@@ -43,6 +45,7 @@ _PERSONAL_OUTWARD = frozenset({
     "calendar_create", "calendar_update", "calendar_delete",
     "email_reply", "email_archive",
     "content_queue", "social_publish",
+    "support_reply",
 })
 _IRREVERSIBLE = frozenset({"merge_pr", "deploy"})
 
@@ -88,16 +91,35 @@ def _team_autonomy(cfg, team_id: str) -> Autonomy:
     return team.autonomy or cfg.company.defaults.autonomy
 
 
-def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable] = None) -> int:
-    _release_held(conn)
+def _mode_for(autonomy: Autonomy, action_type: str, risk: str) -> str:
+    """Resolve the narrow action policy before the risk-wide fallback."""
+    return autonomy.actions.get(action_type, getattr(autonomy, risk))
+
+
+def process_proposed(
+    conn: psycopg.Connection,
+    cfg,
+    *,
+    runner: Optional[Callable] = None,
+    team_id: str | None = None,
+) -> int:
+    _release_held(conn, team_id=team_id)
+    team_filter = "AND team_id=%s" if team_id is not None else ""
+    params = (team_id,) if team_id is not None else ()
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, request_id, team_id, type, risk, destination_ref, "
             "idempotency_key, status, payload "
-            "FROM actions WHERE status IN ('proposed','approved') FOR UPDATE SKIP LOCKED")
+            "FROM actions WHERE status IN ('proposed','approved') "
+            f"{team_filter} FOR UPDATE SKIP LOCKED",
+            params,
+        )
         rows = cur.fetchall()
     handled = 0
-    for action_id, request_id, team_id, atype, risk, destination_ref, idem, status, payload in rows:
+    for (
+        action_id, request_id, row_team_id, atype, risk, destination_ref,
+        idem, status, payload,
+    ) in rows:
         if status == "approved":
             # Already consumed by an approver; skip the policy gate and execute.
             _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
@@ -109,13 +131,18 @@ def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable
                     "WHERE id=%s AND risk<>%s",
                     (risk, action_id, risk),
                 )
-            autonomy = _team_autonomy(cfg, team_id)
-            mode = getattr(autonomy, risk)
+            autonomy = _team_autonomy(cfg, row_team_id)
+            mode = _mode_for(autonomy, atype, risk)
             if mode == "auto":
-                if _hold_for_quiet_hours(conn, str(action_id), cfg, team_id=team_id,
-                                         action_type=atype,
-                                         destination_ref=destination_ref,
-                                         payload=payload or {}):
+                if _hold_for_quiet_hours(
+                    conn,
+                    str(action_id),
+                    cfg,
+                    team_id=row_team_id,
+                    action_type=atype,
+                    destination_ref=destination_ref,
+                    payload=payload or {},
+                ):
                     handled += 1
                     continue
                 _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
@@ -125,10 +152,16 @@ def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable
     return handled
 
 
-def _release_held(conn: psycopg.Connection) -> None:
+def _release_held(
+    conn: psycopg.Connection,
+    *,
+    team_id: str | None = None,
+) -> None:
+    team_filter = "AND team_id=%s" if team_id is not None else ""
+    params = (team_id,) if team_id is not None else ()
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             UPDATE actions
             SET status='proposed',
                 payload=payload - 'quiet_hold_until' - 'quiet_hold_reason',
@@ -136,7 +169,9 @@ def _release_held(conn: psycopg.Connection) -> None:
             WHERE status='held'
               AND payload ? 'quiet_hold_until'
               AND (payload->>'quiet_hold_until')::timestamptz <= now()
-            """
+              {team_filter}
+            """,
+            params,
         )
 
 
@@ -287,7 +322,7 @@ def _destination_channel_role(cfg, destination_ref: Optional[str]) -> Optional[s
 
 def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
              runner: Optional[Callable] = None) -> None:
-    """Idempotent execution. Real action types (open_pr/merge_pr/deploy) are
+    """Idempotent execution. Real action types (open_pr/ready_pr/merge_pr/deploy) are
     dispatched to handlers via an injectable runner; reply/notify attempt a
     channel send via send.deliver when cfg + destination_ref resolve to a known
     channel binding; otherwise fall back to the slice-1 local: no-op."""
@@ -322,6 +357,8 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
         elif atype in _REAL:
             try:
                 kwargs = {"runner": runner} if runner is not None else {}
+                if atype == "support_reply":
+                    kwargs["conn"] = conn
                 provider_ref = _handlers.run(
                     atype, payload or {}, cfg=cfg, team_id=team_id, **kwargs)
             except Exception as e:

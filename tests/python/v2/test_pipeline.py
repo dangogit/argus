@@ -28,6 +28,32 @@ def test_open_request_creates_first_stage_job(conn, cfg):
     assert rows == [("developer", 0, "pipeline")]  # first stage only
 
 
+def test_disabled_ownership_preserves_request_and_job_behavior(conn, cfg):
+    eid = events.ingest_message(
+        conn, cfg, team="dev", source="cli",
+        dedup_key="ownership-disabled", text="fix login",
+    )
+
+    rid = pipeline.open_request(
+        conn, cfg, event_id=eid, team_id="dev", conversation_id=None,
+    )
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, current_stage FROM requests WHERE id=%s", (rid,))
+        request = cur.fetchone()
+        cur.execute(
+            "SELECT role, stage, kind FROM jobs WHERE request_id=%s",
+            (rid,),
+        )
+        queued = cur.fetchall()
+        cur.execute("SELECT count(*) FROM team_obligations")
+        obligations = cur.fetchone()[0]
+
+    assert request == ("open", 0)
+    assert queued == [("developer", 0, "pipeline")]
+    assert obligations == 0
+
+
 def test_enqueue_stage_sets_project_in_snapshot(conn, cfg):
     """Developer/pipeline jobs must carry project=team_id so the worker sets
     ARGUS_PROJECT (hermes per-project profile). Regression: it was omitted, so

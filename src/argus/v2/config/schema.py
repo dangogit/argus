@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 EngineName = Literal["echo", "scripted", "codex", "claude-code", "hermes", "openrouter", "ollama"]
 RoleKind = Literal["front", "builder", "judge", "worker"]
@@ -11,6 +11,19 @@ ActionRisk = Literal["reversible_internal", "personal_outward", "irreversible_ou
 AutonomyMode = Literal["auto", "approval"]
 QuietHoursDelivery = Literal["hold", "deliver"]
 RetroAuthority = Literal["propose", "auto-changes"]
+
+PROTECTED_AUTO_MERGE_BRANCHES = frozenset({"main", "master", "production", "prod"})
+MANDATORY_OWNERSHIP_BLOCKED_GLOBS = (
+    ".github/**", "**/.env*", "**/*secret*", "**/*credential*",
+    "**/migrations/**", "**/auth/**", "**/billing/**", "**/payments/**",
+    "functions/**", "package.json", "package-lock.json", "pnpm-lock.yaml",
+    "yarn.lock", "firebase.json", "firestore.rules", "storage.rules",
+    "firestore.indexes.json",
+)
+MANDATORY_OWNERSHIP_BLOCKED_CATEGORIES = (
+    "billing", "refund", "account_access", "security", "privacy", "legal",
+    "deletion", "charge_dispute",
+)
 
 
 class EngineSpec(BaseModel):
@@ -59,6 +72,7 @@ class Autonomy(BaseModel):
     reversible_internal: AutonomyMode = "auto"
     personal_outward: AutonomyMode = "approval"
     irreversible_outward: AutonomyMode = "approval"
+    actions: dict[str, AutonomyMode] = Field(default_factory=dict)
 
 
 class NotificationSettings(BaseModel):
@@ -101,6 +115,104 @@ class CompletionWatchdog(BaseModel):
     sources: List[str] = Field(default_factory=list)
     fingerprint_prefixes: List[str] = Field(default_factory=list)
     destination_ref: Optional[str] = None
+
+
+class OwnershipCodePolicy(BaseModel):
+    auto_ready: bool = False
+    auto_merge: bool = False
+    allowed_base_branches: List[str] = Field(default_factory=list)
+    required_checks: List[str] = Field(default_factory=list)
+    deploy_workflow: Optional[str] = None
+    live_url: Optional[str] = None
+    smoke_paths: List[str] = Field(default_factory=lambda: ["/"])
+    deployment_timeout_minutes: int = 30
+    blocked_globs: List[str] = Field(
+        default_factory=lambda: list(MANDATORY_OWNERSHIP_BLOCKED_GLOBS))
+
+    @field_validator("blocked_globs", mode="before")
+    @classmethod
+    def preserve_mandatory_blocked_globs(cls, value):
+        if not isinstance(value, list):
+            return value
+        return list(dict.fromkeys((*MANDATORY_OWNERSHIP_BLOCKED_GLOBS, *value)))
+
+    @field_validator("deployment_timeout_minutes")
+    @classmethod
+    def deployment_timeout_must_be_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("deployment_timeout_minutes must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def validate_auto_merge_and_deploy(self) -> "OwnershipCodePolicy":
+        if self.auto_merge and not self.allowed_base_branches:
+            raise ValueError("auto_merge requires allowed_base_branches")
+        if self.auto_merge and not self.required_checks:
+            raise ValueError("auto_merge requires required_checks")
+        protected_branches = {
+            branch.strip().lower() for branch in self.allowed_base_branches
+        } & PROTECTED_AUTO_MERGE_BRANCHES
+        if self.auto_merge and protected_branches:
+            branches = ", ".join(sorted(protected_branches))
+            raise ValueError(
+                f"auto_merge cannot target protected production branch: {branches}")
+        if self.deploy_workflow and not self.live_url:
+            raise ValueError("deploy_workflow requires live_url")
+        return self
+
+
+class OwnershipSupportPolicy(BaseModel):
+    auto_send_low_risk: bool = False
+    min_confidence: float = 0.90
+    blocked_categories: List[str] = Field(
+        default_factory=lambda: list(MANDATORY_OWNERSHIP_BLOCKED_CATEGORIES))
+
+    @field_validator("blocked_categories", mode="before")
+    @classmethod
+    def preserve_mandatory_blocked_categories(cls, value):
+        if not isinstance(value, list):
+            return value
+        return list(dict.fromkeys((*MANDATORY_OWNERSHIP_BLOCKED_CATEGORIES, *value)))
+
+    @field_validator("min_confidence")
+    @classmethod
+    def min_confidence_must_be_a_probability(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("min_confidence must be between 0 and 1")
+        return value
+
+
+class OwnershipMaintenancePolicy(BaseModel):
+    enabled: bool = False
+    interval_hours: int = 24
+    max_open: int = 1
+
+    @field_validator("interval_hours", "max_open")
+    @classmethod
+    def values_must_be_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("maintenance values must be positive")
+        return value
+
+
+class OwnershipPolicy(BaseModel):
+    enabled: bool = False
+    cycle_seconds: int = 300
+    max_active_obligations: int = 3
+    max_attempts: int = 3
+    stale_minutes: int = 45
+    code: OwnershipCodePolicy = Field(default_factory=OwnershipCodePolicy)
+    support: OwnershipSupportPolicy = Field(default_factory=OwnershipSupportPolicy)
+    maintenance: OwnershipMaintenancePolicy = Field(
+        default_factory=OwnershipMaintenancePolicy)
+
+    @field_validator(
+        "cycle_seconds", "max_active_obligations", "max_attempts", "stale_minutes")
+    @classmethod
+    def values_must_be_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("ownership values must be positive")
+        return value
 
 
 class Role(BaseModel):
@@ -272,6 +384,7 @@ class Team(BaseModel):
     pipeline: Pipeline
     engine: Optional[EngineSpec] = None
     autonomy: Optional[Autonomy] = None
+    ownership: OwnershipPolicy = Field(default_factory=OwnershipPolicy)
     notifications: Optional[NotificationSettings] = None
     sources: List[SourceRef] = Field(default_factory=list)
     channels: List[ChannelBinding] = Field(default_factory=list)

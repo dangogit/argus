@@ -47,8 +47,8 @@ def _unit_name(unit: "Unit") -> str:
 def render_systemd(unit: Unit) -> tuple[str, str | None]:
     """Render a Unit as a systemd .service string (+ a .timer string for
     interval units). Mirrors the launchd bundle so Linux gets the same
-    opinionated serve/up/poll/retro/watchdog/backup/logrotate set out of the
-    box, not just a generic host-job renderer."""
+    opinionated serve/up/poll/owner/retro/memory/watchdog/backup/logrotate set
+    out of the box, not just a generic host-job renderer."""
     import shlex
     name = _unit_name(unit)
     # systemd treats '%' as a specifier; escape it as '%%' in env values and the
@@ -196,6 +196,14 @@ def default_units(*, python: str, config: str, db_dsn: str, run_root: str,
             start_interval=300,
             stdout_path=log("poll"),
             stderr_path=log("poll"),
+        ),
+        Unit(
+            label=f"{label_prefix}.owner",
+            argv=argv("owner", "cycle", "--json"),
+            env=base_env,
+            start_interval=300,
+            stdout_path=log("owner.out"),
+            stderr_path=log("owner.err"),
         ),
         Unit(
             label=f"{label_prefix}.retro",

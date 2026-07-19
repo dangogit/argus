@@ -14,9 +14,9 @@ import psycopg
 from psycopg.types.json import Json
 
 from argus.engine import EngineOutageError, run_agent
-from argus.v2 import alerts
 from argus.v2.config import loader
 from argus.v2.engine_runner import run_with_fallback
+from argus.v2.ownership import support as ownership_support
 from argus.v2.rules import context as rules_context
 from argus.v2.skills import registry as skills
 from argus.v2.support.apps_script import (
@@ -111,14 +111,7 @@ def handle_guidance_reply(conn: psycopg.Connection, cfg, team_id: str, text: str
                 "Use send: <exact reply> to email the customer.")
         return True
     body = explicit_reply
-    transport = AppsScriptTransport(
-        url=scfg["url"],
-        key=source.secret,
-        timeout=float(scfg.get("timeout", 30)),
-    )
-    transport.reply(req["thread_id"], body)
-    transport.mark_read(req["thread_id"])
-    transport.archive(req["thread_id"])
+    _send_customer_reply(source, scfg, req, body)
     state.record(team_id, req["thread_id"], "replied",
                  req.get("from", ""), req.get("subject", ""))
     _notify(conn, team_id, scfg, f"Support guidance {guidance_id} learned and customer reply sent.")
@@ -209,6 +202,17 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
         return _bump(result, "archived")
     if verdict == "escalate":
         thread = transport.read(email.thread_id) or email.snippet or email.subject
+        obligation = _support_obligation(
+            conn, team, source, email, thread,
+            DraftDecision(
+                reply="", should_escalate=True, category="escalation",
+                reason="deterministic high-risk triage", risk="high",
+            ),
+        )
+        if obligation is not None:
+            ownership_support.await_approval(
+                conn, obligation, reason="deterministic high-risk triage"
+            )
         transport.mark_read(email.thread_id)
         question = "This looks high-risk. What should we do?"
         guidance = state.register_guidance_request(
@@ -234,6 +238,17 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
                               failure_out=failure)
     if decision is None:
         reason = failure.get("reason", "unknown")
+        obligation = _support_obligation(
+            conn, team, source, email, thread,
+            DraftDecision(
+                reply="", should_escalate=True, category="unknown",
+                reason=reason, risk="unknown", needs_guidance=True,
+            ),
+        )
+        if obligation is not None:
+            ownership_support.await_approval(
+                conn, obligation, reason=f"support draft failed: {reason}"
+            )
         state.record(project, email.thread_id, "failed", email.sender, email.subject, reason)
         transport.mark_read(email.thread_id)
         question = (
@@ -258,6 +273,17 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
                      decision.reason or "llm_non_support")
         return _bump(result, "archived")
     if decision.should_escalate or decision.needs_guidance:
+        obligation = _support_obligation(
+            conn, team, source, email, thread, decision
+        )
+        if obligation is not None:
+            policy = ownership_support.classify_for_auto_send(
+                team, decision, thread, sender=email.sender,
+                subject=email.subject,
+            )
+            ownership_support.await_approval(
+                conn, obligation, reason=policy.reason, policy=policy
+            )
         transport.mark_read(email.thread_id)
         question = decision.guidance_question or decision.reason or "What should we tell this customer?"
         guidance = state.register_guidance_request(
@@ -269,19 +295,23 @@ def _handle_email(conn, cfg, team, source, scfg, transport: AppsScriptTransport,
                 _guidance_text(project, guidance.id, email, thread, question, decision.reply))
         return _bump(result, "escalated")
 
-    if _can_auto_send(scfg, decision, project, thread):
-        transport.reply(email.thread_id, decision.reply)
-        transport.mark_read(email.thread_id)
-        transport.archive(email.thread_id)
-        state.record(project, email.thread_id, "auto_replied", email.sender, email.subject)
-        note = f'Support auto-replied for {project}: "{email.subject}" from {email.sender}'
-        if _notify_level(scfg) == "guidance_only":
-            alerts.record(conn, severity="info", project=project,
-                          fingerprint=f"support-auto-replied:{project}:{email.thread_id}",
-                          message=note, channel="log")
-        else:
-            _notify(conn, team.name, scfg, note)
-        return _bump(result, "sent")
+    obligation = _support_obligation(conn, team, source, email, thread, decision)
+    if obligation is not None:
+        policy = ownership_support.classify_for_auto_send(
+            team, decision, thread, sender=email.sender, subject=email.subject
+        )
+        if policy.allowed:
+            ownership_support.queue_reply_action(
+                conn,
+                team=team,
+                source=source,
+                obligation=obligation,
+                decision=decision,
+            )
+            return _bump(result, "proposed")
+        ownership_support.await_approval(
+            conn, obligation, reason=policy.reason, policy=policy
+        )
 
     if _notify_level(scfg) == "guidance_only":
         # Every owner touchpoint is one concise guidance format; a would-be
@@ -445,6 +475,22 @@ def _support_source(cfg, team_id: str):
         if source.team == team_id and source.type in {"support_apps_script", "apps_script_support"}:
             return source
     raise KeyError(f"no support_apps_script source for team {team_id}")
+
+
+def _support_obligation(conn, team, source, email: EmailSummary, thread: str,
+                        decision: DraftDecision):
+    if conn is None or not getattr(getattr(team, "ownership", None), "enabled", False):
+        return None
+    return ownership_support.open_or_update_obligation(
+        conn,
+        team=team,
+        source=source,
+        thread_id=email.thread_id,
+        sender=email.sender,
+        subject=email.subject,
+        raw_thread=thread,
+        decision=decision,
+    )
 
 
 def _bump(result: SupportResult, field: str) -> SupportResult:
@@ -641,7 +687,7 @@ def _customer_message(thread: str, *, limit: int = 500) -> str:
     return text or _thread_excerpt(thread, limit=limit)
 
 
-def _send_customer_reply(source, scfg: dict, req: dict, body: str) -> None:
+def _send_customer_reply(source, scfg: dict, req: dict, body: str) -> str:
     transport = AppsScriptTransport(
         url=scfg["url"],
         key=source.secret,
@@ -650,6 +696,13 @@ def _send_customer_reply(source, scfg: dict, req: dict, body: str) -> None:
     transport.reply(req["thread_id"], body)
     transport.mark_read(req["thread_id"])
     transport.archive(req["thread_id"])
+    provider_ref = f"support:{req['thread_id']}"
+    project = str(req.get("project") or "")
+    if project:
+        state.reconcile_explicit_reply(
+            project, source.name, req["thread_id"], provider_ref
+        )
+    return provider_ref
 
 
 def _is_support_question(text: str) -> bool:
@@ -755,26 +808,6 @@ def _remember_guidance(conn, cfg, team_id: str, req: dict, answer: str) -> None:
     kstore.add(conn, cfg, scope="team", team_id=team_id,
                title=f"Support guidance: {req.get('subject', 'customer reply')}",
                content=content, source="support-rule" if rejected else "support-guidance")
-
-
-def _can_auto_send(scfg: dict, decision: DraftDecision, project: str, thread: str) -> bool:
-    if not scfg.get("auto_send_low_risk"):
-        return False
-    min_guidance = int(scfg.get("auto_send_min_guidance", 2))
-    min_conf = float(scfg.get("auto_send_confidence", 0.85))
-    if decision.risk != "low" or decision.confidence < min_conf:
-        return False
-    if _hard_risk(thread):
-        return False
-    return state.accepted_guidance_count(project) >= min_guidance
-
-
-def _hard_risk(text: str) -> bool:
-    body = (text or "").lower()
-    return any(word in body for word in (
-        "refund", "chargeback", "legal", "lawyer", "gdpr", "delete my account",
-        "charged", "billing", "invoice", "subscription", "payment",
-    ))
 
 
 def _rejects_send(answer: str) -> bool:

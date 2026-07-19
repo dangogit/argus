@@ -1,4 +1,5 @@
 from argus.v2.support import state
+from argus.v2.ownership import store
 
 
 def test_register_draft_records_ready_state(tmp_path, monkeypatch, conn):
@@ -25,3 +26,27 @@ def test_draft_list_get_and_status(tmp_path, monkeypatch, conn):
     assert state.draft_get("luma", draft.id)["status"] == "sent"
     assert state.draft_list("luma") == []
     assert [row["id"] for row in state.draft_list("luma", status="sent")] == [draft.id]
+
+
+def test_explicit_reply_reconciles_matching_support_obligation(conn):
+    obligation = store.upsert(
+        conn, team_id="luma", kind="support",
+        fingerprint="support:luma-mail:T-owner", title="Support: Export",
+        source_ref="luma-mail",
+        definition_of_done={"provider_reply": True},
+    )
+    store.transition(
+        conn, obligation.id, to_status="working", reason="support thread received"
+    )
+    conn.commit()
+
+    state.reconcile_explicit_reply(
+        "luma", "luma-mail", "T-owner", "support:T-owner"
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, provider_ref FROM team_obligations WHERE id=%s",
+            (obligation.id,),
+        )
+        assert cur.fetchone() == ("done", "support:T-owner")

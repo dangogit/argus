@@ -118,8 +118,14 @@ def _stage_key(request_id: str, stage_index: int, branch_iter: int) -> str:
 
 
 def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
-                 conversation_id: Optional[str], fingerprint: Optional[str] = None,
+                 conversation_id: Optional[str] = None, fingerprint: Optional[str] = None,
                  dedup_terminal: bool = False) -> Optional[str]:
+    from argus.v2.ownership import hooks as ownership_hooks
+    owned_request_id = ownership_hooks.existing_nonterminal_request_for_event(
+        conn, cfg, event_id=event_id, team_id=team_id,
+    )
+    if owned_request_id is not None:
+        return owned_request_id
     with conn.cursor() as cur:
         if fingerprint and dedup_terminal:
             # Signal-origin work: a connector row maps to one fingerprint for its
@@ -175,6 +181,13 @@ def open_request(conn: psycopg.Connection, cfg, *, event_id: str, team_id: str,
         if not row:
             return None  # active request already exists for this fingerprint
         request_id = str(row[0])
+    ownership_hooks.open_for_request(
+        conn,
+        cfg,
+        request_id=request_id,
+        event_id=event_id,
+        team_id=team_id,
+    )
     enqueue_stage(conn, cfg, request_id=request_id, stage_index=0)
     return request_id
 
@@ -353,6 +366,11 @@ def enqueue_stage(conn: psycopg.Connection, cfg, *, request_id: str, stage_index
     with conn.cursor() as cur:
         cur.execute("UPDATE requests SET current_stage=%s, updated_at=now() WHERE id=%s",
                     (stage_index, request_id))
+    if stage_index == 0:
+        from argus.v2.ownership import hooks as ownership_hooks
+        ownership_hooks.on_request_working(
+            conn, cfg, request_id=request_id, team_id=team_id,
+        )
 
 
 def _role_snapshot_extra(role: str) -> dict:
@@ -614,6 +632,24 @@ def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
             (request_id,))
         team_id, conv_id, origin_kind = cur.fetchone()
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s", (request_id,))
+        from argus.v2.ownership import hooks as ownership_hooks
+        if blocked:
+            ownership_reason = _classified_failure_note(analysis)
+            classification = _failure_classification(analysis)
+        else:
+            ownership_reason = (
+                "No deterministic verification proves the source is resolved. "
+                f"Pipeline result: {analysis}"
+            )
+            classification = "unverified resolution"
+        ownership_hooks.on_request_blocked(
+            conn,
+            cfg,
+            request_id=request_id,
+            team_id=str(team_id),
+            reason=ownership_reason,
+            classification=classification,
+        )
         text = f"{prefix}{analysis}"
         if origin_kind == "signal":
             alerts.record(conn, severity="warn" if blocked else "info",
@@ -797,6 +833,16 @@ def _fail(conn: psycopg.Connection, cfg, request_id: str, reason: str) -> None:
         team_id, conv_id, origin_kind = row
         cur.execute("UPDATE requests SET status='failed', updated_at=now() WHERE id=%s",
                     (request_id,))
+        from argus.v2.ownership import hooks as ownership_hooks
+        classified_reason = _classified_failure_note(reason)
+        ownership_hooks.on_request_blocked(
+            conn,
+            cfg,
+            request_id=request_id,
+            team_id=str(team_id),
+            reason=classified_reason,
+            classification=_failure_classification(reason),
+        )
         log.info("request %s failed team=%s reason=%s", request_id, team_id, reason,
                  extra={"team_id": team_id, "request_id": str(request_id)})
         # Cancel sibling jobs in the same transaction. on_job_done early-returns
@@ -835,6 +881,7 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
     from argus.v2.workspace import repo as workspace
     team = cfg.team(job.team_id)
     project = getattr(team, "project", None)
+    action_id = None
     with conn.cursor() as cur:
         if project and job.request_id:
             branch = f"{project.work_branch_prefix}/{job.request_id}"
@@ -864,7 +911,7 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                 "(request_id, job_id, team_id, type, risk, "
                 " destination_ref, idempotency_key, payload) "
                 "VALUES (%s,%s,%s,'open_pr','reversible_internal',%s,%s,%s) "
-                "ON CONFLICT (idempotency_key) DO NOTHING",
+                "ON CONFLICT (idempotency_key) DO NOTHING RETURNING id",
                 (
                     job.request_id,
                     job.id,
@@ -885,8 +932,26 @@ def _approve_done(conn: psycopg.Connection, cfg, job: Job) -> None:
                           "cwd": cwd}),
                 ),
             )
+            action_row = cur.fetchone()
+            if action_row:
+                action_id = action_row[0]
+            else:
+                cur.execute(
+                    "SELECT id FROM actions WHERE idempotency_key=%s",
+                    (f"open_pr:{job.request_id}",),
+                )
+                action_id = cur.fetchone()[0]
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                     (job.request_id,))
+    if action_id is not None:
+        from argus.v2.ownership import hooks as ownership_hooks
+        ownership_hooks.on_pr_proposed(
+            conn,
+            cfg,
+            request_id=job.request_id,
+            action_id=action_id,
+            team_id=job.team_id,
+        )
     log.info("request %s done (senior approved) team=%s job=%s",
              job.request_id, job.team_id, job.id,
              extra={"job_id": job.id, "team_id": job.team_id,
@@ -929,13 +994,14 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
         conn, cfg, job.request_id, cwd=cwd, risk_summary=risk,
         base_refs=_configured_base_refs(project),
     )
+    action_id = None
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO actions "
             "(request_id, job_id, team_id, type, risk, "
             " destination_ref, idempotency_key, payload) "
             "VALUES (%s,%s,%s,'open_pr','reversible_internal',%s,%s,%s) "
-            "ON CONFLICT (idempotency_key) DO NOTHING",
+            "ON CONFLICT (idempotency_key) DO NOTHING RETURNING id",
             (
                 job.request_id,
                 job.id,
@@ -956,8 +1022,25 @@ def _open_draft_pr_after_failure(conn: psycopg.Connection, cfg, job: Job, reason
                       "cwd": cwd}),
             ),
         )
+        action_row = cur.fetchone()
+        if action_row:
+            action_id = action_row[0]
+        else:
+            cur.execute(
+                "SELECT id FROM actions WHERE idempotency_key=%s",
+                (f"open_pr:{job.request_id}",),
+            )
+            action_id = cur.fetchone()[0]
         cur.execute("UPDATE requests SET status='done', updated_at=now() WHERE id=%s",
                     (job.request_id,))
+    from argus.v2.ownership import hooks as ownership_hooks
+    ownership_hooks.on_pr_proposed(
+        conn,
+        cfg,
+        request_id=job.request_id,
+        action_id=action_id,
+        team_id=job.team_id,
+    )
     return True
 
 
