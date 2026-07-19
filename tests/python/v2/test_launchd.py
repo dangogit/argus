@@ -43,6 +43,7 @@ def test_default_units_cover_runtime_without_shell_wrapper():
         "com.argus.work-chat",
         "com.argus.work-pipeline",
         "com.argus.poll",
+        "com.argus.owner",
         "com.argus.retro",
         "com.argus.memory",
         "com.argus.watchdog",
@@ -64,6 +65,13 @@ def test_default_units_cover_runtime_without_shell_wrapper():
     assert by_label["com.argus.work-pipeline"].keep_alive is True
     assert by_label["com.argus.serve"].keep_alive is True
     assert by_label["com.argus.poll"].start_interval == 300
+    assert by_label["com.argus.owner"].argv[-3:] == ["owner", "cycle", "--json"]
+    assert by_label["com.argus.owner"].start_interval == 300
+    assert by_label["com.argus.owner"].env == by_label["com.argus.poll"].env
+    assert by_label["com.argus.owner"].stdout_path == "/logs/owner.out.log"
+    assert by_label["com.argus.owner"].stderr_path == "/logs/owner.err.log"
+    assert by_label["com.argus.owner"].keep_alive is False
+    assert by_label["com.argus.owner"].run_at_load is False
     assert by_label["com.argus.retro"].argv[-2:] == ["retro", "run"]
     assert by_label["com.argus.retro"].start_interval == 86400
     assert by_label["com.argus.memory"].argv[-2:] == ["memory", "refresh"]
@@ -109,13 +117,14 @@ def test_write_units_linux_emits_systemd(tmp_path):
         env_files=[], log_dir="/logs")
     written = launchd.write_units(units, tmp_path, os_name="linux")
     names = sorted(p.name for p in written)
-    # 10 services + 6 timers (poll/retro/memory/watchdog/backup/logrotate are interval;
+    # 11 services + 7 timers (poll/owner/retro/memory/watchdog/backup/logrotate are interval;
     # serve/up/work-chat/work-pipeline are long-running, no timer).
     assert "argus-serve.service" in names
     assert "argus-poll.service" in names and "argus-poll.timer" in names
+    assert "argus-owner.service" in names and "argus-owner.timer" in names
     assert "argus-up.timer" not in names  # up is a long-running service
-    assert sum(1 for n in names if n.endswith(".service")) == 10
-    assert sum(1 for n in names if n.endswith(".timer")) == 6
+    assert sum(1 for n in names if n.endswith(".service")) == 11
+    assert sum(1 for n in names if n.endswith(".timer")) == 7
     assert names.count("argus-memory.timer") == 1
     assert not any(n.endswith(".plist") for n in names)
 
@@ -127,8 +136,34 @@ def test_write_units_macos_still_plists(tmp_path):
         env_files=[], log_dir="/logs")
     written = launchd.write_units(units, tmp_path, os_name="macos")
     assert all(p.suffix == ".plist" for p in written)
-    assert len(written) == 10
+    assert len(written) == 11
+    assert sum(1 for path in written if path.name == "com.argus.owner.plist") == 1
     assert sum(1 for path in written if path.name == "com.argus.memory.plist") == 1
+
+
+def test_owner_units_are_deterministic_and_idempotent(tmp_path):
+    units = launchd.default_units(
+        python="/venv with space/bin/python",
+        config="/run/argus config.yaml",
+        db_dsn="host=127.0.0.1 dbname=argus",
+        run_root="/run root",
+        env_files=["/private/runtime env"],
+        log_dir="/log root",
+    )
+
+    first = launchd.write_units(units, tmp_path, os_name="linux")
+    first_content = {path.name: path.read_bytes() for path in first}
+    second = launchd.write_units(units, tmp_path, os_name="linux")
+    second_content = {path.name: path.read_bytes() for path in second}
+
+    assert [path.name for path in first] == [path.name for path in second]
+    assert first_content == second_content
+    owner_service = (tmp_path / "argus-owner.service").read_text()
+    owner_timer = (tmp_path / "argus-owner.timer").read_text()
+    assert "ExecStart='/venv with space/bin/python' -m argus.v2.cli owner cycle --json" in owner_service
+    assert 'Environment="ARGUS_CONFIG=/run/argus config.yaml"' in owner_service
+    assert "OnUnitActiveSec=300s" in owner_timer
+    assert "Persistent=true" in owner_timer
 
 
 def test_write_units_macos_plists_are_owner_only(tmp_path):
