@@ -10,13 +10,13 @@ from argus.v2.support.cycle import DraftDecision
 
 
 def _proposed(conn, risk, request_id, idem="a0", dest=None, payload="{}",
-              status="proposed"):
+              status="proposed", team_id="dev"):
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO actions (request_id, team_id, type, risk, destination_ref,
                                     idempotency_key, payload, status)
-               VALUES (%s,'dev','notify',%s,%s,%s,%s::jsonb,%s) RETURNING id""",
-            (request_id, risk, dest, idem, payload, status))
+               VALUES (%s,%s,'notify',%s,%s,%s,%s::jsonb,%s) RETURNING id""",
+            (request_id, team_id, risk, dest, idem, payload, status))
         return str(cur.fetchone()[0])
 
 
@@ -88,6 +88,46 @@ def test_executor_is_idempotent(conn, cfg):
     executor.process_proposed(conn, cfg); conn.commit()
     n = executor.process_proposed(conn, cfg); conn.commit()  # nothing left
     assert n == 0
+
+
+def test_team_scoped_executor_leaves_foreign_proposed_and_held_actions_untouched(
+    conn, cfg
+):
+    rid = _request(conn, cfg)
+    _proposed(conn, "reversible_internal", rid, idem="dev-action")
+    _proposed(
+        conn,
+        "reversible_internal",
+        None,
+        idem="foreign-proposed",
+        team_id="other",
+    )
+    _proposed(
+        conn,
+        "reversible_internal",
+        None,
+        idem="foreign-held",
+        team_id="other",
+        status="held",
+        payload='{"quiet_hold_until":"2000-01-01T00:00:00+00:00"}',
+    )
+    conn.commit()
+
+    assert executor.process_proposed(conn, cfg, team_id="dev") == 1
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT idempotency_key, status FROM actions "
+            "WHERE idempotency_key IN "
+            "('dev-action', 'foreign-proposed', 'foreign-held') "
+            "ORDER BY idempotency_key"
+        )
+        assert cur.fetchall() == [
+            ("dev-action", "done"),
+            ("foreign-held", "held"),
+            ("foreign-proposed", "proposed"),
+        ]
 
 
 def test_support_reply_auto_executes_through_durable_handler(

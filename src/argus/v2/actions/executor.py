@@ -96,16 +96,30 @@ def _mode_for(autonomy: Autonomy, action_type: str, risk: str) -> str:
     return autonomy.actions.get(action_type, getattr(autonomy, risk))
 
 
-def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable] = None) -> int:
-    _release_held(conn)
+def process_proposed(
+    conn: psycopg.Connection,
+    cfg,
+    *,
+    runner: Optional[Callable] = None,
+    team_id: str | None = None,
+) -> int:
+    _release_held(conn, team_id=team_id)
+    team_filter = "AND team_id=%s" if team_id is not None else ""
+    params = (team_id,) if team_id is not None else ()
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, request_id, team_id, type, risk, destination_ref, "
             "idempotency_key, status, payload "
-            "FROM actions WHERE status IN ('proposed','approved') FOR UPDATE SKIP LOCKED")
+            "FROM actions WHERE status IN ('proposed','approved') "
+            f"{team_filter} FOR UPDATE SKIP LOCKED",
+            params,
+        )
         rows = cur.fetchall()
     handled = 0
-    for action_id, request_id, team_id, atype, risk, destination_ref, idem, status, payload in rows:
+    for (
+        action_id, request_id, row_team_id, atype, risk, destination_ref,
+        idem, status, payload,
+    ) in rows:
         if status == "approved":
             # Already consumed by an approver; skip the policy gate and execute.
             _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
@@ -117,13 +131,18 @@ def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable
                     "WHERE id=%s AND risk<>%s",
                     (risk, action_id, risk),
                 )
-            autonomy = _team_autonomy(cfg, team_id)
+            autonomy = _team_autonomy(cfg, row_team_id)
             mode = _mode_for(autonomy, atype, risk)
             if mode == "auto":
-                if _hold_for_quiet_hours(conn, str(action_id), cfg, team_id=team_id,
-                                         action_type=atype,
-                                         destination_ref=destination_ref,
-                                         payload=payload or {}):
+                if _hold_for_quiet_hours(
+                    conn,
+                    str(action_id),
+                    cfg,
+                    team_id=row_team_id,
+                    action_type=atype,
+                    destination_ref=destination_ref,
+                    payload=payload or {},
+                ):
                     handled += 1
                     continue
                 _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
@@ -133,10 +152,16 @@ def process_proposed(conn: psycopg.Connection, cfg, *, runner: Optional[Callable
     return handled
 
 
-def _release_held(conn: psycopg.Connection) -> None:
+def _release_held(
+    conn: psycopg.Connection,
+    *,
+    team_id: str | None = None,
+) -> None:
+    team_filter = "AND team_id=%s" if team_id is not None else ""
+    params = (team_id,) if team_id is not None else ()
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             UPDATE actions
             SET status='proposed',
                 payload=payload - 'quiet_hold_until' - 'quiet_hold_reason',
@@ -144,7 +169,9 @@ def _release_held(conn: psycopg.Connection) -> None:
             WHERE status='held'
               AND payload ? 'quiet_hold_until'
               AND (payload->>'quiet_hold_until')::timestamptz <= now()
-            """
+              {team_filter}
+            """,
+            params,
         )
 
 

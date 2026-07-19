@@ -22,6 +22,7 @@ from argus.v2.actions import approvals
 from argus.v2.actions import executor as action_executor
 from argus.v2.config import loader
 from argus.v2.config.schema import PROTECTED_AUTO_MERGE_BRANCHES
+from argus.v2.context.sanitize import sanitize_memory
 from argus.v2.db import migrate, pool
 from argus.v2.ingress import events
 from argus.v2.orchestrator import loop, reconcile
@@ -610,14 +611,23 @@ def _owner_json(payload) -> None:
 def _owner_error(command: str, exc: Exception) -> int:
     message = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
     message = re.sub(
-        r"(?i)\b(password|token|api[_-]?key|key)=([^\s&'\"]+)",
-        r"\1=[redacted]",
+        r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@",
+        r"\1[redacted]@",
         message,
     )
     message = re.sub(
-        r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", message)
+        r"(?i)(\b[a-z][a-z0-9+.-]*://[^\s?#]+)\?[^\s]+",
+        r"\1?[redacted]",
+        message,
+    )
     message = re.sub(
-        r"(https?://[^\s?#]+)\?[^\s]+", r"\1?[redacted]", message)
+        r"(?i)\b(api[_-]?key|access[_-]?key|auth[_-]?token|token|password|"
+        r"passwd|pwd|secret)\s*(=|:)\s*"
+        r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)",
+        lambda match: f"{match.group(1)}{match.group(2)} [redacted]",
+        message,
+    )
+    message = sanitize_memory(message)
     print(f"owner {command}: {message[:300]}", file=sys.stderr)
     return 1
 
@@ -709,8 +719,8 @@ def _owner_action_modes(cfg, team) -> tuple[dict[str, str], set[str]]:
 
 def _owner_support_readiness(cfg, team) -> dict:
     candidates = [
-        source for source in [*cfg.company.sources, *team.sources]
-        if source.type in _OWNER_SUPPORT_SOURCE_TYPES and source.team == team.name
+        source for source in _owner_sources(cfg, team)
+        if source.type in _OWNER_SUPPORT_SOURCE_TYPES
     ]
     summaries = [
         {
@@ -733,6 +743,16 @@ def _owner_support_readiness(cfg, team) -> dict:
         "ready": bool(ready),
         "sources": summaries,
     }
+
+
+def _owner_sources(cfg, team) -> list:
+    company_sources = [
+        source for source in cfg.company.sources if source.team == team.name
+    ]
+    team_sources = [
+        source for source in team.sources if source.team in (None, team.name)
+    ]
+    return [*company_sources, *team_sources]
 
 
 def _owner_work_counts(conn, team_id: str) -> dict[str, int]:
@@ -760,10 +780,7 @@ def _owner_proof(conn, cfg, team) -> dict:
     project = team.project
     action_modes, missing_actions = _owner_action_modes(cfg, team)
     support = _owner_support_readiness(cfg, team)
-    configured_sources = [
-        source for source in [*cfg.company.sources, *team.sources]
-        if source.team == team.name
-    ]
+    configured_sources = _owner_sources(cfg, team)
     maintenance_ready = project is not None
     live_url = _safe_public_url(code.live_url)
     missing: set[str] = set()
@@ -848,7 +865,7 @@ def cmd_owner(args) -> int:
     try:
         if args.owner_cmd == "cycle":
             result = ownership_cycle.run(conn, cfg, team_id=args.team)
-            action_executor.process_proposed(conn, cfg)
+            action_executor.process_proposed(conn, cfg, team_id=args.team)
             conn.commit()
             payload = {
                 "teams": result.teams,

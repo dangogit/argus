@@ -36,7 +36,6 @@ def _config(tmp_path, *, complete: bool = True):
             "    sources:\n"
             "      - name: dev-support\n"
             "        type: support_apps_script\n"
-            "        team: dev\n"
             "        secret_ref: '${env:OWNER_SUPPORT_KEY}'\n"
             "        config: { url: 'https://support.example.test/exec?key=do-not-log' }\n"
             "      - { name: dev-sentry, type: sentry, team: dev }\n"
@@ -127,13 +126,16 @@ def test_owner_cycle_runs_reconcile_then_actions_and_commits_once(
     monkeypatch.setattr(
         cli.action_executor,
         "process_proposed",
-        lambda passed, cfg: calls.append(("actions", passed)) or 1,
+        lambda passed, cfg, team_id=None: (
+            calls.append(("actions", passed, team_id)) or 1
+        ),
     )
 
     assert cli.main(["owner", "cycle", "--team", "dev", "--json"]) == 0
 
     assert [item[0] for item in calls] == ["cycle", "actions"]
     assert all(item[1] is conn for item in calls)
+    assert calls[1][2] == "dev"
     assert conn.events == ["commit", "close"]
     assert json.loads(capsys.readouterr().out) == {
         "teams": 1,
@@ -274,6 +276,7 @@ def test_owner_prove_reports_complete_policy_without_secrets_or_evidence(
     }
     assert payload["support"]["ready"] is True
     assert payload["maintenance"]["ready"] is True
+    assert payload["maintenance"]["source_count"] == 2
     assert payload["missing_prerequisites"] == []
     text = json.dumps(payload)
     for forbidden in (
@@ -344,3 +347,41 @@ def test_owner_commands_report_database_unavailable(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "owner list: database unavailable" in captured.err
+
+
+@pytest.mark.parametrize(("message", "forbidden"), [
+    (
+        "connect postgresql://admin:db-pass@db.example/argus failed",
+        ("admin", "db-pass"),
+    ),
+    (
+        "fetch https://robot:web-pass@example.test/path failed",
+        ("robot", "web-pass"),
+    ),
+    (
+        "redis://cache-user:cache-pass@cache.example/0 unavailable",
+        ("cache-user", "cache-pass"),
+    ),
+    (
+        "config secret: 'yaml secret value' api_key: api-secret "
+        'token = "token secret value" password: pass-secret',
+        ("yaml secret value", "api-secret", "token secret value", "pass-secret"),
+    ),
+])
+def test_owner_error_redacts_url_userinfo_and_yaml_credentials(
+    capsys, message, forbidden
+):
+    assert cli._owner_error("cycle", RuntimeError(message)) == 1
+
+    error = capsys.readouterr().err
+    for value in forbidden:
+        assert value not in error
+    assert "owner cycle:" in error
+
+
+def test_owner_error_preserves_safe_noncredential_detail(capsys):
+    message = "database unavailable: token expired before reconciliation"
+
+    assert cli._owner_error("cycle", RuntimeError(message)) == 1
+
+    assert message in capsys.readouterr().err
