@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import socket
+import ssl
+from dataclasses import dataclass, field
+from urllib.parse import quote
 
 import pytest
 from psycopg.types.json import Jsonb
 
 from argus.v2.config import loader
-from argus.v2.ownership import code, store
+from argus.v2.ownership import code, hooks, store
 
 
 SHA = "a" * 40
 MERGE_SHA = "b" * 40
 RUN_URL = "https://github.com/acme/luma/actions/runs/99"
+PUBLIC_IP = "8.8.8.8"
+
+
+def _public_resolver(host):
+    return [PUBLIC_IP]
 
 
 @pytest.fixture()
@@ -86,6 +94,7 @@ class Runner:
 @dataclass
 class Response:
     status_code: int
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 def _item(conn, *, status="awaiting_merge", provider_ref="42", action_id=None):
@@ -172,22 +181,34 @@ def _event_statuses(conn, obligation_id):
 
 def test_happy_path_records_only_canonical_lifecycle_transitions(
         conn, cfg_ownership):
-    item = store.upsert(
-        conn,
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO events (team_id, kind, source, payload, dedup_key)
+            VALUES ('dev', 'signal', 'test', %s, 'happy-path')
+            RETURNING id
+            """,
+            (Jsonb({"title": "Fix crash"}),),
+        )
+        event_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO requests (event_id, team_id) VALUES (%s, 'dev') RETURNING id",
+            (event_id,),
+        )
+        request_id = cur.fetchone()[0]
+    item = hooks.open_for_request(
+        conn, cfg_ownership, request_id=request_id, event_id=event_id,
         team_id="dev",
-        kind="code",
-        fingerprint="code:happy-path",
-        title="Fix crash",
-        source_ref="sentry:happy",
-        definition_of_done={"pr": True},
     )
-    store.transition(conn, item.id, to_status="open", reason="obligation opened")
-    store.transition(conn, item.id, to_status="working", reason="work started")
+    hooks.on_request_working(
+        conn, cfg_ownership, request_id=request_id, team_id="dev")
     open_action = _action(
         conn, action_type="open_pr", status="done", provider_ref="42",
         key="happy-open")
-    store.link_action(conn, item.id, open_action)
-    store.transition(conn, item.id, to_status="awaiting_pr", reason="PR proposed")
+    hooks.on_pr_proposed(
+        conn, cfg_ownership, request_id=request_id, action_id=open_action,
+        team_id="dev",
+    )
 
     runner = Runner(draft=True)
     code.reconcile(
@@ -229,7 +250,7 @@ def test_happy_path_records_only_canonical_lifecycle_transitions(
         http_get=lambda *a, **k: None)
     code.reconcile(
         conn, cfg_ownership, store.get(conn, item.id), runner=runner,
-        http_get=lambda *a, **k: Response(200))
+        http_get=lambda *a, **k: Response(200), resolver=_public_resolver)
 
     assert _event_statuses(conn, item.id) == [
         "open", "working", "awaiting_pr", "awaiting_merge",
@@ -254,6 +275,26 @@ def test_open_pr_action_done_moves_to_awaiting_merge(conn, cfg_ownership):
     assert result.status == "awaiting_merge"
     assert updated.status == "awaiting_merge"
     assert updated.provider_ref == "42"
+
+
+def test_open_pr_provider_url_must_match_configured_repository_even_same_number(
+        conn, cfg_ownership):
+    action_id = _action(
+        conn,
+        action_type="open_pr",
+        status="done",
+        provider_ref="https://github.com/other/repo/pull/42",
+    )
+    item = _item(
+        conn, status="awaiting_pr", provider_ref=None, action_id=action_id)
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(),
+        http_get=lambda *a, **k: None,
+    )
+
+    assert result.blocked == 1
+    assert store.get(conn, item.id).status == "blocked"
 
 
 def test_open_pr_action_already_merged_still_records_merge_boundary(
@@ -445,6 +486,79 @@ def test_auto_ready_false_awaits_approval_and_notifies_once(
     assert notifications[0][4] == "fake:owner"
 
 
+def test_manual_approval_evidence_changes_from_ready_to_merge(
+        conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.auto_ready = False
+    cfg_ownership.team("dev").ownership.code.auto_merge = False
+    item = _item(conn)
+
+    code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(draft=True),
+        http_get=lambda *a, **k: None,
+    )
+    code.reconcile(
+        conn, cfg_ownership, store.get(conn, item.id), runner=Runner(draft=False),
+        http_get=lambda *a, **k: None,
+    )
+
+    updated = store.get(conn, item.id)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT evidence FROM team_obligation_events "
+            "WHERE obligation_id=%s AND to_status='awaiting_approval' ORDER BY id",
+            (item.id,),
+        )
+        approval_events = [row[0] for row in cur.fetchall()]
+    assert [event["approval_action"] for event in approval_events] == [
+        "ready_pr", "merge_pr"]
+    assert updated.evidence["approval_action"] == "merge_pr"
+    assert len(_actions(conn, "notify")) == 2
+
+
+def test_approval_decision_reloads_stale_durable_state(conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.auto_merge = False
+    stale = _item(conn)
+    store.transition(
+        conn,
+        stale.id,
+        to_status="awaiting_approval",
+        reason="ready_pr automation is disabled",
+        evidence={"approval_action": "ready_pr"},
+    )
+
+    result = code.reconcile(
+        conn, cfg_ownership, stale, runner=Runner(draft=False),
+        http_get=lambda *a, **k: None,
+    )
+
+    assert result.status == "awaiting_approval"
+    assert store.get(conn, stale.id).evidence["approval_action"] == "merge_pr"
+
+
+def test_approval_notification_idempotency_collision_mismatch_blocks(
+        conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.auto_ready = False
+    item = _item(conn)
+    key = f"ownership_approval:{item.id}:ready_pr:{SHA}"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO actions
+              (team_id, type, risk, destination_ref, idempotency_key, payload)
+            VALUES ('dev', 'notify', 'reversible_internal', 'fake:attacker', %s, %s)
+            """,
+            (key, Jsonb({"text": "wrong"})),
+        )
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(draft=True),
+        http_get=lambda *a, **k: None,
+    )
+
+    assert result.blocked == 1
+    assert "idempotency collision" in store.get(conn, item.id).blocked_reason
+
+
 def test_merged_pr_moves_to_awaiting_deploy(conn, cfg_ownership):
     merge_id = _action(
         conn, action_type="merge_pr", status="done", key="merge-done")
@@ -497,7 +611,8 @@ def test_2xx_smoke_completes_obligation(conn, cfg_ownership):
         return Response(204 if url.endswith("/health") else 200)
 
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=http_get)
+        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        resolver=_public_resolver)
 
     updated = store.get(conn, item.id)
     assert result.completed == 1
@@ -505,9 +620,9 @@ def test_2xx_smoke_completes_obligation(conn, cfg_ownership):
     assert updated.completed_at is not None
     assert calls == [
         ("https://staging.example.com/", {
-            "follow_redirects": True, "timeout": 15}),
+            "follow_redirects": False, "timeout": 15}),
         ("https://staging.example.com/health", {
-            "follow_redirects": True, "timeout": 15}),
+            "follow_redirects": False, "timeout": 15}),
     ]
     assert [row["status"] for row in updated.evidence["smoke"]] == [200, 204]
     assert all(row["workflow_url"] == RUN_URL for row in updated.evidence["smoke"])
@@ -566,10 +681,12 @@ def test_smoke_failure_retries_then_blocks(conn, cfg_ownership):
         raise TimeoutError("staging timed out")
 
     first = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=unavailable)
+        conn, cfg_ownership, item, runner=Runner(), http_get=unavailable,
+        resolver=_public_resolver)
     after_first = store.get(conn, item.id)
     second = code.reconcile(
-        conn, cfg_ownership, after_first, runner=Runner(), http_get=unavailable)
+        conn, cfg_ownership, after_first, runner=Runner(), http_get=unavailable,
+        resolver=_public_resolver)
     updated = store.get(conn, item.id)
 
     assert first.status == "verifying"
@@ -601,7 +718,9 @@ def test_smoke_requires_merge_and_workflow_proof_before_request(
     "live_url",
     ["http://staging.example.com", "https://user@staging.example.com",
      "https://staging.example.com/#fragment", "https:///missing-host",
-     "https://staging.example.com/base/../admin"],
+     "https://staging.example.com/base/../admin",
+     "https://staging.example.com:444/", "https://localhost/",
+     "https://127.0.0.1/", "https://[not-an-ip]/"],
 )
 def test_smoke_rejects_unsafe_live_url_without_request(
         conn, cfg_ownership, live_url):
@@ -615,3 +734,216 @@ def test_smoke_rejects_unsafe_live_url_without_request(
 
     assert result.blocked == 1
     assert store.get(conn, item.id).status == "blocked"
+
+
+def test_smoke_follows_only_validated_same_host_redirects(conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+    calls = []
+
+    def http_get(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/"):
+            return Response(302, {"location": "/ready"})
+        return Response(200)
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        resolver=_public_resolver,
+    )
+
+    assert result.completed == 1
+    assert calls == [
+        ("https://staging.example.com/", {
+            "follow_redirects": False, "timeout": 15}),
+        ("https://staging.example.com/ready", {
+            "follow_redirects": False, "timeout": 15}),
+    ]
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://other.example.com/ready",
+        "http://staging.example.com/ready",
+        "https://staging.example.com/ready?token=x",
+        "https://staging.example.com/ready#fragment",
+        "https://staging.example.com:444/ready",
+    ],
+)
+def test_smoke_rejects_unsafe_redirect_before_request(
+        conn, cfg_ownership, location):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+    calls = []
+
+    def http_get(url, **kwargs):
+        calls.append(url)
+        return Response(302, {"location": location})
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        resolver=_public_resolver,
+    )
+
+    assert result.blocked == 1
+    assert calls == ["https://staging.example.com/"]
+
+
+def test_smoke_rejects_private_resolution_before_request(conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(),
+        http_get=lambda *a, **k: pytest.fail("private host must not be requested"),
+        resolver=lambda host: ["127.0.0.1"],
+    )
+
+    assert result.blocked == 1
+
+
+@pytest.mark.parametrize(
+    "resolver",
+    [
+        lambda host: [],
+        lambda host: ["not-an-ip"],
+        lambda host: (_ for _ in ()).throw(
+            socket.gaierror(socket.EAI_NONAME, "unknown host")),
+    ],
+)
+def test_smoke_rejects_resolution_failure_or_invalid_address_before_request(
+        conn, cfg_ownership, resolver):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(),
+        http_get=lambda *a, **k: pytest.fail("invalid host must not be requested"),
+        resolver=resolver,
+    )
+
+    assert result.blocked == 1
+
+
+def test_smoke_revalidates_dns_before_each_redirect_hop(conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+    resolutions = iter([[PUBLIC_IP], ["169.254.169.254"]])
+    calls = []
+
+    def http_get(url, **kwargs):
+        calls.append(url)
+        return Response(302, {"location": "/ready"})
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        resolver=lambda host: next(resolutions),
+    )
+
+    assert result.blocked == 1
+    assert calls == ["https://staging.example.com/"]
+
+
+@pytest.mark.parametrize("headers", [{}, {"location": ""}])
+def test_smoke_redirect_requires_location(conn, cfg_ownership, headers):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(),
+        http_get=lambda *a, **k: Response(302, headers),
+        resolver=_public_resolver,
+    )
+
+    assert result.blocked == 1
+
+
+def test_smoke_rejects_redirect_loop(conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+    calls = []
+
+    def http_get(url, **kwargs):
+        calls.append(url)
+        return Response(302, {"location": "/"})
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        resolver=_public_resolver,
+    )
+
+    assert result.blocked == 1
+    assert calls == ["https://staging.example.com/"]
+
+
+def test_smoke_rejects_more_than_five_redirects_without_requesting_sixth_hop(
+        conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+    calls = []
+
+    def http_get(url, **kwargs):
+        calls.append(url)
+        number = len(calls)
+        return Response(302, {"location": f"/hop-{number}"})
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        resolver=_public_resolver,
+    )
+
+    assert result.blocked == 1
+    assert calls == [
+        "https://staging.example.com/",
+        "https://staging.example.com/hop-1",
+        "https://staging.example.com/hop-2",
+        "https://staging.example.com/hop-3",
+        "https://staging.example.com/hop-4",
+        "https://staging.example.com/hop-5",
+    ]
+
+
+def test_smoke_rejects_deeply_percent_encoded_traversal(conn, cfg_ownership):
+    nested = "../admin"
+    for _ in range(12):
+        nested = quote(nested, safe="")
+    cfg_ownership.team("dev").ownership.code.smoke_paths = [f"/{nested}"]
+    item = _item(conn, status="verifying")
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(),
+        http_get=lambda *a, **k: pytest.fail("traversal must not be requested"),
+        resolver=_public_resolver,
+    )
+
+    assert result.blocked == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "transient"),
+    [
+        (TimeoutError("timed out"), True),
+        (socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure"), True),
+        (socket.gaierror(socket.EAI_NONAME, "unknown host"), False),
+        (ssl.SSLCertVerificationError("bad certificate"), False),
+        (ValueError("invalid URL"), False),
+    ],
+)
+def test_smoke_classifies_only_narrow_network_errors_as_transient(
+        conn, cfg_ownership, error, transient):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(), http_get=fail,
+        resolver=_public_resolver,
+    )
+
+    updated = store.get(conn, item.id)
+    assert updated.evidence["smoke_transient"] is transient
+    assert result.rescheduled == int(transient)
+    assert result.blocked == int(not transient)

@@ -8,6 +8,15 @@ import psycopg
 from argus.v2.ownership import code, store
 
 
+_RECONCILABLE_STATUSES = (
+    "awaiting_pr",
+    "awaiting_merge",
+    "awaiting_deploy",
+    "verifying",
+    "awaiting_approval",
+)
+
+
 @dataclass(frozen=True)
 class CycleResult:
     teams: int = 0
@@ -25,6 +34,7 @@ def run(
     team_id=None,
     runner=None,
     http_get=None,
+    resolver=None,
 ) -> CycleResult:
     if conn.autocommit:
         raise ValueError("ownership cycle requires autocommit=False")
@@ -44,6 +54,7 @@ def run(
         due = store.list_due(
             conn,
             team_id=team.name,
+            statuses=_RECONCILABLE_STATUSES,
             limit=team.ownership.max_active_obligations,
         )
         for obligation in due:
@@ -55,6 +66,7 @@ def run(
                 obligation,
                 runner=runner,
                 http_get=http_get,
+                resolver=resolver,
             )
             counts["reconciled"] += 1
             counts["actions_proposed"] += result.actions_proposed

@@ -30,7 +30,9 @@ LEGAL_TRANSITIONS: dict[ObligationStatus, frozenset[ObligationStatus]] = {
         "failed",
     }),
     "awaiting_pr": frozenset({"awaiting_merge", "blocked", "failed"}),
-    "awaiting_merge": frozenset({"awaiting_deploy", "verifying", "blocked", "failed"}),
+    "awaiting_merge": frozenset({
+        "awaiting_deploy", "verifying", "awaiting_approval", "blocked", "failed",
+    }),
     "awaiting_deploy": frozenset({"verifying", "blocked", "failed"}),
     "verifying": frozenset({"working", "blocked", "done", "failed"}),
     "awaiting_approval": frozenset({

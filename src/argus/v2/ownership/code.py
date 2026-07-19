@@ -1,12 +1,14 @@
 """Close code obligations only after PR, deploy, and HTTP proof."""
 from __future__ import annotations
 
+import errno
 import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 import psycopg
 from psycopg.rows import dict_row
@@ -28,6 +30,20 @@ _ACTION_PENDING = frozenset({
 })
 _DEPLOY_PENDING = frozenset({
     "QUEUED", "PENDING", "WAITING", "REQUESTED", "IN_PROGRESS",
+})
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 5
+_MAX_URL_LENGTH = 4096
+_MAX_DECODE_ROUNDS = 16
+_TRANSIENT_ERRNOS = frozenset({
+    errno.EAGAIN,
+    errno.ECONNABORTED,
+    errno.ECONNREFUSED,
+    errno.ECONNRESET,
+    errno.EHOSTUNREACH,
+    errno.ENETUNREACH,
+    errno.ETIMEDOUT,
+    errno.EWOULDBLOCK,
 })
 
 
@@ -54,6 +70,12 @@ class _Action:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _PRReference:
+    number: int
+    repository: tuple[str, str, str] | None
+
+
 def reconcile(
     conn: psycopg.Connection,
     cfg,
@@ -61,6 +83,7 @@ def reconcile(
     *,
     runner,
     http_get,
+    resolver=None,
 ) -> ReconcileResult:
     """Advance one code obligation by one externally observable boundary."""
     if conn.autocommit:
@@ -92,7 +115,7 @@ def reconcile(
             conn, team, current, runner=runner)
     if current.status == "verifying":
         return _reconcile_smoke(
-            conn, team, current, http_get=http_get)
+            conn, team, current, http_get=http_get, resolver=resolver)
     return _result(current)
 
 
@@ -167,14 +190,14 @@ def _failed_action_result(conn, obligation, action: _Action) -> ReconcileResult 
     return None
 
 
-def _canonical_pr_number(value) -> int | None:
+def _canonical_pr_reference(value) -> _PRReference | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if value > 0 else None
+        return _PRReference(value, None) if value > 0 else None
     text = value.strip() if isinstance(value, str) else ""
     if _PR_NUMBER.fullmatch(text):
-        return int(text)
+        return _PRReference(int(text), None)
     try:
         parsed = urlsplit(text)
         parsed.port
@@ -200,7 +223,13 @@ def _canonical_pr_number(value) -> int | None:
         or not _PR_NUMBER.fullmatch(parts[4])
     ):
         return None
-    return int(parts[4])
+    host = parsed.hostname.lower()
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return _PRReference(
+        int(parts[4]),
+        (host, unquote(parts[1]).lower(), unquote(parts[2]).lower()),
+    )
 
 
 def _repository_segment(value: str) -> str:
@@ -229,6 +258,12 @@ def _pr_repository_identity(url: str) -> tuple[str, str, str] | None:
     if (
         parsed.scheme.lower() != "https"
         or not parsed.hostname
+        or not _valid_hostname(parsed.hostname)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(char.isspace() for char in parsed.netloc)
         or len(parts) != 5
         or parts[3] != "pull"
         or not _repository_segment(parts[1])
@@ -279,15 +314,22 @@ def _configured_repository_identity(value: str) -> tuple[str, str, str] | None:
     return host, owner.lower(), repo.lower()
 
 
-def _pr_is_in_scope(team, pr) -> bool:
-    configured = team.project.github_repo
-    if not configured:
-        # The numeric gh inspection remains scoped by the configured checkout.
-        return True
-    return (
-        _pr_repository_identity(pr.url)
-        == _configured_repository_identity(configured)
-    )
+def _checkout_repository_identity(team, runner) -> tuple[str, str, str] | None:
+    configured = _configured_repository_identity(team.project.github_repo or "")
+    if configured is not None:
+        return configured
+    try:
+        remote = runner(
+            ["git", "remote", "get-url", team.project.remote],
+            cwd=team.project.repo,
+        )
+    except Exception:
+        return None
+    return _configured_repository_identity(str(remote).strip())
+
+
+def _pr_is_in_scope(configured, pr) -> bool:
+    return configured is not None and _pr_repository_identity(pr.url) == configured
 
 
 def _reconcile_open_pr(conn, team, obligation, *, runner) -> ReconcileResult:
@@ -299,20 +341,40 @@ def _reconcile_open_pr(conn, team, obligation, *, runner) -> ReconcileResult:
         return failed
     if action.status != "done":
         return _reschedule(conn, team, obligation)
-    number = _canonical_pr_number(action.provider_ref)
-    if number is None:
+    reference = _canonical_pr_reference(action.provider_ref)
+    if reference is None:
         return _block(
             conn,
             obligation,
             "open_pr action returned an invalid provider reference",
             evidence={"action_id": str(action.id)},
         )
+    configured_repository = _checkout_repository_identity(team, runner)
+    if configured_repository is None or (
+        reference.repository is not None
+        and reference.repository != configured_repository
+    ):
+        return _block(
+            conn,
+            obligation,
+            "open_pr provider reference does not match the configured repository",
+            evidence={"action_id": str(action.id)},
+        )
+    number = reference.number
     try:
         pr = inspect_pr(
             cwd=team.project.repo, pr_ref=str(number), runner=runner)
     except Exception:
         return _reschedule(conn, team, obligation)
-    if pr.number != number or pr.state == "UNKNOWN" or not _pr_is_in_scope(team, pr):
+    if (
+        pr.number != number
+        or pr.state == "UNKNOWN"
+        or not _pr_is_in_scope(configured_repository, pr)
+        or (
+            reference.repository is not None
+            and _pr_repository_identity(pr.url) != reference.repository
+        )
+    ):
         return _block(
             conn,
             obligation,
@@ -346,9 +408,10 @@ def _reconcile_open_pr(conn, team, obligation, *, runner) -> ReconcileResult:
 
 
 def _reconcile_merge(conn, team, obligation, *, runner) -> ReconcileResult:
-    number = _canonical_pr_number(obligation.provider_ref)
-    if number is None:
+    reference = _canonical_pr_reference(obligation.provider_ref)
+    if reference is None:
         return _block(conn, obligation, "obligation has no canonical PR number")
+    number = reference.number
 
     action = _linked_action(conn, obligation.action_id)
     if action is not None and action.type in {"ready_pr", "merge_pr"}:
@@ -358,12 +421,26 @@ def _reconcile_merge(conn, team, obligation, *, runner) -> ReconcileResult:
         if action.status in _ACTION_PENDING:
             return _reschedule(conn, team, obligation)
 
+    configured_repository = _checkout_repository_identity(team, runner)
+    if configured_repository is None or (
+        reference.repository is not None
+        and reference.repository != configured_repository
+    ):
+        return _block(conn, obligation, "configured repository identity is invalid")
     try:
         pr = inspect_pr(
             cwd=team.project.repo, pr_ref=str(number), runner=runner)
     except Exception:
         return _reschedule(conn, team, obligation)
-    if pr.number != number or pr.state == "UNKNOWN" or not _pr_is_in_scope(team, pr):
+    if (
+        pr.number != number
+        or pr.state == "UNKNOWN"
+        or not _pr_is_in_scope(configured_repository, pr)
+        or (
+            reference.repository is not None
+            and _pr_repository_identity(pr.url) != reference.repository
+        )
+    ):
         return _block(
             conn,
             obligation,
@@ -564,6 +641,21 @@ def _await_approval(
     action_type,
     policy_evidence,
 ) -> ReconcileResult:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM team_obligations WHERE id=%s FOR UPDATE",
+            (obligation.id,),
+        )
+        if cur.fetchone() is None:
+            raise ValueError(f"obligation not found: {obligation.id}")
+    current = store.get(conn, obligation.id)
+    if current is None:
+        raise ValueError(f"obligation not found: {obligation.id}")
+    obligation = current
+    if obligation.status not in {
+        "awaiting_pr", "awaiting_merge", "awaiting_approval",
+    }:
+        return _result(obligation)
     destination = _control_destination(team)
     if not destination:
         return _block(
@@ -580,7 +672,8 @@ def _await_approval(
         "pr": pr.number,
         "action_type": action_type,
     }
-    with conn.cursor() as cur:
+    canonical_risk = risk_for("notify")
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
             INSERT INTO actions
@@ -593,63 +686,51 @@ def _await_approval(
             (
                 obligation.request_id,
                 obligation.team_id,
-                risk_for("notify"),
+                canonical_risk,
                 destination,
                 key,
                 Jsonb(payload),
             ),
         )
-        inserted = cur.fetchone() is not None
+        inserted_row = cur.fetchone()
+        inserted = inserted_row is not None
+        if not inserted:
+            cur.execute(
+                """
+                SELECT team_id, type, risk, destination_ref,
+                       idempotency_key, payload
+                FROM actions
+                WHERE idempotency_key=%s
+                """,
+                (key,),
+            )
+            existing = cur.fetchone()
+            if existing is None or (
+                existing["team_id"] != obligation.team_id
+                or existing["type"] != "notify"
+                or existing["risk"] != canonical_risk
+                or existing["destination_ref"] != destination
+                or existing["idempotency_key"] != key
+                or dict(existing["payload"] or {}) != payload
+            ):
+                return _block(
+                    conn,
+                    obligation,
+                    f"idempotency collision for ownership approval {key}",
+                )
     evidence = {
         "approval_action": action_type,
         "approval_notice_key": key,
         "policy": policy_evidence,
     }
-    updated = _transition_to_approval(
+    updated = store.transition(
         conn,
-        obligation,
+        obligation.id,
+        to_status="awaiting_approval",
         reason=f"{action_type} automation is disabled",
         evidence=evidence,
     )
     return _result(updated, actions_proposed=int(inserted))
-
-
-def _transition_to_approval(conn, obligation, *, reason, evidence):
-    """Record the Task 6 approval edge absent from the Task 2 base map."""
-    if obligation.status == "awaiting_approval":
-        return obligation
-    with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            "SELECT status FROM team_obligations WHERE id=%s FOR UPDATE",
-            (obligation.id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            raise ValueError(f"obligation not found: {obligation.id}")
-        from_status = row["status"]
-        if from_status == "awaiting_approval":
-            return store.get(conn, obligation.id)
-        if from_status not in {"awaiting_pr", "awaiting_merge"}:
-            raise ValueError(
-                f"illegal ownership approval transition: {from_status} -> awaiting_approval")
-        cur.execute(
-            """
-            UPDATE team_obligations
-            SET status='awaiting_approval', evidence=evidence || %s,
-                blocked_reason=NULL, updated_at=clock_timestamp()
-            WHERE id=%s
-            """,
-            (Jsonb(evidence), obligation.id),
-        )
-        cur.execute(
-            """
-            INSERT INTO team_obligation_events
-              (obligation_id, from_status, to_status, reason, evidence)
-            VALUES (%s, %s, 'awaiting_approval', %s, %s)
-            """,
-            (obligation.id, from_status, reason, Jsonb(evidence)),
-        )
-    return store.get(conn, obligation.id)
 
 
 def _reconcile_deploy(conn, team, obligation, *, runner) -> ReconcileResult:
@@ -726,7 +807,14 @@ def _deployment_timed_out(obligation, minutes: int) -> bool:
     return elapsed.total_seconds() >= minutes * 60
 
 
-def _reconcile_smoke(conn, team, obligation, *, http_get) -> ReconcileResult:
+def _reconcile_smoke(
+    conn,
+    team,
+    obligation,
+    *,
+    http_get,
+    resolver,
+) -> ReconcileResult:
     merge_sha = str(obligation.evidence.get("merge_sha") or "")
     workflow_url = str(obligation.evidence.get("workflow_url") or "")
     if not _OBJECT_ID.fullmatch(merge_sha) or _validated_live_url(workflow_url) is None:
@@ -750,18 +838,20 @@ def _reconcile_smoke(conn, team, obligation, *, http_get) -> ReconcileResult:
     if get is None:  # pragma: no cover - exercised by live owner cycle
         import httpx
         get = httpx.get
+    resolve = resolver or _default_resolver
 
     checked_at = datetime.now(timezone.utc).isoformat()
     smoke: list[dict[str, Any]] = []
     failure = ""
     transient = False
     for url in urls:
-        try:
-            response = get(url, follow_redirects=True, timeout=15)
-            status = getattr(response, "status_code", None)
-        except Exception as exc:
-            failure = f"{url}: {_clean_error(exc)}"
-            transient = _is_transient_exception(exc)
+        response_url, status, error, transient = _request_smoke_url(
+            url,
+            get=get,
+            resolver=resolve,
+        )
+        if error:
+            failure = f"{url}: {error}"
             break
         if not isinstance(status, int) or isinstance(status, bool):
             failure = f"{url}: invalid HTTP status"
@@ -771,7 +861,7 @@ def _reconcile_smoke(conn, team, obligation, *, http_get) -> ReconcileResult:
             transient = status in {408, 425, 429} or status >= 500
             break
         smoke.append({
-            "url": url,
+            "url": response_url,
             "status": status,
             "workflow_url": str(obligation.evidence.get("workflow_url") or ""),
             "merge_sha": str(obligation.evidence.get("merge_sha") or ""),
@@ -811,19 +901,109 @@ def _reconcile_smoke(conn, team, obligation, *, http_get) -> ReconcileResult:
     return _reschedule(conn, team, updated)
 
 
+def _request_smoke_url(url: str, *, get, resolver):
+    original = urlsplit(url)
+    original_host = original.hostname.lower() if original.hostname else ""
+    current = url
+    visited: set[str] = set()
+    redirects = 0
+    while True:
+        validated = _validated_redirect_url(current, original_host)
+        if validated is None:
+            return current, None, "unsafe redirect URL", False
+        if validated in visited:
+            return validated, None, "redirect loop detected", False
+        visited.add(validated)
+        resolution_error = _validate_public_resolution(validated, resolver)
+        if resolution_error:
+            return validated, None, resolution_error, False
+        try:
+            response = get(validated, follow_redirects=False, timeout=15)
+        except Exception as exc:
+            return validated, None, _clean_error(exc), _is_transient_exception(exc)
+        status = getattr(response, "status_code", None)
+        if status not in _REDIRECT_STATUSES:
+            return validated, status, "", False
+        if redirects >= _MAX_REDIRECTS:
+            return validated, status, "too many redirects", False
+        headers = getattr(response, "headers", None)
+        location = headers.get("location") if headers is not None else None
+        if location is None and isinstance(headers, dict):
+            location = headers.get("Location")
+        if not isinstance(location, str) or not location:
+            return validated, status, "redirect response has no Location", False
+        if (
+            len(location) > _MAX_URL_LENGTH
+            or "\\" in location
+            or any(ord(char) < 32 or ord(char) == 127 for char in location)
+        ):
+            return validated, status, "unsafe redirect URL", False
+        current = urljoin(validated, location)
+        if _validated_redirect_url(current, original_host) is None:
+            return current, status, "unsafe redirect URL", False
+        redirects += 1
+
+
+def _default_resolver(hostname: str) -> list[str]:
+    records = socket.getaddrinfo(
+        hostname,
+        443,
+        type=socket.SOCK_STREAM,
+    )
+    return sorted({str(record[4][0]) for record in records})
+
+
+def _validate_public_resolution(url: str, resolver) -> str:
+    parsed = urlsplit(url)
+    hostname = parsed.hostname or ""
+    try:
+        literal = ipaddress.ip_address(hostname)
+        addresses = [str(literal)]
+    except ValueError:
+        try:
+            addresses = list(resolver(hostname))
+        except Exception as exc:
+            return f"host resolution failed: {_clean_error(exc)}"
+    if not addresses:
+        return "host resolution returned no addresses"
+    for value in addresses:
+        try:
+            address = ipaddress.ip_address(str(value))
+        except ValueError:
+            return "host resolution returned an invalid IP address"
+        if (
+            not address.is_global
+            or address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        ):
+            return f"host resolved to a non-public address: {address}"
+    return ""
+
+
 def _clean_error(exc: BaseException) -> str:
     text = " ".join(str(exc).split())
     return (text or exc.__class__.__name__)[:1000]
 
 
 def _is_transient_exception(exc: BaseException) -> bool:
-    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+    if isinstance(exc, TimeoutError):
         return True
+    if isinstance(exc, socket.gaierror):
+        return exc.errno == socket.EAI_AGAIN
+    if isinstance(exc, OSError):
+        return exc.errno in _TRANSIENT_ERRNOS
     try:
         import httpx
     except Exception:  # pragma: no cover
         return False
-    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    cause = exc.__cause__
+    return cause is not None and cause is not exc and _is_transient_exception(cause)
 
 
 def _valid_hostname(hostname: str) -> bool:
@@ -850,29 +1030,54 @@ def _validated_live_url(value) -> str | None:
         return None
     if (
         parsed.scheme.lower() != "https"
+        or len(text) > _MAX_URL_LENGTH
         or not parsed.hostname
         or not _valid_hostname(parsed.hostname)
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
+        or parsed.port not in {None, 443}
         or any(ord(char) < 32 or ord(char) == 127 for char in text)
-        or "\\" in parsed.path
+        or "\\" in text
         or not _decoded_path_is_safe(parsed.path)
     ):
         return None
-    return urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    hostname = parsed.hostname.lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return None
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    if parsed.port == 443:
+        host = f"{host}:443"
+    normalized_path = parsed.path.rstrip("/")
+    if parsed.path and not normalized_path:
+        normalized_path = "/"
+    return urlunsplit(("https", host, normalized_path, "", ""))
+
+
+def _validated_redirect_url(value, original_host: str) -> str | None:
+    validated = _validated_live_url(value)
+    if validated is None:
+        return None
+    parsed = urlsplit(validated)
+    if (parsed.hostname or "").lower() != original_host:
+        return None
+    return validated or None
 
 
 def _decoded_path_is_safe(path: str) -> bool:
-    if _BAD_PERCENT_ESCAPE.search(path):
+    if len(path) > _MAX_URL_LENGTH or _BAD_PERCENT_ESCAPE.search(path):
         return False
     decoded = path
-    for _ in range(4):
+    for _ in range(_MAX_DECODE_ROUNDS):
         next_value = unquote(decoded)
         if next_value == decoded:
             break
         decoded = next_value
+        if len(decoded) > _MAX_URL_LENGTH:
+            return False
+    else:
+        return False
     if (
         "\\" in decoded
         or any(ord(char) < 32 or ord(char) == 127 for char in decoded)

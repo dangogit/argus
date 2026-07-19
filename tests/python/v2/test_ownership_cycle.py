@@ -149,6 +149,41 @@ def test_cycle_filters_requested_team(conn, cfg_cycle):
     assert store.get(conn, disabled.id).status == "awaiting_pr"
 
 
+def test_cycle_nonreconcilable_rows_cannot_starve_due_work(conn, cfg_cycle):
+    cfg_cycle.team("dev").ownership.max_active_obligations = 1
+    waiting = _awaiting_pr(conn, fingerprint="cycle:waiting")
+    distractors = []
+    for index, status in enumerate(("open", "working", "blocked")):
+        item = store.upsert(
+            conn,
+            team_id="dev",
+            kind="code",
+            fingerprint=f"cycle:distractor:{status}",
+            title=f"Distractor {status}",
+            source_ref=f"test:{index}",
+            definition_of_done={"pr": True},
+        )
+        if status in {"working", "blocked"}:
+            item = store.transition(
+                conn, item.id, to_status="working", reason="started")
+        if status == "blocked":
+            item = store.transition(
+                conn, item.id, to_status="blocked", reason="not actionable")
+        distractors.append(item)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE team_obligations SET priority=100 "
+            "WHERE id = ANY(%s)",
+            ([item.id for item in distractors],),
+        )
+
+    result = cycle.run(
+        conn, cfg_cycle, runner=_runner, http_get=lambda *a, **k: None)
+
+    assert result.reconciled == 1
+    assert store.get(conn, waiting.id).status == "awaiting_merge"
+
+
 def test_cycle_requires_transactional_connection(pg_dsn, cfg_cycle):
     with psycopg.connect(pg_dsn, autocommit=True) as autocommit_conn:
         with pytest.raises(ValueError, match="autocommit=False"):

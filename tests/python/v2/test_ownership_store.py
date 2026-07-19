@@ -54,6 +54,12 @@ def test_upsert_is_idempotent(conn):
     )
 
     assert second.id == first.id
+    assert _events(conn, first.id) == [{
+        "from_status": None,
+        "to_status": "open",
+        "reason": "obligation opened",
+        "evidence": {},
+    }]
 
 
 def test_concurrent_upsert_returns_one_obligation(pg_dsn, conn):
@@ -81,6 +87,9 @@ def test_concurrent_upsert_returns_one_obligation(pg_dsn, conn):
             "SELECT count(*) FROM team_obligations WHERE fingerprint='sentry:race'"
         )
         assert cur.fetchone()[0] == 1
+    assert len(_events(conn, ids[0])) == 1
+    assert _events(conn, ids[0])[0]["from_status"] is None
+    assert _events(conn, ids[0])[0]["to_status"] == "open"
 
 
 def test_transition_records_event_and_terminal_timestamp(conn):
@@ -115,7 +124,7 @@ def test_transition_rejects_autocommit_without_mutation(pg_dsn, conn):
 
     assert store.get(conn, item.id).status == "open"
     assert store.get(conn, item.id).evidence == {}
-    assert _events(conn, item.id) == []
+    assert [event["to_status"] for event in _events(conn, item.id)] == ["open"]
 
 
 def test_illegal_transition_fails_closed(conn):
@@ -125,7 +134,7 @@ def test_illegal_transition_fails_closed(conn):
         store.transition(conn, item.id, to_status="done", reason="shortcut")
 
     assert store.get(conn, item.id).status == "open"
-    assert _events(conn, item.id) == []
+    assert [event["to_status"] for event in _events(conn, item.id)] == ["open"]
 
 
 @pytest.mark.parametrize("kind", ["code", "support", "maintenance"])
@@ -144,7 +153,7 @@ def test_obligation_cannot_complete_from_working(conn, kind):
 
     assert store.get(conn, item.id).status == "working"
     assert store.get(conn, item.id).evidence == {}
-    assert len(_events(conn, item.id)) == 1
+    assert len(_events(conn, item.id)) == 2
 
 
 def test_code_cannot_complete_from_awaiting_approval(conn):
@@ -167,7 +176,7 @@ def test_code_cannot_complete_from_awaiting_approval(conn):
 
     assert store.get(conn, item.id).status == "awaiting_approval"
     assert store.get(conn, item.id).evidence == {}
-    assert len(_events(conn, item.id)) == 1
+    assert len(_events(conn, item.id)) == 2
 
 
 def test_code_completes_from_verifying_with_evidence(conn):
@@ -207,7 +216,7 @@ def test_same_status_transition_is_idempotent_under_concurrency(pg_dsn, conn):
         statuses = list(pool.map(lambda _: start_work(), range(2)))
 
     assert statuses == ["working", "working"]
-    assert len(_events(conn, item.id)) == 1
+    assert len(_events(conn, item.id)) == 2
 
 
 def test_same_status_transition_records_new_reason_and_evidence(conn):
@@ -238,7 +247,7 @@ def test_same_status_transition_records_new_reason_and_evidence(conn):
     events = _events(conn, item.id)
     assert updated.evidence == {"request_id": "req-1", "worker_id": "worker-1"}
     assert repeated == updated
-    assert len(events) == 2
+    assert len(events) == 3
     assert events[-1] == {
         "from_status": "working",
         "to_status": "working",
@@ -281,8 +290,8 @@ def test_concurrent_same_status_updates_preserve_differing_events(pg_dsn, conn):
     events = _events(conn, item.id)
     current = store.get(conn, item.id)
     assert statuses == ["working", "working"]
-    assert len(events) == 3
-    assert {event["reason"] for event in events[1:]} == {
+    assert len(events) == 4
+    assert {event["reason"] for event in events[2:]} == {
         "worker heartbeat",
         "review attached",
     }
@@ -354,6 +363,26 @@ def test_list_due_filters_terminal_and_future_rows_and_orders_priority(conn):
     assert [item.id for item in store.list_due(conn, team_id="dev")] == [high.id, low.id]
     assert [item.id for item in store.list_due(conn, limit=1)] == [high.id]
     assert other_team.id in [item.id for item in store.list_due(conn)]
+
+
+def test_list_due_applies_status_filter_before_limit(conn):
+    blocked = _obligation(conn, fingerprint="status-filter:blocked")
+    waiting = _obligation(conn, fingerprint="status-filter:waiting")
+    store.transition(
+        conn, blocked.id, to_status="blocked", reason="manual investigation")
+    store.transition(conn, waiting.id, to_status="working", reason="started")
+    store.transition(
+        conn, waiting.id, to_status="awaiting_pr", reason="PR proposed")
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE team_obligations SET priority=100 WHERE id=%s",
+            (blocked.id,),
+        )
+
+    due = store.list_due(
+        conn, team_id="dev", statuses=("awaiting_pr",), limit=1)
+
+    assert [item.id for item in due] == [waiting.id]
 
 
 def test_link_request_action_and_increment_attempts(conn):

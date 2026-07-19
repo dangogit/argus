@@ -38,6 +38,8 @@ def upsert(
     source_ref: str | None,
     definition_of_done: dict[str, Any],
 ) -> Obligation:
+    if conn.autocommit:
+        raise ValueError("obligation upsert requires autocommit=False")
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
@@ -50,7 +52,16 @@ def upsert(
             (team_id, kind, fingerprint, title, source_ref, Jsonb(definition_of_done)),
         )
         row = cur.fetchone()
-        if row is None:
+        if row is not None:
+            cur.execute(
+                """
+                INSERT INTO team_obligation_events
+                  (obligation_id, from_status, to_status, reason, evidence)
+                VALUES (%s, NULL, 'open', 'obligation opened', '{}'::jsonb)
+                """,
+                (row["id"],),
+            )
+        else:
             cur.execute(
                 f"""
                 SELECT {_COLUMNS}
@@ -76,10 +87,22 @@ def list_due(
     conn: psycopg.Connection,
     *,
     team_id: str | None = None,
+    statuses: tuple[str, ...] | None = None,
     limit: int = 50,
 ) -> list[Obligation]:
     team_filter = "AND team_id=%s" if team_id is not None else ""
-    params: tuple[Any, ...] = (team_id, limit) if team_id is not None else (limit,)
+    status_filter = "AND status = ANY(%s)" if statuses is not None else ""
+    params: list[Any] = []
+    if team_id is not None:
+        params.append(team_id)
+    if statuses is not None:
+        if not statuses:
+            return []
+        unknown = set(statuses) - set(LEGAL_TRANSITIONS)
+        if unknown:
+            raise ValueError(f"unknown obligation statuses: {sorted(unknown)!r}")
+        params.append(list(statuses))
+    params.append(limit)
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
@@ -88,10 +111,11 @@ def list_due(
             WHERE status NOT IN ('done', 'failed')
               AND next_check_at <= clock_timestamp()
               {team_filter}
+              {status_filter}
             ORDER BY priority DESC, next_check_at, created_at, id
             LIMIT %s
             """,
-            params,
+            tuple(params),
         )
         return [Obligation(**row) for row in cur.fetchall()]
 
