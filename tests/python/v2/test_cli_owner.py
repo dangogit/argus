@@ -286,6 +286,51 @@ def test_owner_prove_reports_complete_policy_without_secrets_or_evidence(
         assert forbidden not in text
 
 
+def test_owner_prove_allows_code_only_team_with_vercel_deploy(
+    conn, pg_dsn, tmp_path, monkeypatch, capsys
+):
+    path = tmp_path / "owner-code-only.yaml"
+    path.write_text(
+        "company:\n"
+        "  name: c\n"
+        "  defaults: { engine: { engine: echo } }\n"
+        "teams:\n"
+        "  - name: tadam-agents\n"
+        "    autonomy:\n"
+        "      actions: { ready_pr: approval, merge_pr: approval, support_reply: approval }\n"
+        "    ownership:\n"
+        "      enabled: true\n"
+        "      code:\n"
+        "        allowed_base_branches: [staging]\n"
+        "        required_checks: [CI]\n"
+        "        deploy_provider: vercel\n"
+        "        deploy_project: tadam-agents\n"
+        "        deploy_scope: tadam-technology\n"
+        "        live_url: https://tadam-agents-git-staging-tadam-technology.vercel.app\n"
+        "      support: { enabled: false }\n"
+        "    project:\n"
+        "      repo: /repo/tadam-agents\n"
+        "      base_branch: staging\n"
+        "      github_repo: dangogit/tadam-agents\n"
+        "    channels: [ { type: cli, role: control, channel_id: local } ]\n"
+        "    roles: [ { name: developer, kind: builder, prompt: p } ]\n"
+        "    pipeline: { stages: [developer] }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ARGUS_CONFIG", str(path))
+
+    assert cli.main(["owner", "prove", "--team", "tadam-agents", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert payload["missing_prerequisites"] == []
+    assert payload["support"]["enabled"] is False
+    assert payload["support"]["ready"] is False
+    assert payload["code"]["deploy_provider"] == "vercel"
+    assert payload["code"]["deploy_project"] == "tadam-agents"
+    assert payload["code"]["deploy_scope"] == "tadam-technology"
+
+
 def test_owner_prove_is_read_only(conn, pg_dsn, tmp_path, monkeypatch):
     path = _config(tmp_path)
     monkeypatch.setenv("OWNER_SUPPORT_KEY", "secret")

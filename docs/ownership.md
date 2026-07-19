@@ -31,7 +31,7 @@ event to `team_obligation_events`.
 | `working` | Pipeline or domain work is active. | `awaiting_pr`, `awaiting_deploy`, `verifying`, `awaiting_approval`, `blocked`, `failed` |
 | `awaiting_pr` | Waiting for the linked `open_pr` action and canonical PR inspection. | `awaiting_merge`, `blocked`, `failed` |
 | `awaiting_merge` | PR exists and merge policy is being evaluated. | `awaiting_deploy`, `verifying`, `awaiting_approval`, `blocked`, `failed` |
-| `awaiting_deploy` | Exact merge commit is waiting for the configured workflow. | `verifying`, `blocked`, `failed` |
+| `awaiting_deploy` | Exact merge commit is waiting for the configured deployment provider. | `verifying`, `blocked`, `failed` |
 | `verifying` | Provider outcome or staging HTTP behavior is being checked. | `working`, `blocked`, `done`, `failed` |
 | `awaiting_approval` | A policy-controlled action needs an operator decision. | `working`, `awaiting_pr`, `awaiting_merge`, `awaiting_deploy`, `verifying`, `blocked`, `failed` |
 | `blocked` | Safe automatic progress is impossible. | `open`, `working`, `awaiting_approval`, `failed` |
@@ -44,8 +44,8 @@ and `failed` are terminal. A blocked obligation is not automatically retried.
 Definition of done is kind-specific:
 
 - Code and maintenance work require a real PR in the configured repository, a
-  canonical merge commit, a successful run of the exact configured staging
-  workflow for that commit, and 2xx responses from every configured smoke path.
+  canonical merge commit, a successful GitHub workflow or Vercel deployment
+  for that exact commit, and 2xx responses from every configured smoke path.
 - Support requires the configured transport calls to return and a provider
   reply reference to be recorded. If delivery is ambiguous, Argus blocks
   because the provider cannot prove exactly-once delivery.
@@ -54,11 +54,14 @@ Definition of done is kind-specific:
 
 ## Configuration And Gates
 
-All ownership switches default off:
+Team ownership and automatic actions default off. Support coverage defaults on
+inside an enabled ownership policy so existing support teams keep their inbox:
 
 - `ownership.enabled: false`
 - `ownership.code.auto_ready: false`
 - `ownership.code.auto_merge: false`
+- `ownership.code.deploy_provider: github`
+- `ownership.support.enabled: true`
 - `ownership.support.auto_send_low_risk: false`
 - `ownership.maintenance.enabled: false`
 
@@ -119,6 +122,30 @@ merge targets. Automatic ready or merge also requires:
 Mandatory blocked paths include CI workflows, env and credential files,
 migrations, auth, billing, payments, cloud functions, package manifests and
 lockfiles, and Firebase rules. Operators may add stricter `blocked_globs`.
+
+For a project deployed by Vercel Git integration, replace `deploy_workflow`
+with an exact project and scope. Argus queries Vercel by the immutable merge
+commit SHA and configured base branch, then verifies the returned project,
+scope, commit metadata, and deployment URL before smoke testing:
+
+```yaml
+ownership:
+  enabled: true
+  code:
+    allowed_base_branches: [staging]
+    required_checks: [CI]
+    deploy_provider: vercel
+    deploy_project: app
+    deploy_scope: company-team
+    live_url: https://app-git-staging-company-team.vercel.app
+    smoke_paths: [/]
+  support:
+    enabled: false
+```
+
+Set `ownership.support.enabled: false` only when that team has no support
+inbox. This removes the support source prerequisite and prevents support
+obligations or automatic replies. It does not weaken code ownership gates.
 
 Low-risk support auto-send additionally requires exactly one team-bound Apps
 Script support source with a URL and secret, `support_reply: auto`, confidence

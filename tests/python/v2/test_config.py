@@ -32,6 +32,8 @@ def test_ownership_defaults_are_disabled():
     assert team.ownership.enabled is False
     assert team.ownership.code.auto_ready is False
     assert team.ownership.code.auto_merge is False
+    assert team.ownership.code.deploy_provider == "github"
+    assert team.ownership.support.enabled is True
     assert team.ownership.support.auto_send_low_risk is False
     assert team.ownership.maintenance.enabled is False
 
@@ -73,12 +75,43 @@ teams:
     assert team.ownership.support.min_confidence == 0.92
 
 
+def test_vercel_ownership_policy_loads_exact_project_and_scope():
+    ownership = _validate_ownership({
+        "code": {
+            "deploy_provider": "vercel",
+            "deploy_project": "tadam-agents",
+            "deploy_scope": "tadam-technology",
+            "live_url": "https://tadam-agents-git-staging-tadam-technology.vercel.app",
+        },
+        "support": {"enabled": False},
+    })
+
+    assert ownership.code.deploy_provider == "vercel"
+    assert ownership.code.deploy_project == "tadam-agents"
+    assert ownership.code.deploy_scope == "tadam-technology"
+    assert ownership.support.enabled is False
+
+
 @pytest.mark.parametrize("ownership", [
     {"support": {"min_confidence": -0.01}},
     {"support": {"min_confidence": 1.01}},
     {"code": {"auto_merge": True}},
     {"code": {"auto_merge": True, "allowed_base_branches": ["main"]}},
     {"code": {"deploy_workflow": "Deploy"}},
+    {"code": {"deploy_provider": "vercel"}},
+    {"code": {
+        "deploy_provider": "vercel",
+        "deploy_project": "-unsafe-option",
+        "deploy_scope": "team",
+        "live_url": "https://example.test",
+    }},
+    {"code": {
+        "deploy_provider": "vercel",
+        "deploy_project": "project",
+        "deploy_scope": "team",
+        "deploy_workflow": "Deploy",
+        "live_url": "https://example.test",
+    }},
 ])
 def test_invalid_ownership_policy_is_rejected(ownership):
     with pytest.raises(ValidationError):

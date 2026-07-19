@@ -72,6 +72,23 @@ def test_low_risk_known_answer_can_auto_send(support_team):
     assert decision.allowed is True
 
 
+def test_disabled_support_ownership_never_auto_sends(support_team):
+    _cfg, team, _source = support_team
+    team.ownership.support.enabled = False
+    decision = _decision(confidence=0.99)
+
+    result = support.classify_for_auto_send(
+        team,
+        decision,
+        "How do I open my workspace?",
+        sender="customer@example.com",
+        subject="Workspace help",
+    )
+
+    assert result.allowed is False
+    assert result.reason == "support ownership is disabled"
+
+
 @pytest.mark.parametrize("field,value", [
     ("raw_thread", "Please r%65fund this"),
     ("raw_thread", "I need a pass-word reset"),

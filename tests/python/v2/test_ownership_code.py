@@ -46,6 +46,7 @@ def cfg_ownership(tmp_path):
         "        deployment_timeout_minutes: 30\n"
         "    project:\n"
         "      repo: /repo\n"
+        "      base_branch: staging\n"
         "      github_repo: acme/luma\n"
         "      work_branch_prefix: argus\n"
         "    channels: [ { type: fake, role: control, channel_id: owner } ]\n"
@@ -88,6 +89,11 @@ class Runner:
             })
         if argv[:3] == ["gh", "run", "list"]:
             return json.dumps(self.deploy)
+        if argv[:2] == ["vercel", "list"]:
+            return json.dumps({
+                "contextName": "tadam-technology",
+                "deployments": self.deploy,
+            })
         raise AssertionError(f"unexpected command: {argv}")
 
 
@@ -648,6 +654,44 @@ def test_successful_workflow_moves_to_verifying(conn, cfg_ownership):
             "--commit", MERGE_SHA, "--json",
             "databaseId,status,conclusion,url,headSha", "--limit", "10",
         ], "/repo")
+    ]
+
+
+def test_successful_vercel_deploy_moves_to_verifying(conn, cfg_ownership):
+    policy = cfg_ownership.team("dev").ownership.code
+    policy.deploy_provider = "vercel"
+    policy.deploy_workflow = None
+    policy.deploy_project = "tadam-agents"
+    policy.deploy_scope = "tadam-technology"
+    item = _item(conn, status="awaiting_deploy")
+    deployment_url = "https://tadam-agents-abc-tadam-technology.vercel.app"
+    runner = Runner(deploy=[{
+        "name": "tadam-agents",
+        "url": deployment_url.removeprefix("https://"),
+        "state": "READY",
+        "createdAt": 1783418164414,
+        "meta": {
+            "githubCommitSha": MERGE_SHA,
+            "githubCommitRef": "staging",
+        },
+    }])
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=runner, http_get=lambda *a, **k: None)
+
+    updated = store.get(conn, item.id)
+    assert result.status == "verifying"
+    assert updated.evidence["deploy_provider"] == "vercel"
+    assert updated.evidence["deployment_url"] == deployment_url
+    assert updated.evidence["workflow_url"] == deployment_url
+    assert [call for call in runner.calls if call[0][:2] == ["vercel", "list"]] == [
+        ([
+            "vercel", "list", "tadam-agents",
+            "--scope", "tadam-technology",
+            "--meta", f"githubCommitSha={MERGE_SHA}",
+            "--meta", "githubCommitRef=staging",
+            "--format", "json", "--yes",
+        ], "/repo"),
     ]
 
 
