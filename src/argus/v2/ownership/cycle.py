@@ -33,7 +33,7 @@ def run(
     *,
     team_id=None,
     runner=None,
-    http_get=None,
+    http_get: code.PinnedHTTPGet | None = None,
     resolver=None,
 ) -> CycleResult:
     if conn.autocommit:

@@ -9,7 +9,7 @@ import socket
 import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 import psycopg
@@ -84,6 +84,22 @@ class _HTTPResponse:
     headers: dict[str, str]
 
 
+class PinnedHTTPGet(Protocol):
+    """One-hop verifier that must use the supplied IP, TLS name, and Host."""
+
+    def __call__(
+        self,
+        url: str,
+        *,
+        connect_ip: str,
+        server_hostname: str,
+        host_header: str,
+        follow_redirects: bool,
+        trust_env: bool,
+        timeout: float,
+    ) -> Any: ...
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def __init__(
         self,
@@ -120,7 +136,7 @@ def reconcile(
     obligation,
     *,
     runner,
-    http_get,
+    http_get: PinnedHTTPGet | None,
     resolver=None,
 ) -> ReconcileResult:
     """Advance one code obligation by one externally observable boundary."""
@@ -872,13 +888,7 @@ def _reconcile_smoke(
             return _block(conn, obligation, f"unsafe smoke path: {path!r}")
         urls.append(url)
 
-    if http_get is not None:
-        return _block(
-            conn,
-            obligation,
-            "custom HTTP clients cannot satisfy pinned smoke verification",
-        )
-    get = _pinned_https_get
+    get = http_get or _pinned_https_get
     resolve = resolver or _default_resolver
 
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -961,10 +971,17 @@ def _request_smoke_url(url: str, *, get, resolver):
         )
         if resolution_error:
             return validated, None, resolution_error, False
+        parsed = urlsplit(validated)
+        server_hostname = parsed.hostname or ""
+        host_header = _host_header(parsed)
         try:
             response = get(
                 validated,
                 connect_ip=addresses[0],
+                server_hostname=server_hostname,
+                host_header=host_header,
+                follow_redirects=False,
+                trust_env=False,
                 timeout=15,
             )
         except Exception as exc:
@@ -1038,15 +1055,18 @@ def _pinned_https_get(
     url: str,
     *,
     connect_ip: str,
+    server_hostname: str,
+    host_header: str,
+    follow_redirects: bool,
+    trust_env: bool,
     timeout: float,
 ) -> _HTTPResponse:
     parsed = urlsplit(url)
     hostname = parsed.hostname or ""
-    host_header = hostname
-    if ":" in hostname:
-        host_header = f"[{hostname}]"
-    if parsed.port == 443:
-        host_header = f"{host_header}:443"
+    if server_hostname != hostname or host_header != _host_header(parsed):
+        raise ValueError("pinned HTTPS connection metadata does not match URL")
+    if follow_redirects or trust_env:
+        raise ValueError("pinned HTTPS requests cannot use redirects or environment proxies")
     target = parsed.path or "/"
     connection = _PinnedHTTPSConnection(
         hostname,
@@ -1069,6 +1089,14 @@ def _pinned_https_get(
         return _HTTPResponse(status_code=response.status, headers=headers)
     finally:
         connection.close()
+
+
+def _host_header(parsed) -> str:
+    hostname = parsed.hostname or ""
+    header = f"[{hostname}]" if ":" in hostname else hostname
+    if parsed.port == 443:
+        header = f"{header}:443"
+    return header
 
 
 def _clean_error(exc: BaseException) -> str:
