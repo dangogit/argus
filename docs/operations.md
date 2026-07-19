@@ -54,8 +54,14 @@ argus owner cycle --team TEAM --json
 
 `owner prove` checks policy wiring, not runtime dependencies. Pair it with
 `argus doctor --deep --live --json`. A successful cycle may report blocked
-obligations and still exit `0`; inspect the JSON counts and blocked list. See
-[Persistent Team Ownership](ownership.md) for proof and recovery rules.
+obligations and still exit `0`. Its `blocked` field counts obligations newly
+blocked during that cycle. Inspect all blocked obligations with:
+
+```bash
+argus owner list --team TEAM --status blocked --json
+```
+
+See [Persistent Team Ownership](ownership.md) for proof and recovery rules.
 
 `retro` runs team and company learning. Use these commands for manual checks:
 

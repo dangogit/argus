@@ -201,29 +201,26 @@ argus actions REQUEST_ID
 argus owner prove --team app --json
 ```
 
-Then correct the recorded cause at its real boundary. Examples are restoring a
-required check, fixing a failed staging workflow, correcting a support source,
-or approving a pending nonce with `argus approve NONCE`. Run a new cycle only
-after the cause is corrected:
+Correcting the recorded cause does not resume the blocked row. There is
+intentionally no generic `owner retry` or `owner unblock` command, and blocked
+obligations are not selected by `owner cycle`. Do not edit obligation rows
+directly, because that bypasses the append-only event trail and legal transition
+checks.
 
-```bash
-argus owner cycle --team app --json
-```
-
-There is intentionally no generic `owner retry` or `owner unblock` command.
-Blocked obligations are not selected by the cycle. Use the supported domain
-flow to produce fresh evidence or a fresh source item. Do not edit obligation
-rows directly, because that bypasses the append-only event trail and legal
-transition checks.
+Use only a domain flow that already implements a legal transition. A successful
+explicit support send through the normal support flow can reconcile its matching
+obligation. An approval nonce applies to an `awaiting_approval` obligation, not
+a blocked one. Blocked code or deploy obligations currently require operator
+escalation and a genuinely new source item. They cannot resume until a public
+retry or unblock flow exists.
 
 For an ambiguous support delivery, first inspect the provider thread. Never run
 `argus support reply` or the action again merely because Argus timed out. If the
-reply exists, leave the thread alone and use the normal support reconciliation
-path so the observed provider reference closes the matching obligation. The
-current public CLI does not expose a provider-only reconcile command, so keep
-the obligation blocked and escalate if that integration path is unavailable.
-If the reply does not exist, obtain explicit operator authorization before
-sending a new reply. The provider transport does not offer an exactly-once
+reply exists, leave the thread alone. The current public CLI does not expose a
+provider-only reconcile command, so the obligation remains blocked and requires
+operator escalation. If provider inspection proves the reply does not exist,
+obtain explicit operator authorization before sending a new reply through the
+normal support flow. The provider transport does not offer an exactly-once
 guarantee.
 
 To prove a customer reply, verify the exact thread in the provider and confirm
