@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import errno
+import http.client
 import ipaddress
 import re
 import socket
+import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -74,6 +76,42 @@ class _Action:
 class _PRReference:
     number: int
     repository: tuple[str, str, str] | None
+
+
+@dataclass(frozen=True)
+class _HTTPResponse:
+    status_code: int
+    headers: dict[str, str]
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(
+        self,
+        host: str,
+        *,
+        connect_ip: str,
+        context: ssl.SSLContext,
+        timeout: float,
+    ) -> None:
+        super().__init__(host, port=443, context=context, timeout=timeout)
+        self._connect_ip = connect_ip
+
+    def connect(self) -> None:
+        address = ipaddress.ip_address(self._connect_ip)
+        family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+        raw_socket = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            raw_socket.settimeout(self.timeout)
+            if self.source_address:
+                raw_socket.bind(self.source_address)
+            raw_socket.connect((str(address), self.port))
+            self.sock = self._context.wrap_socket(
+                raw_socket,
+                server_hostname=self.host,
+            )
+        except BaseException:
+            raw_socket.close()
+            raise
 
 
 def reconcile(
@@ -834,10 +872,13 @@ def _reconcile_smoke(
             return _block(conn, obligation, f"unsafe smoke path: {path!r}")
         urls.append(url)
 
-    get = http_get
-    if get is None:  # pragma: no cover - exercised by live owner cycle
-        import httpx
-        get = httpx.get
+    if http_get is not None:
+        return _block(
+            conn,
+            obligation,
+            "custom HTTP clients cannot satisfy pinned smoke verification",
+        )
+    get = _pinned_https_get
     resolve = resolver or _default_resolver
 
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -914,11 +955,18 @@ def _request_smoke_url(url: str, *, get, resolver):
         if validated in visited:
             return validated, None, "redirect loop detected", False
         visited.add(validated)
-        resolution_error = _validate_public_resolution(validated, resolver)
+        addresses, resolution_error = _resolve_public_addresses(
+            validated,
+            resolver,
+        )
         if resolution_error:
             return validated, None, resolution_error, False
         try:
-            response = get(validated, follow_redirects=False, timeout=15)
+            response = get(
+                validated,
+                connect_ip=addresses[0],
+                timeout=15,
+            )
         except Exception as exc:
             return validated, None, _clean_error(exc), _is_transient_exception(exc)
         status = getattr(response, "status_code", None)
@@ -953,7 +1001,7 @@ def _default_resolver(hostname: str) -> list[str]:
     return sorted({str(record[4][0]) for record in records})
 
 
-def _validate_public_resolution(url: str, resolver) -> str:
+def _resolve_public_addresses(url: str, resolver) -> tuple[list[str], str]:
     parsed = urlsplit(url)
     hostname = parsed.hostname or ""
     try:
@@ -963,14 +1011,15 @@ def _validate_public_resolution(url: str, resolver) -> str:
         try:
             addresses = list(resolver(hostname))
         except Exception as exc:
-            return f"host resolution failed: {_clean_error(exc)}"
+            return [], f"host resolution failed: {_clean_error(exc)}"
     if not addresses:
-        return "host resolution returned no addresses"
+        return [], "host resolution returned no addresses"
+    canonical: list[str] = []
     for value in addresses:
         try:
             address = ipaddress.ip_address(str(value))
         except ValueError:
-            return "host resolution returned an invalid IP address"
+            return [], "host resolution returned an invalid IP address"
         if (
             not address.is_global
             or address.is_private
@@ -980,8 +1029,46 @@ def _validate_public_resolution(url: str, resolver) -> str:
             or address.is_reserved
             or address.is_unspecified
         ):
-            return f"host resolved to a non-public address: {address}"
-    return ""
+            return [], f"host resolved to a non-public address: {address}"
+        canonical.append(str(address))
+    return sorted(set(canonical)), ""
+
+
+def _pinned_https_get(
+    url: str,
+    *,
+    connect_ip: str,
+    timeout: float,
+) -> _HTTPResponse:
+    parsed = urlsplit(url)
+    hostname = parsed.hostname or ""
+    host_header = hostname
+    if ":" in hostname:
+        host_header = f"[{hostname}]"
+    if parsed.port == 443:
+        host_header = f"{host_header}:443"
+    target = parsed.path or "/"
+    connection = _PinnedHTTPSConnection(
+        hostname,
+        connect_ip=connect_ip,
+        context=ssl.create_default_context(),
+        timeout=timeout,
+    )
+    try:
+        connection.request(
+            "GET",
+            target,
+            headers={"Host": host_header, "Accept": "*/*"},
+        )
+        response = connection.getresponse()
+        headers = {
+            str(name).lower(): str(value)
+            for name, value in response.getheaders()
+        }
+        response.read(65536)
+        return _HTTPResponse(status_code=response.status, headers=headers)
+    finally:
+        connection.close()
 
 
 def _clean_error(exc: BaseException) -> str:

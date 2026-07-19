@@ -180,7 +180,7 @@ def _event_statuses(conn, obligation_id):
 
 
 def test_happy_path_records_only_canonical_lifecycle_transitions(
-        conn, cfg_ownership):
+        conn, cfg_ownership, monkeypatch):
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -248,9 +248,11 @@ def test_happy_path_records_only_canonical_lifecycle_transitions(
     code.reconcile(
         conn, cfg_ownership, store.get(conn, item.id), runner=runner,
         http_get=lambda *a, **k: None)
+    monkeypatch.setattr(
+        code, "_pinned_https_get", lambda *a, **k: Response(200))
     code.reconcile(
         conn, cfg_ownership, store.get(conn, item.id), runner=runner,
-        http_get=lambda *a, **k: Response(200), resolver=_public_resolver)
+        http_get=None, resolver=_public_resolver)
 
     assert _event_statuses(conn, item.id) == [
         "open", "working", "awaiting_pr", "awaiting_merge",
@@ -602,7 +604,7 @@ def test_successful_workflow_moves_to_verifying(conn, cfg_ownership):
     ]
 
 
-def test_2xx_smoke_completes_obligation(conn, cfg_ownership):
+def test_2xx_smoke_completes_obligation(conn, cfg_ownership, monkeypatch):
     item = _item(conn, status="verifying")
     calls = []
 
@@ -610,8 +612,10 @@ def test_2xx_smoke_completes_obligation(conn, cfg_ownership):
         calls.append((url, kwargs))
         return Response(204 if url.endswith("/health") else 200)
 
+    monkeypatch.setattr(code, "_pinned_https_get", http_get)
+
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver)
 
     updated = store.get(conn, item.id)
@@ -620,9 +624,9 @@ def test_2xx_smoke_completes_obligation(conn, cfg_ownership):
     assert updated.completed_at is not None
     assert calls == [
         ("https://staging.example.com/", {
-            "follow_redirects": False, "timeout": 15}),
+            "connect_ip": PUBLIC_IP, "timeout": 15}),
         ("https://staging.example.com/health", {
-            "follow_redirects": False, "timeout": 15}),
+            "connect_ip": PUBLIC_IP, "timeout": 15}),
     ]
     assert [row["status"] for row in updated.evidence["smoke"]] == [200, 204]
     assert all(row["workflow_url"] == RUN_URL for row in updated.evidence["smoke"])
@@ -674,18 +678,20 @@ def test_deployment_timeout_uses_original_deploy_boundary(
     assert RUN_URL in store.get(conn, item.id).blocked_reason
 
 
-def test_smoke_failure_retries_then_blocks(conn, cfg_ownership):
+def test_smoke_failure_retries_then_blocks(conn, cfg_ownership, monkeypatch):
     item = _item(conn, status="verifying")
 
     def unavailable(*args, **kwargs):
         raise TimeoutError("staging timed out")
 
+    monkeypatch.setattr(code, "_pinned_https_get", unavailable)
+
     first = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=unavailable,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver)
     after_first = store.get(conn, item.id)
     second = code.reconcile(
-        conn, cfg_ownership, after_first, runner=Runner(), http_get=unavailable,
+        conn, cfg_ownership, after_first, runner=Runner(), http_get=None,
         resolver=_public_resolver)
     updated = store.get(conn, item.id)
 
@@ -736,7 +742,8 @@ def test_smoke_rejects_unsafe_live_url_without_request(
     assert store.get(conn, item.id).status == "blocked"
 
 
-def test_smoke_follows_only_validated_same_host_redirects(conn, cfg_ownership):
+def test_smoke_follows_only_validated_same_host_redirects(
+        conn, cfg_ownership, monkeypatch):
     cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
     item = _item(conn, status="verifying")
     calls = []
@@ -747,17 +754,19 @@ def test_smoke_follows_only_validated_same_host_redirects(conn, cfg_ownership):
             return Response(302, {"location": "/ready"})
         return Response(200)
 
+    monkeypatch.setattr(code, "_pinned_https_get", http_get)
+
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver,
     )
 
     assert result.completed == 1
     assert calls == [
         ("https://staging.example.com/", {
-            "follow_redirects": False, "timeout": 15}),
+            "connect_ip": PUBLIC_IP, "timeout": 15}),
         ("https://staging.example.com/ready", {
-            "follow_redirects": False, "timeout": 15}),
+            "connect_ip": PUBLIC_IP, "timeout": 15}),
     ]
 
 
@@ -772,7 +781,7 @@ def test_smoke_follows_only_validated_same_host_redirects(conn, cfg_ownership):
     ],
 )
 def test_smoke_rejects_unsafe_redirect_before_request(
-        conn, cfg_ownership, location):
+        conn, cfg_ownership, location, monkeypatch):
     cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
     item = _item(conn, status="verifying")
     calls = []
@@ -781,8 +790,10 @@ def test_smoke_rejects_unsafe_redirect_before_request(
         calls.append(url)
         return Response(302, {"location": location})
 
+    monkeypatch.setattr(code, "_pinned_https_get", http_get)
+
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver,
     )
 
@@ -796,7 +807,7 @@ def test_smoke_rejects_private_resolution_before_request(conn, cfg_ownership):
 
     result = code.reconcile(
         conn, cfg_ownership, item, runner=Runner(),
-        http_get=lambda *a, **k: pytest.fail("private host must not be requested"),
+        http_get=None,
         resolver=lambda host: ["127.0.0.1"],
     )
 
@@ -819,14 +830,15 @@ def test_smoke_rejects_resolution_failure_or_invalid_address_before_request(
 
     result = code.reconcile(
         conn, cfg_ownership, item, runner=Runner(),
-        http_get=lambda *a, **k: pytest.fail("invalid host must not be requested"),
+        http_get=None,
         resolver=resolver,
     )
 
     assert result.blocked == 1
 
 
-def test_smoke_revalidates_dns_before_each_redirect_hop(conn, cfg_ownership):
+def test_smoke_revalidates_dns_before_each_redirect_hop(
+        conn, cfg_ownership, monkeypatch):
     cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
     item = _item(conn, status="verifying")
     resolutions = iter([[PUBLIC_IP], ["169.254.169.254"]])
@@ -836,8 +848,10 @@ def test_smoke_revalidates_dns_before_each_redirect_hop(conn, cfg_ownership):
         calls.append(url)
         return Response(302, {"location": "/ready"})
 
+    monkeypatch.setattr(code, "_pinned_https_get", http_get)
+
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=lambda host: next(resolutions),
     )
 
@@ -846,20 +860,22 @@ def test_smoke_revalidates_dns_before_each_redirect_hop(conn, cfg_ownership):
 
 
 @pytest.mark.parametrize("headers", [{}, {"location": ""}])
-def test_smoke_redirect_requires_location(conn, cfg_ownership, headers):
+def test_smoke_redirect_requires_location(
+        conn, cfg_ownership, headers, monkeypatch):
     cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
     item = _item(conn, status="verifying")
 
+    monkeypatch.setattr(
+        code, "_pinned_https_get", lambda *a, **k: Response(302, headers))
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(),
-        http_get=lambda *a, **k: Response(302, headers),
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver,
     )
 
     assert result.blocked == 1
 
 
-def test_smoke_rejects_redirect_loop(conn, cfg_ownership):
+def test_smoke_rejects_redirect_loop(conn, cfg_ownership, monkeypatch):
     cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
     item = _item(conn, status="verifying")
     calls = []
@@ -868,8 +884,10 @@ def test_smoke_rejects_redirect_loop(conn, cfg_ownership):
         calls.append(url)
         return Response(302, {"location": "/"})
 
+    monkeypatch.setattr(code, "_pinned_https_get", http_get)
+
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver,
     )
 
@@ -878,7 +896,7 @@ def test_smoke_rejects_redirect_loop(conn, cfg_ownership):
 
 
 def test_smoke_rejects_more_than_five_redirects_without_requesting_sixth_hop(
-        conn, cfg_ownership):
+        conn, cfg_ownership, monkeypatch):
     cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
     item = _item(conn, status="verifying")
     calls = []
@@ -888,8 +906,10 @@ def test_smoke_rejects_more_than_five_redirects_without_requesting_sixth_hop(
         number = len(calls)
         return Response(302, {"location": f"/hop-{number}"})
 
+    monkeypatch.setattr(code, "_pinned_https_get", http_get)
+
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=http_get,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver,
     )
 
@@ -931,15 +951,17 @@ def test_smoke_rejects_deeply_percent_encoded_traversal(conn, cfg_ownership):
     ],
 )
 def test_smoke_classifies_only_narrow_network_errors_as_transient(
-        conn, cfg_ownership, error, transient):
+        conn, cfg_ownership, error, transient, monkeypatch):
     cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
     item = _item(conn, status="verifying")
 
     def fail(*args, **kwargs):
         raise error
 
+    monkeypatch.setattr(code, "_pinned_https_get", fail)
+
     result = code.reconcile(
-        conn, cfg_ownership, item, runner=Runner(), http_get=fail,
+        conn, cfg_ownership, item, runner=Runner(), http_get=None,
         resolver=_public_resolver,
     )
 
@@ -947,3 +969,127 @@ def test_smoke_classifies_only_narrow_network_errors_as_transient(
     assert updated.evidence["smoke_transient"] is transient
     assert result.rescheduled == int(transient)
     assert result.blocked == int(not transient)
+
+
+def test_smoke_rejects_custom_http_get_before_it_can_bypass_pinning(
+        conn, cfg_ownership):
+    cfg_ownership.team("dev").ownership.code.smoke_paths = ["/"]
+    item = _item(conn, status="verifying")
+    called = False
+
+    def unsafe_get(*args, **kwargs):
+        nonlocal called
+        called = True
+        return Response(200)
+
+    result = code.reconcile(
+        conn, cfg_ownership, item, runner=Runner(), http_get=unsafe_get,
+        resolver=_public_resolver,
+    )
+
+    assert result.blocked == 1
+    assert called is False
+    assert "custom HTTP clients" in store.get(conn, item.id).blocked_reason
+
+
+def test_pinned_https_connection_uses_validated_ip_and_original_tls_name(
+        monkeypatch):
+    calls = {}
+    tls_socket = object()
+
+    class RawSocket:
+        def settimeout(self, timeout):
+            calls["timeout"] = timeout
+
+        def connect(self, address):
+            calls["connect"] = address
+
+    raw_socket = RawSocket()
+
+    def create_socket(family, socket_type):
+        calls["socket"] = (family, socket_type)
+        return raw_socket
+
+    class TLSContext:
+        verify_mode = ssl.CERT_REQUIRED
+        check_hostname = True
+
+        def wrap_socket(self, sock, *, server_hostname):
+            calls["tls"] = (sock, server_hostname)
+            return tls_socket
+
+    monkeypatch.setattr(code.socket, "socket", create_socket)
+    monkeypatch.setattr(
+        code.socket,
+        "getaddrinfo",
+        lambda *a, **k: pytest.fail("pinned connection must not resolve again"),
+    )
+    connection = code._PinnedHTTPSConnection(
+        "staging.example.com",
+        connect_ip=PUBLIC_IP,
+        context=TLSContext(),
+        timeout=15,
+    )
+
+    connection.connect()
+
+    assert calls == {
+        "socket": (socket.AF_INET, socket.SOCK_STREAM),
+        "timeout": 15,
+        "connect": (PUBLIC_IP, 443),
+        "tls": (raw_socket, "staging.example.com"),
+    }
+    assert connection.sock is tls_socket
+
+
+def test_pinned_https_get_preserves_host_and_ignores_environment_proxy(
+        monkeypatch):
+    calls = {}
+
+    class RawResponse:
+        status = 204
+
+        def getheaders(self):
+            return [("Location", "/ready")]
+
+        def read(self, size):
+            calls["read"] = size
+            return b""
+
+    class Connection:
+        def __init__(self, host, *, connect_ip, context, timeout):
+            calls["init"] = (host, connect_ip, context, timeout)
+
+        def request(self, method, target, *, headers):
+            calls["request"] = (method, target, headers)
+
+        def getresponse(self):
+            return RawResponse()
+
+        def close(self):
+            calls["closed"] = True
+
+    tls_context = object()
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setattr(code.ssl, "create_default_context", lambda: tls_context)
+    monkeypatch.setattr(code, "_PinnedHTTPSConnection", Connection)
+
+    response = code._pinned_https_get(
+        "https://staging.example.com/health",
+        connect_ip=PUBLIC_IP,
+        timeout=15,
+    )
+
+    assert response.status_code == 204
+    assert response.headers == {"location": "/ready"}
+    assert calls == {
+        "init": ("staging.example.com", PUBLIC_IP, tls_context, 15),
+        "request": (
+            "GET",
+            "/health",
+            {"Host": "staging.example.com", "Accept": "*/*"},
+        ),
+        "read": 65536,
+        "closed": True,
+    }
