@@ -1,4 +1,4 @@
-"""Close code obligations only after PR, deploy, and HTTP proof."""
+"""Close code-producing obligations only after PR, deploy, and HTTP proof."""
 from __future__ import annotations
 
 import errno
@@ -139,13 +139,15 @@ def reconcile(
     http_get: PinnedHTTPGet | None,
     resolver=None,
 ) -> ReconcileResult:
-    """Advance one code obligation by one externally observable boundary."""
+    """Advance one code-producing obligation by one observable boundary."""
     if conn.autocommit:
         raise ValueError("ownership reconciliation requires autocommit=False")
     current = store.get(conn, obligation.id)
     if current is None:
         raise ValueError(f"obligation not found: {obligation.id}")
-    if current.kind != "code" or current.status in {"done", "failed"}:
+    if current.kind not in {"code", "maintenance"} or current.status in {
+        "done", "failed",
+    }:
         return _result(current)
 
     try:

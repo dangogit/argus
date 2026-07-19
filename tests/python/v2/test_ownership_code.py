@@ -97,12 +97,19 @@ class Response:
     headers: dict[str, str] = field(default_factory=dict)
 
 
-def _item(conn, *, status="awaiting_merge", provider_ref="42", action_id=None):
+def _item(
+    conn,
+    *,
+    status="awaiting_merge",
+    provider_ref="42",
+    action_id=None,
+    kind="code",
+):
     item = store.upsert(
         conn,
         team_id="dev",
-        kind="code",
-        fingerprint=f"code:{status}:{provider_ref}:{action_id}",
+        kind=kind,
+        fingerprint=f"{kind}:{status}:{provider_ref}:{action_id}",
         title="Fix crash",
         source_ref="sentry:crash",
         definition_of_done={"pr": True},
@@ -275,6 +282,48 @@ def test_open_pr_action_done_moves_to_awaiting_merge(conn, cfg_ownership):
     assert result.status == "awaiting_merge"
     assert updated.status == "awaiting_merge"
     assert updated.provider_ref == "42"
+
+
+def test_maintenance_uses_real_pr_and_ready_reconciliation_lifecycle(
+    conn, cfg_ownership
+):
+    action_id = _action(
+        conn,
+        action_type="open_pr",
+        status="done",
+        provider_ref="https://github.com/acme/luma/pull/42",
+        key="maintenance-open-pr",
+    )
+    item = _item(
+        conn,
+        kind="maintenance",
+        status="awaiting_pr",
+        provider_ref=None,
+        action_id=action_id,
+    )
+
+    opened = code.reconcile(
+        conn,
+        cfg_ownership,
+        item,
+        runner=Runner(draft=True),
+        http_get=lambda *args, **kwargs: None,
+    )
+    ready = code.reconcile(
+        conn,
+        cfg_ownership,
+        store.get(conn, item.id),
+        runner=Runner(draft=True),
+        http_get=lambda *args, **kwargs: None,
+    )
+
+    updated = store.get(conn, item.id)
+    assert opened.status == "awaiting_merge"
+    assert updated.kind == "maintenance"
+    assert updated.status == "awaiting_merge"
+    assert updated.provider_ref == "42"
+    assert ready.actions_proposed == 1
+    assert _actions(conn, "ready_pr")[0][2] == f"ready_pr:{item.id}:{SHA}"
 
 
 def test_open_pr_provider_url_must_match_configured_repository_even_same_number(
