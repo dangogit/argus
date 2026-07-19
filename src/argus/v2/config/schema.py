@@ -1,6 +1,7 @@
 """Typed argus.yaml. Secrets carry an unresolved ref + a resolved value."""
 from __future__ import annotations
 
+import re
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -11,6 +12,7 @@ ActionRisk = Literal["reversible_internal", "personal_outward", "irreversible_ou
 AutonomyMode = Literal["auto", "approval"]
 QuietHoursDelivery = Literal["hold", "deliver"]
 RetroAuthority = Literal["propose", "auto-changes"]
+OwnershipDeployProvider = Literal["github", "vercel"]
 
 PROTECTED_AUTO_MERGE_BRANCHES = frozenset({"main", "master", "production", "prod"})
 MANDATORY_OWNERSHIP_BLOCKED_GLOBS = (
@@ -122,7 +124,10 @@ class OwnershipCodePolicy(BaseModel):
     auto_merge: bool = False
     allowed_base_branches: List[str] = Field(default_factory=list)
     required_checks: List[str] = Field(default_factory=list)
+    deploy_provider: OwnershipDeployProvider = "github"
     deploy_workflow: Optional[str] = None
+    deploy_project: Optional[str] = None
+    deploy_scope: Optional[str] = None
     live_url: Optional[str] = None
     smoke_paths: List[str] = Field(default_factory=lambda: ["/"])
     deployment_timeout_minutes: int = 30
@@ -143,6 +148,16 @@ class OwnershipCodePolicy(BaseModel):
             raise ValueError("deployment_timeout_minutes must be positive")
         return value
 
+    @field_validator("deploy_project", "deploy_scope")
+    @classmethod
+    def vercel_identifiers_must_be_safe(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", normalized):
+            raise ValueError("Vercel project and scope must be safe identifiers")
+        return normalized
+
     @model_validator(mode="after")
     def validate_auto_merge_and_deploy(self) -> "OwnershipCodePolicy":
         if self.auto_merge and not self.allowed_base_branches:
@@ -156,12 +171,25 @@ class OwnershipCodePolicy(BaseModel):
             branches = ", ".join(sorted(protected_branches))
             raise ValueError(
                 f"auto_merge cannot target protected production branch: {branches}")
-        if self.deploy_workflow and not self.live_url:
-            raise ValueError("deploy_workflow requires live_url")
+        if self.deploy_provider == "vercel":
+            if self.deploy_workflow:
+                raise ValueError("Vercel deployment cannot configure deploy_workflow")
+            if not self.deploy_project or not self.deploy_scope:
+                raise ValueError(
+                    "Vercel deployment requires deploy_project and deploy_scope")
+            if not self.live_url:
+                raise ValueError("Vercel deployment requires live_url")
+        else:
+            if self.deploy_project or self.deploy_scope:
+                raise ValueError(
+                    "GitHub deployment cannot configure Vercel project or scope")
+            if self.deploy_workflow and not self.live_url:
+                raise ValueError("deploy_workflow requires live_url")
         return self
 
 
 class OwnershipSupportPolicy(BaseModel):
+    enabled: bool = True
     auto_send_low_risk: bool = False
     min_confidence: float = 0.90
     blocked_categories: List[str] = Field(
