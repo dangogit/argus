@@ -13,6 +13,7 @@ AutonomyMode = Literal["auto", "approval"]
 QuietHoursDelivery = Literal["hold", "deliver"]
 RetroAuthority = Literal["propose", "auto-changes"]
 OwnershipDeployProvider = Literal["github", "vercel"]
+VercelDeployAuth = Literal["environment", "cli"]
 
 PROTECTED_AUTO_MERGE_BRANCHES = frozenset({"main", "master", "production", "prod"})
 MANDATORY_OWNERSHIP_BLOCKED_GLOBS = (
@@ -128,6 +129,7 @@ class OwnershipCodePolicy(BaseModel):
     deploy_workflow: Optional[str] = None
     deploy_project: Optional[str] = None
     deploy_scope: Optional[str] = None
+    deploy_vercel_auth: VercelDeployAuth = "environment"
     live_url: Optional[str] = None
     smoke_paths: List[str] = Field(default_factory=lambda: ["/"])
     deployment_timeout_minutes: int = 30

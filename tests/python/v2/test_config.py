@@ -81,6 +81,7 @@ def test_vercel_ownership_policy_loads_exact_project_and_scope():
             "deploy_provider": "vercel",
             "deploy_project": "tadam-agents",
             "deploy_scope": "tadam-technology",
+            "deploy_vercel_auth": "cli",
             "live_url": "https://tadam-agents-git-staging-tadam-technology.vercel.app",
         },
         "support": {"enabled": False},
@@ -89,6 +90,7 @@ def test_vercel_ownership_policy_loads_exact_project_and_scope():
     assert ownership.code.deploy_provider == "vercel"
     assert ownership.code.deploy_project == "tadam-agents"
     assert ownership.code.deploy_scope == "tadam-technology"
+    assert ownership.code.deploy_vercel_auth == "cli"
     assert ownership.support.enabled is False
 
 

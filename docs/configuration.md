@@ -176,6 +176,8 @@ The important switches are:
 Automatic merge rejects `main`, `master`, `production`, and `prod` and requires
 at least one required check. GitHub deployment uses `deploy_workflow`. Vercel
 deployment uses `deploy_project` and `deploy_scope`. Both require a live URL.
+Vercel authentication defaults to `deploy_vercel_auth: environment`; use `cli`
+when the owner host should use its local Vercel CLI login.
 Mandatory blocked code paths and support categories are always retained when
 custom lists are added.
 
