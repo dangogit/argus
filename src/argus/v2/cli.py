@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import ValidationError
 
@@ -17,10 +19,15 @@ from argus.v2 import alerts
 from argus.v2 import envfile
 from argus.v2 import logsetup
 from argus.v2.actions import approvals
+from argus.v2.actions import executor as action_executor
 from argus.v2.config import loader
+from argus.v2.config.schema import PROTECTED_AUTO_MERGE_BRANCHES
 from argus.v2.db import migrate, pool
 from argus.v2.ingress import events
 from argus.v2.orchestrator import loop, reconcile
+from argus.v2.ownership import code as ownership_code
+from argus.v2.ownership import cycle as ownership_cycle
+from argus.v2.ownership.models import LEGAL_TRANSITIONS
 from argus.v2.queue import jobs as queue
 from argus.v2.worker import worker
 
@@ -574,6 +581,317 @@ def cmd_recover(args) -> int:
         return 0
     finally:
         conn.close()
+
+
+_OWNER_ACTION_RISKS = {
+    "ready_pr": "reversible_internal",
+    "merge_pr": "irreversible_outward",
+    "support_reply": "personal_outward",
+}
+_OWNER_SUPPORT_SOURCE_TYPES = frozenset({
+    "support_apps_script", "apps_script_support",
+})
+
+
+def _owner_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be an integer") from exc
+    if not 1 <= limit <= 500:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 500")
+    return limit
+
+
+def _owner_json(payload) -> None:
+    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def _owner_error(command: str, exc: Exception) -> int:
+    message = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+    message = re.sub(
+        r"(?i)\b(password|token|api[_-]?key|key)=([^\s&'\"]+)",
+        r"\1=[redacted]",
+        message,
+    )
+    message = re.sub(
+        r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", message)
+    message = re.sub(
+        r"(https?://[^\s?#]+)\?[^\s]+", r"\1?[redacted]", message)
+    print(f"owner {command}: {message[:300]}", file=sys.stderr)
+    return 1
+
+
+def _owner_rollback(conn) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+def _owner_close(conn) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _owner_team(cfg, team_id: str | None):
+    if team_id is None:
+        return None
+    try:
+        return cfg.team(team_id)
+    except KeyError:
+        print(f"owner: unknown team: {team_id}", file=sys.stderr)
+        return False
+
+
+def _owner_read_only(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("SET TRANSACTION READ ONLY")
+
+
+def _owner_list(conn, *, team_id: str | None, status: str | None, limit: int) -> list[dict]:
+    filters = []
+    params = []
+    if team_id is not None:
+        filters.append("team_id=%s")
+        params.append(team_id)
+    if status is not None:
+        filters.append("status=%s")
+        params.append(status)
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    params.append(limit)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id::text, team_id, kind, status, attempts, next_check_at, title
+            FROM team_obligations
+            {where}
+            ORDER BY priority DESC, next_check_at, created_at, id
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": obligation_id,
+            "team": team_id,
+            "kind": kind,
+            "status": obligation_status,
+            "attempts": attempts,
+            "next_check": next_check.isoformat(),
+            "title": title,
+        }
+        for obligation_id, team_id, kind, obligation_status, attempts, next_check, title
+        in rows
+    ]
+
+
+def _safe_public_url(value: str | None) -> str | None:
+    validated = ownership_code._validated_live_url(value)
+    if validated is None:
+        return None
+    parsed = urlsplit(validated)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _owner_action_modes(cfg, team) -> tuple[dict[str, str], set[str]]:
+    autonomy = team.autonomy or cfg.company.defaults.autonomy
+    modes = {
+        action: autonomy.actions.get(action, getattr(autonomy, risk))
+        for action, risk in _OWNER_ACTION_RISKS.items()
+    }
+    missing = set(_OWNER_ACTION_RISKS) - set(autonomy.actions)
+    return modes, missing
+
+
+def _owner_support_readiness(cfg, team) -> dict:
+    candidates = [
+        source for source in [*cfg.company.sources, *team.sources]
+        if source.type in _OWNER_SUPPORT_SOURCE_TYPES and source.team == team.name
+    ]
+    summaries = [
+        {
+            "credential_configured": bool(source.secret),
+            "name": source.name,
+            "type": source.type,
+            "url_configured": bool((source.config or {}).get("url")),
+        }
+        for source in candidates
+    ]
+    ready = (
+        len(candidates) == 1
+        and summaries[0]["credential_configured"]
+        and summaries[0]["url_configured"]
+    )
+    return {
+        "auto_send_low_risk": team.ownership.support.auto_send_low_risk,
+        "blocked_categories": list(team.ownership.support.blocked_categories),
+        "min_confidence": team.ownership.support.min_confidence,
+        "ready": bool(ready),
+        "sources": summaries,
+    }
+
+
+def _owner_work_counts(conn, team_id: str) -> dict[str, int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              count(*) FILTER (
+                WHERE status NOT IN ('blocked', 'done', 'failed')
+                  AND next_check_at <= clock_timestamp()
+              ),
+              count(*) FILTER (WHERE status='blocked')
+            FROM team_obligations
+            WHERE team_id=%s
+            """,
+            (team_id,),
+        )
+        due, blocked = cur.fetchone()
+    return {"due": int(due), "blocked": int(blocked)}
+
+
+def _owner_proof(conn, cfg, team) -> dict:
+    policy = team.ownership
+    code = policy.code
+    project = team.project
+    action_modes, missing_actions = _owner_action_modes(cfg, team)
+    support = _owner_support_readiness(cfg, team)
+    configured_sources = [
+        source for source in [*cfg.company.sources, *team.sources]
+        if source.team == team.name
+    ]
+    maintenance_ready = project is not None
+    live_url = _safe_public_url(code.live_url)
+    missing: set[str] = set()
+    if policy.enabled:
+        if project is None:
+            missing.add("project")
+        if not code.allowed_base_branches:
+            missing.add("allowed_base_branches")
+        elif project is not None and project.base_branch not in code.allowed_base_branches:
+            missing.add("base_branch_not_allowed")
+        if not code.required_checks:
+            missing.add("required_checks")
+        if not code.deploy_workflow:
+            missing.add("deploy_workflow")
+        if live_url is None:
+            missing.add("live_url")
+        if not code.smoke_paths:
+            missing.add("smoke_paths")
+        missing.update(f"action_override:{name}" for name in missing_actions)
+        if code.auto_ready and action_modes["ready_pr"] != "auto":
+            missing.add("action_mode:ready_pr:auto")
+        if code.auto_merge and action_modes["merge_pr"] != "auto":
+            missing.add("action_mode:merge_pr:auto")
+        if policy.support.auto_send_low_risk and action_modes["support_reply"] != "auto":
+            missing.add("action_mode:support_reply:auto")
+        if not support["ready"]:
+            missing.add("support_source")
+        if any(mode == "approval" for mode in action_modes.values()) and not any(
+            channel.role == "control" for channel in team.channels
+        ):
+            missing.add("control_channel")
+        if policy.maintenance.enabled and not maintenance_ready:
+            missing.add("maintenance_project")
+    proof = {
+        "actions": action_modes,
+        "code": {
+            "allowed_base_branches": list(code.allowed_base_branches),
+            "auto_merge": code.auto_merge,
+            "auto_ready": code.auto_ready,
+            "base_branch": project.base_branch if project is not None else None,
+            "blocked_globs": list(code.blocked_globs),
+            "deploy_workflow": code.deploy_workflow,
+            "live_smoke": {
+                "paths": list(code.smoke_paths),
+                "url": live_url,
+            },
+            "protected_branches": sorted(PROTECTED_AUTO_MERGE_BRANCHES),
+            "required_checks": list(code.required_checks),
+        },
+        "maintenance": {
+            "enabled": policy.maintenance.enabled,
+            "interval_hours": policy.maintenance.interval_hours,
+            "max_open": policy.maintenance.max_open,
+            "ready": bool(maintenance_ready),
+            "source_count": len(configured_sources),
+        },
+        "missing_prerequisites": sorted(missing),
+        "ownership": {
+            "cycle_seconds": policy.cycle_seconds,
+            "enabled": policy.enabled,
+            "max_active_obligations": policy.max_active_obligations,
+            "max_attempts": policy.max_attempts,
+            "stale_minutes": policy.stale_minutes,
+        },
+        "ready": not missing,
+        "support": support,
+        "team": team.name,
+        "work": _owner_work_counts(conn, team.name),
+    }
+    return proof
+
+
+def cmd_owner(args) -> int:
+    cfg = _cfg()
+    team = _owner_team(cfg, getattr(args, "team", None))
+    if team is False:
+        return 2
+    try:
+        conn = pool.connect()
+    except Exception as exc:
+        return _owner_error(args.owner_cmd, exc)
+    try:
+        if args.owner_cmd == "cycle":
+            result = ownership_cycle.run(conn, cfg, team_id=args.team)
+            action_executor.process_proposed(conn, cfg)
+            conn.commit()
+            payload = {
+                "teams": result.teams,
+                "reconciled": result.reconciled,
+                "actions_proposed": result.actions_proposed,
+                "completed": result.completed,
+                "blocked": result.blocked,
+                "skipped_locked": result.skipped_locked,
+            }
+            if args.json:
+                _owner_json(payload)
+            else:
+                print(" ".join(f"{key}={value}" for key, value in payload.items()))
+            return 0
+        _owner_read_only(conn)
+        if args.owner_cmd == "list":
+            obligations = _owner_list(
+                conn, team_id=args.team, status=args.status, limit=args.limit)
+            _owner_rollback(conn)
+            if args.json:
+                _owner_json({"obligations": obligations})
+            else:
+                for item in obligations:
+                    print("\t".join(str(item[key]) for key in (
+                        "id", "team", "kind", "status", "attempts", "next_check", "title")))
+            return 0
+        if args.owner_cmd == "prove":
+            proof = _owner_proof(conn, cfg, team)
+            _owner_rollback(conn)
+            if args.json:
+                _owner_json(proof)
+            else:
+                print(f"owner prove: team={team.name} ready={str(proof['ready']).lower()}")
+                for missing in proof["missing_prerequisites"]:
+                    print(f"missing: {missing}")
+            return 0 if proof["ready"] else 1
+        _owner_rollback(conn)
+        return 1
+    except Exception as exc:
+        _owner_rollback(conn)
+        return _owner_error(args.owner_cmd, exc)
+    finally:
+        _owner_close(conn)
 
 
 def cmd_dead_job(args) -> int:
@@ -1633,6 +1951,22 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("approve"); s.add_argument("nonce"); s.set_defaults(fn=cmd_approve)
     s = sub.add_parser("reject"); s.add_argument("nonce"); s.set_defaults(fn=cmd_reject)
     s = sub.add_parser("recover"); s.set_defaults(fn=cmd_recover)
+    s = sub.add_parser("owner")
+    owners = s.add_subparsers(dest="owner_cmd", required=True)
+    r = owners.add_parser("cycle")
+    r.add_argument("--team")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(fn=cmd_owner)
+    r = owners.add_parser("list")
+    r.add_argument("--team")
+    r.add_argument("--status", choices=sorted(LEGAL_TRANSITIONS))
+    r.add_argument("--limit", type=_owner_limit, default=50)
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(fn=cmd_owner)
+    r = owners.add_parser("prove")
+    r.add_argument("--team", required=True)
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(fn=cmd_owner)
     s = sub.add_parser("dead-job")
     djs = s.add_subparsers(dest="dead_job_cmd", required=True)
     r = djs.add_parser("list")
