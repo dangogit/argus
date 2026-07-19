@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -90,29 +91,39 @@ def _identifier(value) -> str:
     return text if _IDENTIFIER.fullmatch(text) else ""
 
 
-def _default_runner(argv: list[str], cwd=None) -> str:  # pragma: no cover
+def _default_runner(argv: list[str], cwd=None, *, auth_mode="environment") -> str:
+    env = os.environ.copy()
+    if auth_mode == "cli":
+        env.pop("VERCEL_TOKEN", None)
     proc = subprocess.run(
-        argv, cwd=cwd, capture_output=True, text=True, timeout=30)
+        argv, cwd=cwd, capture_output=True, text=True, timeout=30, env=env)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"{argv[0]} failed")
     return proc.stdout
 
 
-def inspect_deploy(*, cwd, project, scope, commit_sha, expected_branch,
+def inspect_deploy(*, cwd, project, scope, commit_sha, expected_branch, auth_mode,
                    runner: Runner | None = None) -> DeployState:
     """Read a Vercel deployment for one exact Git commit and project scope."""
-    runner = runner or _default_runner
     project = _identifier(project)
     scope = _identifier(scope)
     commit_sha = _object_id(commit_sha)
     expected_branch = normalize_branch_name(expected_branch)
+    auth_mode = auth_mode if auth_mode in {"cli", "environment"} else ""
     unknown = DeployState(
         project=project,
         scope=scope,
         commit_sha=commit_sha,
         expected_branch=expected_branch,
     )
-    if not cwd or not project or not scope or not commit_sha or not expected_branch:
+    if (
+        not cwd
+        or not project
+        or not scope
+        or not commit_sha
+        or not expected_branch
+        or not auth_mode
+    ):
         return unknown
     argv = [
         "vercel", "list", project,
@@ -122,7 +133,11 @@ def inspect_deploy(*, cwd, project, scope, commit_sha, expected_branch,
         "--format", "json", "--yes",
     ]
     try:
-        payload = json.loads(runner(argv, cwd=cwd) or "")
+        if runner is None:
+            response = _default_runner(argv, cwd=cwd, auth_mode=auth_mode)
+        else:
+            response = runner(argv, cwd=cwd)
+        payload = json.loads(response or "")
     except (json.JSONDecodeError, TypeError):
         return unknown
     if not isinstance(payload, dict) or _string(payload.get("contextName")) != scope:

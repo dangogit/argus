@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from argus.v2.ownership import vercel
 
@@ -43,6 +44,7 @@ def test_inspect_deploy_proves_ready_vercel_deployment_for_exact_commit():
         scope="tadam-technology",
         commit_sha=SHA,
         expected_branch="staging",
+        auth_mode="cli",
         runner=runner,
     )
 
@@ -69,7 +71,7 @@ def test_inspect_deploy_rejects_row_without_exact_commit_match():
 
     deploy = vercel.inspect_deploy(
         cwd="/repo", project="tadam-agents", scope="tadam-technology",
-        commit_sha=SHA, expected_branch="staging", runner=runner,
+        commit_sha=SHA, expected_branch="staging", auth_mode="cli", runner=runner,
     )
 
     assert deploy.found is False
@@ -83,11 +85,13 @@ def test_inspect_deploy_rejects_wrong_project_or_scope():
 
     project_deploy = vercel.inspect_deploy(
         cwd="/repo", project="tadam-agents", scope="tadam-technology",
-        commit_sha=SHA, expected_branch="staging", runner=wrong_project,
+        commit_sha=SHA, expected_branch="staging", auth_mode="cli",
+        runner=wrong_project,
     )
     scope_deploy = vercel.inspect_deploy(
         cwd="/repo", project="tadam-agents", scope="tadam-technology",
-        commit_sha=SHA, expected_branch="staging", runner=wrong_scope,
+        commit_sha=SHA, expected_branch="staging", auth_mode="cli",
+        runner=wrong_scope,
     )
 
     assert project_deploy.found is False
@@ -101,7 +105,7 @@ def test_inspect_deploy_rejects_same_commit_from_wrong_branch():
 
     deploy = vercel.inspect_deploy(
         cwd="/repo", project="tadam-agents", scope="tadam-technology",
-        commit_sha=SHA, expected_branch="staging", runner=runner,
+        commit_sha=SHA, expected_branch="staging", auth_mode="cli", runner=runner,
     )
 
     assert deploy.found is False
@@ -112,7 +116,7 @@ def test_inspect_deploy_maps_vercel_terminal_failure():
 
     deploy = vercel.inspect_deploy(
         cwd="/repo", project="tadam-agents", scope="tadam-technology",
-        commit_sha=SHA, expected_branch="staging", runner=runner,
+        commit_sha=SHA, expected_branch="staging", auth_mode="cli", runner=runner,
     )
 
     assert deploy.completed is True
@@ -127,7 +131,7 @@ def test_inspect_deploy_keeps_building_deployment_pending():
 
     deploy = vercel.inspect_deploy(
         cwd="/repo", project="tadam-agents", scope="tadam-technology",
-        commit_sha=SHA, expected_branch="staging", runner=runner,
+        commit_sha=SHA, expected_branch="staging", auth_mode="cli", runner=runner,
     )
 
     assert deploy.found is True
@@ -136,3 +140,42 @@ def test_inspect_deploy_keeps_building_deployment_pending():
     assert deploy.failed is False
     assert deploy.status == "IN_PROGRESS"
     assert deploy.conclusion == "UNKNOWN"
+
+
+def test_default_runner_cli_auth_ignores_ambient_vercel_token(monkeypatch):
+    calls = []
+    monkeypatch.setenv("VERCEL_TOKEN", "wrong-account-token")
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(vercel.subprocess, "run", fake_run)
+
+    assert vercel._default_runner(
+        ["vercel", "list"], cwd="/repo", auth_mode="cli") == "{}"
+
+    assert calls[0][0] == ["vercel", "list"]
+    assert "VERCEL_TOKEN" not in calls[0][1]["env"]
+
+
+def test_inspect_deploy_passes_cli_auth_to_default_runner(monkeypatch):
+    calls = []
+
+    def fake_default(argv, cwd=None, *, auth_mode):
+        calls.append((argv, cwd, auth_mode))
+        return json.dumps(_payload())
+
+    monkeypatch.setattr(vercel, "_default_runner", fake_default)
+
+    deploy = vercel.inspect_deploy(
+        cwd="/repo",
+        project="tadam-agents",
+        scope="tadam-technology",
+        commit_sha=SHA,
+        expected_branch="staging",
+        auth_mode="cli",
+    )
+
+    assert deploy.found is True
+    assert calls[0][1:] == ("/repo", "cli")

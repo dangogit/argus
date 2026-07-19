@@ -306,6 +306,7 @@ def test_owner_prove_allows_code_only_team_with_vercel_deploy(
         "        deploy_provider: vercel\n"
         "        deploy_project: tadam-agents\n"
         "        deploy_scope: tadam-technology\n"
+        "        deploy_vercel_auth: cli\n"
         "        live_url: https://tadam-agents-git-staging-tadam-technology.vercel.app\n"
         "      support: { enabled: false }\n"
         "    project:\n"
@@ -329,6 +330,7 @@ def test_owner_prove_allows_code_only_team_with_vercel_deploy(
     assert payload["code"]["deploy_provider"] == "vercel"
     assert payload["code"]["deploy_project"] == "tadam-agents"
     assert payload["code"]["deploy_scope"] == "tadam-technology"
+    assert payload["code"]["deploy_vercel_auth"] == "cli"
 
 
 def test_owner_prove_is_read_only(conn, pg_dsn, tmp_path, monkeypatch):
