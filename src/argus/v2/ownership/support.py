@@ -20,19 +20,60 @@ from argus.v2.support.apps_script import AppsScriptTransport
 
 SUPPORT_REPLY_RISK = "personal_outward"
 _SUPPORT_SOURCE_TYPES = frozenset({"support_apps_script", "apps_script_support"})
-_BLOCKED_CATEGORIES = frozenset({
-    "billing", "refund", "account_access", "security", "privacy", "legal",
-    "deletion", "charge_dispute", "password", "login", "payment", "charge",
-    "account_ownership",
-})
-_SENSITIVE_TERMS = (
-    "billing", "refund", "chargeback", "charge dispute", "charge", "charged",
-    "payment", "invoice", "credit card", "debit card", "subscription",
-    "login", "log in", "sign in", "password", "pass word", "access",
-    "security", "breach", "privacy", "gdpr", "delete", "deletion",
-    "legal", "lawyer", "attorney", "account owner", "account ownership",
-    "ownership of account",
-)
+_BLOCKED_VARIANTS = {
+    "billing": (
+        "billing", "billings", "billed", "billing issue", "billing request",
+        "subscription", "subscriptions",
+    ),
+    "refund": ("refund", "refunds", "refunded", "refunding"),
+    "payment": (
+        "payment", "payments", "payment issue", "payment failed",
+        "payment failure", "credit card", "credit cards", "debit card",
+        "debit cards",
+    ),
+    "charge": ("charge", "charges", "charged", "charging"),
+    "charge_dispute": (
+        "chargeback", "chargebacks", "charge dispute", "charge disputes",
+        "disputed charge", "disputed charges",
+    ),
+    "invoice": ("invoice", "invoices", "invoiced", "invoicing"),
+    "account_access": (
+        "access", "account access", "access account", "accessing account",
+        "account locked", "locked account", "locked out", "unlock account",
+        "unlocked account", "account recovery", "recover account",
+    ),
+    "security": (
+        "security", "security breach", "security breaches", "breach",
+        "breaches", "breached", "insecure", "insecurity",
+    ),
+    "privacy": (
+        "privacy", "privacy request", "privacy requests", "gdpr",
+        "personal data",
+    ),
+    "legal": (
+        "legal", "legally", "lawyer", "lawyers", "attorney", "attorneys",
+        "lawsuit", "lawsuits", "litigation",
+    ),
+    "deletion": (
+        "delete", "deletes", "deleted", "deleting", "deletion", "deletions",
+        "remove account", "removing account", "close account", "closing account",
+    ),
+    "password": (
+        "password", "passwords", "pass word", "pass words", "passcode",
+        "passcodes",
+    ),
+    "login": (
+        "login", "logins", "log in", "logs in", "logged in", "logging in",
+        "sign in", "signin", "signed in", "signing in", "authentication",
+        "authenticate", "authenticated",
+    ),
+    "account_ownership": (
+        "account owner", "account owners", "account ownership",
+        "ownership account", "ownership of account", "owns account",
+        "owned account",
+    ),
+}
+_BLOCKED_CATEGORIES = frozenset(_BLOCKED_VARIANTS)
 _CONFUSABLES = str.maketrans({
     "а": "a", "с": "c", "е": "e", "і": "i", "ј": "j", "о": "o",
     "р": "p", "ѕ": "s", "х": "x", "у": "y", "ɑ": "a", "ο": "o",
@@ -75,22 +116,35 @@ def _canonical_category(value: str) -> str:
     return spaced.replace(" ", "_")
 
 
+def _variant_concept(value: str) -> str | None:
+    if len(str(value or "")) > 50_000:
+        return "oversized_content"
+    spaced, _compact = _normalized(value)
+    tokens = spaced.split()
+    for concept, variants in _BLOCKED_VARIANTS.items():
+        for variant in variants:
+            variant_spaced, variant_compact = _normalized(variant)
+            variant_tokens = variant_spaced.split()
+            if any(
+                tokens[start:start + len(variant_tokens)] == variant_tokens
+                for start in range(0, len(tokens) - len(variant_tokens) + 1)
+            ):
+                return concept
+            if any(
+                "".join(tokens[start:start + width]) == variant_compact
+                for width in range(
+                    1, min(12, len(variant_compact), len(tokens)) + 1)
+                for start in range(0, len(tokens) - width + 1)
+            ):
+                return concept
+    return None
+
+
 def _sensitive_term(*values: str) -> str | None:
     for value in values:
-        if len(str(value or "")) > 200_000:
-            return "oversized_content"
-        spaced, _compact = _normalized(value)
-        padded = f" {spaced} "
-        tokens = spaced.split()
-        for term in _SENSITIVE_TERMS:
-            term_spaced, term_compact = _normalized(term)
-            joined_match = any(
-                "".join(tokens[start:start + width]) == term_compact
-                for width in range(1, min(len(term_compact), len(tokens)) + 1)
-                for start in range(0, len(tokens) - width + 1)
-            )
-            if f" {term_spaced} " in padded or joined_match:
-                return term
+        concept = _variant_concept(value)
+        if concept:
+            return concept
     return None
 
 
@@ -118,7 +172,8 @@ def classify_for_auto_send(
     configured = {
         _canonical_category(value) for value in policy.blocked_categories
     }
-    if category in (_BLOCKED_CATEGORIES | configured):
+    category_concept = _variant_concept(category.replace("_", " "))
+    if category in (_BLOCKED_CATEGORIES | configured) or category_concept:
         return SupportPolicyDecision(False, f"blocked support category: {category}")
     try:
         confidence = float(getattr(decision, "confidence", 0.0))

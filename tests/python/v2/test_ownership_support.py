@@ -97,6 +97,63 @@ def test_sensitive_scan_blocks_encoded_unicode_and_punctuation(
     assert result.allowed is False
 
 
+@pytest.mark.parametrize("raw_thread", [
+    "Please process r%65funds for both orders.",
+    "The pay-ments page lists two attempts.",
+    "My pass-words stopped working.",
+    "These invoices are incorrect.",
+    "I was charged twice.",
+    "The chargebacks are still pending.",
+    "I need help logging in.",
+    "The account owners changed.",
+    "We have privacy concerns.",
+    "Our lawyers requested this.",
+    "The account deletions failed.",
+    "There may have been security breaches.",
+    "The ｐａｙｍｅｎｔｓ screen is broken.",
+])
+def test_sensitive_scan_blocks_plural_morphology_and_normalized_variants(
+        support_team, raw_thread):
+    _cfg, team, _source = support_team
+
+    result = support.classify_for_auto_send(
+        team, _decision(), raw_thread,
+        sender="user@example.com", subject="Product question",
+    )
+
+    assert result.allowed is False
+
+
+@pytest.mark.parametrize("category", [
+    "refunds", "payments", "charges", "passwords", "invoices",
+    "billing_issue", "account_locked", "security_breach", "privacy_request",
+    "legal_request", "account_deletions", "chargebacks", "logging_in",
+    "account_owners",
+])
+def test_morphological_blocked_categories_fail_closed(support_team, category):
+    _cfg, team, _source = support_team
+
+    result = support.classify_for_auto_send(
+        team, _decision(category=category), "General product question"
+    )
+
+    assert result.allowed is False
+
+
+def test_variant_matching_does_not_use_naive_substrings(support_team):
+    _cfg, team, _source = support_team
+
+    result = support.classify_for_auto_send(
+        team,
+        _decision(),
+        "How do I export the discharge and securities report?",
+        sender="Bill Smith <bill@example.com>",
+        subject="Accessible export",
+    )
+
+    assert result.allowed is True
+
+
 def test_safe_support_creates_one_obligation_and_one_canonical_action(
         conn, support_team):
     _cfg, team, source = support_team
