@@ -34,11 +34,13 @@ Current gaps:
 
 Add `argus memory audit`, with optional `--team` and `--json` arguments.
 
-Audit every configured team by default. Read only from Postgres. Report:
+Audit every configured team by default. Read only from Postgres. Use a fixed
+fourteen-day activity window, matching the project brief's durable-memory
+horizon. Report:
 
 - memory-source activity count and latest activity time across message events,
-  requests, and actions in the same previous-two-day window used by default
-  memory refresh;
+  requests, and actions;
+- active UTC days without a corresponding team summary;
 - summary count, latest summary day, quality, and age;
 - whether memory refresh has ever produced a summary;
 - invalid or cross-team evidence references in semantic summary details;
@@ -49,14 +51,24 @@ Audit every configured team by default. Read only from Postgres. Report:
   knowledge with a team;
 - overall state: `ready`, `degraded`, or `not_ready`.
 
+Summary counts, quality, and evidence checks use the fourteen-day window.
+`ever_produced_summary` checks full history so operators can distinguish an
+idle team from a memory job that never succeeded.
+
+Global knowledge findings appear once in a top-level audit section. Team
+sections contain only team-specific findings plus applicable company knowledge
+counts. Duplicate content is advisory because separate sources may knowingly
+record the same rule. Global state covers malformed scope rows and company
+embedding gaps. Team state covers that team's summary, evidence, and embedding
+findings. Overall state is the worst state across global and team sections, with
+`not_ready` taking precedence over `degraded`.
+
 State rules:
 
-- `not_ready`: team has memory-source activity in the audit window but no
-  summaries;
-- `degraded`: latest summary is fallback or partial, evidence is invalid,
-  embeddings are missing, duplicates exist, or scope rows are malformed;
-- `ready`: team has no audit failures and either has a usable summary or has no
-  memory-source activity requiring one;
+- `not_ready`: one or more active days in the audit window have no summary;
+- `degraded`: latest in-window summary is fallback or partial, evidence is
+  invalid, embeddings are missing, or scope rows are malformed;
+- `ready`: team has no audit failures and no unsummarized active days;
 - informational age and counts do not fail readiness unless they expose one of
   the conditions above.
 
@@ -78,7 +90,8 @@ When query embedding is available:
 3. Fuse both ranked lists using reciprocal rank fusion with a fixed constant of
    60.
 4. Deduplicate by knowledge row ID.
-5. Sort by fused score, then stable row ID, and return top `k`.
+5. Sort by fused score, best individual-lane rank, newest creation time, then
+   stable row ID, and return top `k`.
 
 When embedding fails or is unavailable, use lexical results. Scope and source
 filters must be identical in every lane.
@@ -89,8 +102,10 @@ existing prompt rendering stays unchanged.
 
 ### 3. Memory Evaluation Harness
 
-Add a small evaluation module under `argus.v2.memory`. It accepts case results
-and returns a deterministic report. It does not connect to Postgres itself.
+Add one test-only evaluation harness under `tests/python/v2`. Keep evaluation
+plumbing out of production modules. Its single interface seeds a case in
+isolated test Postgres, executes the real memory or knowledge interface, and
+returns a deterministic report for all cases.
 
 Metrics:
 
@@ -120,6 +135,20 @@ Evaluation release gate passes only when:
 Latency is reported but not gated in this first version because CI and local
 Postgres timing varies.
 
+## Module Interfaces
+
+`argus.v2.memory.audit.run(conn, cfg, team_ids, now) -> MemoryAuditReport` is a
+deep module interface used by CLI and tests. It owns SQL, evidence validation,
+state classification, and stable report construction. CLI owns only argument
+parsing, text or JSON rendering, and exit-code mapping.
+
+`argus.v2.knowledge.store.search()` remains the only production retrieval
+interface. Vector, lexical, fusion, and fallback helpers stay internal to that
+module. No new adapter or public scoring interface is added.
+
+Test evaluation exposes one test-helper interface that runs complete cases.
+Individual tests assert on report outcomes, not internal ranking or audit SQL.
+
 ## Data Flow
 
 Memory audit reads existing tables and emits a per-team report without writes.
@@ -127,7 +156,7 @@ Knowledge retrieval executes vector and lexical candidate queries against the
 same scope, fuses ranks in Python, and returns the existing result shape.
 Evaluation tests seed isolated test Postgres through existing fixtures, call
 real brief and knowledge retrieval paths, then score returned output through
-the pure evaluator.
+the test-only harness.
 
 No production or live database is seeded by evaluation code.
 
@@ -137,7 +166,8 @@ No production or live database is seeded by evaluation code.
   an unreadable system healthy.
 - One malformed summary detail is counted and surfaced without crashing the
   remaining team audit.
-- Embedding provider failure falls back to lexical retrieval.
+- Embedding provider failure logs a warning and falls back to lexical
+  retrieval.
 - Lexical-query and database connection failures propagate. Retrieval must not
   hide an unreadable database behind empty results.
 - Evaluation treats unclassified exceptions as failed cases, never passes them
@@ -153,8 +183,8 @@ Targeted coverage:
   duplicate, embedding, and malformed-scope cases;
 - hybrid ranking, cross-lane deduplication, stable ties, lexical-only fallback,
   exact-title recall, source filters, company visibility, and team isolation;
-- evaluator metrics, p95 calculation, failure categories, and release-gate
-  decision;
+- evaluation metrics, p95 calculation, failure categories, and release-gate
+  decision through the complete harness interface;
 - CLI parser and output compatibility;
 - existing project-memory and knowledge integration tests.
 
@@ -188,6 +218,7 @@ argus memory status
 ## Success Criteria
 
 - Operators can prove whether memory has run and whether stored memory is safe.
+- Audit finds every unsummarized active day in the durable-memory horizon.
 - Exact and semantic knowledge queries both influence final ranking.
 - Existing callers receive unchanged result shapes.
 - Evaluation produces stable quality metrics and fails closed on safety or
