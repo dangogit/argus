@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
+import psycopg
+
 from argus.v2.actions import mergeability
 from argus.v2.ownership.github import inspect_pr
 from argus.v2.ownership.policy import assess_pr
@@ -316,7 +318,8 @@ def _ownership_provider_ref(action: str, pr, expected_head_sha: str) -> str:
 
 
 def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
-        cfg=None, team_id: str | None = None) -> str:
+        cfg=None, team_id: str | None = None,
+        conn: psycopg.Connection | None = None) -> str:
     """Execute an action; return its provider_ref (e.g. the PR URL)."""
     if action_type == "open_pr":
         cwd = payload.get("cwd")
@@ -382,6 +385,12 @@ def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
             cwd=cwd,
         )
         return provider_ref
+    if action_type == "support_reply":
+        if conn is None or cfg is None or not team_id:
+            raise RuntimeError("support_reply requires database and team configuration")
+        from argus.v2.ownership import support as ownership_support
+
+        return ownership_support.run_reply_action(conn, cfg, team_id, payload)
     if action_type == "deploy":
         return runner(["bash", "-lc", payload["command"]], cwd=payload.get("cwd")).strip()
     if action_type == "close_pr":

@@ -1,9 +1,12 @@
 import json
 
 from argus.v2.actions import executor
+from argus.v2.config import loader
 from argus.v2.config.schema import Autonomy
 from argus.v2.ingress import events
 from argus.v2.orchestrator import pipeline
+from argus.v2.ownership import support as ownership_support
+from argus.v2.support.cycle import DraftDecision
 
 
 def _proposed(conn, risk, request_id, idem="a0", dest=None, payload="{}",
@@ -40,8 +43,12 @@ def test_ready_pr_is_reversible_internal():
     assert executor.risk_for("ready_pr") == "reversible_internal"
 
 
+def test_support_reply_is_personal_outward():
+    assert executor.risk_for("support_reply") == "personal_outward"
+
+
 def test_ownership_mutations_are_absent_from_conversational_allowlists():
-    forbidden = {"ready_pr", "merge_pr", "deploy"}
+    forbidden = {"ready_pr", "merge_pr", "deploy", "support_reply"}
     allowlists = {
         name: values
         for name, values in vars(executor).items()
@@ -81,6 +88,72 @@ def test_executor_is_idempotent(conn, cfg):
     executor.process_proposed(conn, cfg); conn.commit()
     n = executor.process_proposed(conn, cfg); conn.commit()  # nothing left
     assert n == 0
+
+
+def test_support_reply_auto_executes_through_durable_handler(
+        conn, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPPORT_KEY", "test-key")
+    path = tmp_path / "support-executor.yaml"
+    path.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "  sources:\n"
+        "    - { type: support_apps_script, name: luma-mail, team: luma, "
+        "secret_ref: '${env:SUPPORT_KEY}', config: { url: 'https://support.test' } }\n"
+        "teams:\n  - name: luma\n"
+        "    autonomy: { actions: { support_reply: auto } }\n"
+        "    ownership:\n"
+        "      enabled: true\n"
+        "      support: { auto_send_low_risk: true, min_confidence: 0.92 }\n"
+        "    roles: [ { name: support, kind: worker, prompt: p } ]\n"
+        "    pipeline: { stages: [support] }\n",
+        encoding="utf-8",
+    )
+    cfg_support = loader.load(path)
+    team = cfg_support.team("luma")
+    source = cfg_support.company.sources[0]
+    decision = DraftDecision(
+        reply="Open Settings and choose Export.", category="how_to",
+        risk="low", confidence=0.96,
+    )
+    obligation = ownership_support.open_or_update_obligation(
+        conn, team=team, source=source, thread_id="T-executor",
+        sender="user@example.com", subject="Export",
+        raw_thread="How do I export?", decision=decision,
+    )
+    action_id, _inserted = ownership_support.queue_reply_action(
+        conn, team=team, source=source, obligation=obligation,
+        decision=decision,
+    )
+    conn.commit()
+    sent = []
+
+    class Transport:
+        def __init__(self, **_kwargs):
+            pass
+
+        def reply(self, thread_id, body):
+            sent.append((thread_id, body))
+
+        def mark_read(self, _thread_id):
+            pass
+
+        def archive(self, _thread_id):
+            pass
+
+    monkeypatch.setattr(ownership_support, "AppsScriptTransport", Transport)
+
+    executor.process_proposed(conn, cfg_support)
+    conn.commit()
+
+    assert sent == [("T-executor", "Open Settings and choose Export.")]
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, provider_ref FROM actions WHERE id=%s", (action_id,))
+        assert cur.fetchone() == ("done", "support:T-executor")
+        cur.execute(
+            "SELECT status, provider_ref FROM team_obligations WHERE id=%s",
+            (obligation.id,),
+        )
+        assert cur.fetchone() == ("done", "support:T-executor")
 
 
 def test_open_pr_enqueues_control_summary(conn, cfg):

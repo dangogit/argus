@@ -161,6 +161,23 @@ def record(project: str, thread_id: str, action: str, sender: str, subject: str,
         conn.commit()
 
 
+def reconcile_explicit_reply(project: str, source_name: str, thread_id: str,
+                             provider_ref: str) -> bool:
+    """Close a matching durable obligation after an owner-authorized send."""
+    from argus.v2.ownership import support as ownership_support
+
+    with pool.connect() as conn:
+        matched = ownership_support.reconcile_explicit_reply(
+            conn,
+            team_id=project,
+            source_name=source_name,
+            thread_id=thread_id,
+            provider_ref=provider_ref,
+        )
+        conn.commit()
+    return matched
+
+
 def register_draft(project: str, thread_id: str, sender: str, subject: str,
                    reply: str, transport: str) -> Draft:
     draft_id = _new_id()

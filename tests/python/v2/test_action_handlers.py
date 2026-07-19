@@ -5,7 +5,9 @@ import pytest
 from argus.v2.actions import handlers
 from argus.v2.config import loader
 from argus.v2.ownership.github import PullRequestState
+from argus.v2.ownership import support as ownership_support
 from argus.v2.support.apps_script import EmailSummary
+from argus.v2.support.cycle import DraftDecision
 
 
 SHA40 = "a" * 40
@@ -37,6 +39,173 @@ def cfg_ownership(tmp_path):
         encoding="utf-8",
     )
     return loader.load(path)
+
+
+@pytest.fixture()
+def cfg_support_ownership(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPPORT_KEY", "test-key")
+    path = tmp_path / "support-actions.yaml"
+    path.write_text(
+        "company:\n  name: c\n  defaults: { engine: { engine: echo } }\n"
+        "  sources:\n"
+        "    - { type: support_apps_script, name: luma-mail, team: luma, "
+        "secret_ref: '${env:SUPPORT_KEY}', config: { url: 'https://support.test' } }\n"
+        "teams:\n  - name: luma\n"
+        "    autonomy: { actions: { support_reply: auto } }\n"
+        "    ownership:\n"
+        "      enabled: true\n"
+        "      support: { auto_send_low_risk: true, min_confidence: 0.92 }\n"
+        "    roles: [ { name: support, kind: worker, prompt: p } ]\n"
+        "    pipeline: { stages: [support] }\n",
+        encoding="utf-8",
+    )
+    return loader.load(path)
+
+
+def _queued_support_action(conn, cfg_support_ownership, *, thread="T-handler"):
+    team = cfg_support_ownership.team("luma")
+    source = cfg_support_ownership.company.sources[0]
+    decision = DraftDecision(
+        reply="Open Settings and choose Export.", category="how_to",
+        risk="low", confidence=0.96,
+    )
+    obligation = ownership_support.open_or_update_obligation(
+        conn, team=team, source=source, thread_id=thread,
+        sender="user@example.com", subject="Export",
+        raw_thread="How do I export?", decision=decision,
+    )
+    action_id, _inserted = ownership_support.queue_reply_action(
+        conn, team=team, source=source, obligation=obligation,
+        decision=decision,
+    )
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM actions WHERE id=%s", (action_id,))
+        payload = cur.fetchone()[0]
+    conn.commit()
+    return obligation, payload
+
+
+def test_support_reply_handler_reloads_state_sends_once_and_closes_obligation(
+        conn, cfg_support_ownership, monkeypatch):
+    obligation, payload = _queued_support_action(conn, cfg_support_ownership)
+    calls = []
+
+    class Transport:
+        def __init__(self, **_kwargs):
+            pass
+
+        def reply(self, thread_id, body):
+            calls.append(("reply", thread_id, body))
+
+        def mark_read(self, thread_id):
+            calls.append(("read", thread_id))
+
+        def archive(self, thread_id):
+            calls.append(("archive", thread_id))
+
+    monkeypatch.setattr(ownership_support, "AppsScriptTransport", Transport)
+
+    ref = handlers.run(
+        "support_reply", payload, cfg=cfg_support_ownership,
+        team_id="luma", conn=conn,
+    )
+    conn.commit()
+
+    assert ref == "support:T-handler"
+    assert calls == [
+        ("reply", "T-handler", "Open Settings and choose Export."),
+        ("read", "T-handler"),
+        ("archive", "T-handler"),
+    ]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, provider_ref FROM team_obligations WHERE id=%s",
+            (obligation.id,),
+        )
+        assert cur.fetchone() == ("done", "support:T-handler")
+
+
+def test_support_reply_handler_revalidates_persisted_sensitive_thread(
+        conn, cfg_support_ownership, monkeypatch):
+    obligation, payload = _queued_support_action(conn, cfg_support_ownership)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE team_obligations SET evidence=evidence || "
+            "'{\"raw_thread\":\"Please refund me\"}'::jsonb WHERE id=%s",
+            (obligation.id,),
+        )
+    conn.commit()
+    monkeypatch.setattr(
+        ownership_support, "AppsScriptTransport",
+        lambda **_: (_ for _ in ()).throw(AssertionError("must not send")),
+    )
+
+    with pytest.raises(RuntimeError, match="support policy denied"):
+        handlers.run(
+            "support_reply", payload,
+            cfg=cfg_support_ownership, team_id="luma", conn=conn,
+        )
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM team_obligations WHERE id=%s", (obligation.id,))
+        assert cur.fetchone()[0] == "blocked"
+
+
+def test_support_reply_handler_rejects_payload_identity_tampering(
+        conn, cfg_support_ownership, monkeypatch):
+    _obligation, payload = _queued_support_action(conn, cfg_support_ownership)
+    monkeypatch.setattr(
+        ownership_support, "AppsScriptTransport",
+        lambda **_: (_ for _ in ()).throw(AssertionError("must not send")),
+    )
+
+    with pytest.raises(RuntimeError, match="persisted state"):
+        handlers.run(
+            "support_reply", {**payload, "thread_id": "attacker-thread"},
+            cfg=cfg_support_ownership, team_id="luma", conn=conn,
+        )
+
+
+def test_support_reply_ambiguous_failure_is_not_retried(
+        conn, cfg_support_ownership, monkeypatch):
+    obligation, payload = _queued_support_action(conn, cfg_support_ownership)
+    calls = []
+
+    class Transport:
+        def __init__(self, **_kwargs):
+            pass
+
+        def reply(self, thread_id, body):
+            calls.append((thread_id, body))
+            raise RuntimeError("connection dropped after send")
+
+        def mark_read(self, _thread_id):
+            raise AssertionError("must not mark read")
+
+        def archive(self, _thread_id):
+            raise AssertionError("must not archive")
+
+    monkeypatch.setattr(ownership_support, "AppsScriptTransport", Transport)
+
+    with pytest.raises(RuntimeError, match="connection dropped after send"):
+        handlers.run(
+            "support_reply", payload, cfg=cfg_support_ownership,
+            team_id="luma", conn=conn,
+        )
+    conn.commit()
+    with pytest.raises(RuntimeError, match="delivery outcome is uncertain"):
+        handlers.run(
+            "support_reply", payload, cfg=cfg_support_ownership,
+            team_id="luma", conn=conn,
+        )
+
+    assert calls == [("T-handler", "Open Settings and choose Export.")]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, evidence ? 'delivery_attempted_at' "
+            "FROM team_obligations WHERE id=%s", (obligation.id,),
+        )
+        assert cur.fetchone() == ("blocked", True)
 
 
 @pytest.fixture()
@@ -664,7 +833,8 @@ def test_risk_for_reversible_types():
 def test_risk_for_personal_outward_types():
     from argus.v2.actions import executor
     for t in ("calendar_create", "calendar_update", "calendar_delete",
-              "email_reply", "email_archive", "content_queue", "social_publish"):
+              "email_reply", "email_archive", "content_queue", "social_publish",
+              "support_reply"):
         assert executor.risk_for(t) == "personal_outward", f"Expected personal_outward for {t}"
 
 

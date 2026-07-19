@@ -28,6 +28,7 @@ _REAL = {
     "email_archive", "email_draft", "content_queue", "social_publish",
     "bug_writeback",
     "set_user_balance",
+    "support_reply",
 }
 
 # Server-side risk classification. The model's self-declared risk is ignored for
@@ -44,6 +45,7 @@ _PERSONAL_OUTWARD = frozenset({
     "calendar_create", "calendar_update", "calendar_delete",
     "email_reply", "email_archive",
     "content_queue", "social_publish",
+    "support_reply",
 })
 _IRREVERSIBLE = frozenset({"merge_pr", "deploy"})
 
@@ -328,6 +330,8 @@ def _execute(conn: psycopg.Connection, action_id: str, *, cfg=None,
         elif atype in _REAL:
             try:
                 kwargs = {"runner": runner} if runner is not None else {}
+                if atype == "support_reply":
+                    kwargs["conn"] = conn
                 provider_ref = _handlers.run(
                     atype, payload or {}, cfg=cfg, team_id=team_id, **kwargs)
             except Exception as e:
