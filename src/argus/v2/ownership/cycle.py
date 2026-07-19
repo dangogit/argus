@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import psycopg
 
-from argus.v2.ownership import code, store
+from argus.v2.ownership import code, maintenance, store
 
 
 _RECONCILABLE_STATUSES = (
@@ -58,7 +58,7 @@ def run(
             limit=team.ownership.max_active_obligations,
         )
         for obligation in due:
-            if obligation.kind != "code":
+            if obligation.kind not in {"code", "maintenance"}:
                 continue
             result = code.reconcile(
                 conn,
@@ -72,6 +72,8 @@ def run(
             counts["actions_proposed"] += result.actions_proposed
             counts["completed"] += result.completed
             counts["blocked"] += result.blocked
+        candidates = maintenance.collect_candidates(conn, cfg, team.name)
+        maintenance.dispatch_one(conn, cfg, team.name, candidates)
     return CycleResult(**counts)
 
 
