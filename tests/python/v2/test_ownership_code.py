@@ -663,6 +663,7 @@ def test_successful_vercel_deploy_moves_to_verifying(conn, cfg_ownership):
     policy.deploy_workflow = None
     policy.deploy_project = "tadam-agents"
     policy.deploy_scope = "tadam-technology"
+    policy.deploy_vercel_auth = "cli"
     item = _item(conn, status="awaiting_deploy")
     deployment_url = "https://tadam-agents-abc-tadam-technology.vercel.app"
     runner = Runner(deploy=[{

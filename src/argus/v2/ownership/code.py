@@ -818,6 +818,7 @@ def _reconcile_deploy(conn, team, obligation, *, runner) -> ReconcileResult:
                 scope=scope,
                 commit_sha=merge_sha,
                 expected_branch=team.project.base_branch,
+                auth_mode=policy.deploy_vercel_auth,
                 runner=runner,
             )
         else:

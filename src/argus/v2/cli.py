@@ -831,6 +831,7 @@ def _owner_proof(conn, cfg, team) -> dict:
             "deploy_project": code.deploy_project,
             "deploy_provider": code.deploy_provider,
             "deploy_scope": code.deploy_scope,
+            "deploy_vercel_auth": code.deploy_vercel_auth,
             "deploy_workflow": code.deploy_workflow,
             "live_smoke": {
                 "paths": list(code.smoke_paths),

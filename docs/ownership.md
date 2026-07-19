@@ -137,6 +137,7 @@ ownership:
     deploy_provider: vercel
     deploy_project: app
     deploy_scope: company-team
+    deploy_vercel_auth: cli
     live_url: https://app-git-staging-company-team.vercel.app
     smoke_paths: [/]
   support:
@@ -146,6 +147,10 @@ ownership:
 Set `ownership.support.enabled: false` only when that team has no support
 inbox. This removes the support source prerequisite and prevents support
 obligations or automatic replies. It does not weaken code ownership gates.
+
+Use `deploy_vercel_auth: cli` on a local owner host that should use its Vercel
+CLI login. This ignores an ambient `VERCEL_TOKEN` for the read-only deployment
+inspection. The default, `environment`, keeps token-based automation behavior.
 
 Low-risk support auto-send additionally requires exactly one team-bound Apps
 Script support source with a URL and secret, `support_reply: auto`, confidence
