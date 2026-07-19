@@ -77,6 +77,24 @@ def _support_cfg_with_dev_pipeline(tmp_path):
     return loader.load(cfg_path)
 
 
+def test_disabled_support_ownership_does_not_open_obligation(conn, tmp_path):
+    cfg = _support_ownership_cfg(tmp_path)
+    team = cfg.team("luma")
+    team.ownership.support.enabled = False
+    source = cfg.company.sources[0]
+    email = EmailSummary("T-disabled", "u@example.com", "Question", "help")
+    decision = cycle.DraftDecision(
+        reply="Open Settings.", category="how_to", risk="low", confidence=0.99)
+
+    obligation = cycle._support_obligation(
+        conn, team, source, email, "How do I open settings?", decision)
+
+    assert obligation is None
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM team_obligations WHERE team_id='luma'")
+        assert cur.fetchone()[0] == 0
+
+
 class ExplodingTransport:
     def archive(self, _thread_id):
         raise AssertionError("archive should not run")

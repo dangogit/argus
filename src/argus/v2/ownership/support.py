@@ -159,6 +159,8 @@ def classify_for_auto_send(
     policy = team.ownership.support
     if not team.ownership.enabled:
         return SupportPolicyDecision(False, "team ownership is disabled")
+    if not policy.enabled:
+        return SupportPolicyDecision(False, "support ownership is disabled")
     if not policy.auto_send_low_risk:
         return SupportPolicyDecision(False, "low-risk support auto-send is disabled")
     reply = str(getattr(decision, "reply", "") or "").strip()

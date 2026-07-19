@@ -18,7 +18,11 @@ from psycopg.types.json import Jsonb
 
 from argus.v2.actions.executor import risk_for
 from argus.v2.ownership import store
-from argus.v2.ownership.github import inspect_deploy, inspect_pr
+from argus.v2.ownership.github import (
+    inspect_deploy as inspect_github_deploy,
+    inspect_pr,
+)
+from argus.v2.ownership.vercel import inspect_deploy as inspect_vercel_deploy
 from argus.v2.ownership.policy import assess_pr
 
 
@@ -790,27 +794,52 @@ def _await_approval(
 
 
 def _reconcile_deploy(conn, team, obligation, *, runner) -> ReconcileResult:
-    workflow = (team.ownership.code.deploy_workflow or "").strip()
+    policy = team.ownership.code
+    provider = policy.deploy_provider
+    workflow = (policy.deploy_workflow or "").strip()
+    project = (policy.deploy_project or "").strip()
+    scope = (policy.deploy_scope or "").strip()
     merge_sha = str(obligation.evidence.get("merge_sha") or "")
-    if not workflow:
+    if provider == "github" and not workflow:
         return _block(conn, obligation, "deployment workflow is not configured")
+    if provider == "vercel" and (not project or not scope):
+        return _block(
+            conn,
+            obligation,
+            "Vercel deployment project or scope is not configured",
+        )
     if not _OBJECT_ID.fullmatch(merge_sha):
         return _block(conn, obligation, "obligation has no canonical merge commit")
     try:
-        deploy = inspect_deploy(
-            cwd=team.project.repo,
-            workflow=workflow,
-            commit_sha=merge_sha,
-            runner=runner,
-        )
+        if provider == "vercel":
+            deploy = inspect_vercel_deploy(
+                cwd=team.project.repo,
+                project=project,
+                scope=scope,
+                commit_sha=merge_sha,
+                expected_branch=team.project.base_branch,
+                runner=runner,
+            )
+        else:
+            deploy = inspect_github_deploy(
+                cwd=team.project.repo,
+                workflow=workflow,
+                commit_sha=merge_sha,
+                runner=runner,
+            )
     except Exception:
         return _reschedule(conn, team, obligation)
     if not deploy.found:
         return _reschedule(conn, team, obligation)
     evidence = {
+        "deploy_provider": provider,
+        "deployment_ref": getattr(deploy, "deployment_ref", None) or deploy.url,
+        "deployment_url": deploy.url,
+        "deployment_status": deploy.status,
+        "deployment_conclusion": deploy.conclusion,
         "merge_sha": merge_sha,
-        "workflow": workflow,
-        "workflow_run_id": deploy.run_id,
+        "workflow": workflow or None,
+        "workflow_run_id": getattr(deploy, "run_id", None),
         "workflow_url": deploy.url,
         "workflow_status": deploy.status,
         "workflow_conclusion": deploy.conclusion,
@@ -820,7 +849,7 @@ def _reconcile_deploy(conn, team, obligation, *, runner) -> ReconcileResult:
             conn,
             obligation.id,
             to_status="verifying",
-            reason="deployment workflow succeeded for merge commit",
+            reason="deployment succeeded for merge commit",
             evidence=evidence,
         )
         return _result(updated)
@@ -828,7 +857,7 @@ def _reconcile_deploy(conn, team, obligation, *, runner) -> ReconcileResult:
         return _block(
             conn,
             obligation,
-            f"deployment workflow failed ({deploy.conclusion}): {deploy.url}",
+            f"deployment failed ({deploy.conclusion}): {deploy.url}",
             evidence=evidence,
         )
     if deploy.status in _DEPLOY_PENDING:
@@ -836,14 +865,14 @@ def _reconcile_deploy(conn, team, obligation, *, runner) -> ReconcileResult:
             return _block(
                 conn,
                 obligation,
-                f"deployment workflow timed out: {deploy.url}",
+                f"deployment timed out: {deploy.url}",
                 evidence=evidence,
             )
         return _reschedule(conn, team, obligation)
     return _block(
         conn,
         obligation,
-        f"deployment workflow returned unknown state: {deploy.url}",
+        f"deployment returned unknown state: {deploy.url}",
         evidence=evidence,
     )
 

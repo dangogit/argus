@@ -479,7 +479,12 @@ def _support_source(cfg, team_id: str):
 
 def _support_obligation(conn, team, source, email: EmailSummary, thread: str,
                         decision: DraftDecision):
-    if conn is None or not getattr(getattr(team, "ownership", None), "enabled", False):
+    ownership = getattr(team, "ownership", None)
+    if (
+        conn is None
+        or not getattr(ownership, "enabled", False)
+        or not getattr(getattr(ownership, "support", None), "enabled", False)
+    ):
         return None
     return ownership_support.open_or_update_obligation(
         conn,

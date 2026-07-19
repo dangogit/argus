@@ -163,8 +163,10 @@ The important switches are:
 - `ownership.enabled`, default `false`;
 - `ownership.code.auto_ready` and `auto_merge`, both default `false`;
 - `ownership.code.allowed_base_branches`, `required_checks`,
-  `deploy_workflow`, `live_url`, and `smoke_paths`;
-- `ownership.support.auto_send_low_risk`, default `false`, plus
+  `deploy_provider`, provider-specific deployment identity, `live_url`, and
+  `smoke_paths`;
+- `ownership.support.enabled`, default `true`, and
+  `ownership.support.auto_send_low_risk`, default `false`, plus
   `min_confidence` and additive `blocked_categories`;
 - `ownership.maintenance.enabled`, default `false`, plus `interval_hours` and
   `max_open`;
@@ -172,9 +174,10 @@ The important switches are:
   `support_reply`.
 
 Automatic merge rejects `main`, `master`, `production`, and `prod` and requires
-at least one required check. A deploy workflow requires a live URL. Mandatory
-blocked code paths and support categories are always retained when custom lists
-are added.
+at least one required check. GitHub deployment uses `deploy_workflow`. Vercel
+deployment uses `deploy_project` and `deploy_scope`. Both require a live URL.
+Mandatory blocked code paths and support categories are always retained when
+custom lists are added.
 
 Use the staging-first YAML and full gate reference in [Persistent Team
 Ownership](ownership.md). Then verify the loaded policy without exposing

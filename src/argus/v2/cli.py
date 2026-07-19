@@ -737,6 +737,7 @@ def _owner_support_readiness(cfg, team) -> dict:
         and summaries[0]["url_configured"]
     )
     return {
+        "enabled": team.ownership.support.enabled,
         "auto_send_low_risk": team.ownership.support.auto_send_low_risk,
         "blocked_categories": list(team.ownership.support.blocked_categories),
         "min_confidence": team.ownership.support.min_confidence,
@@ -793,7 +794,12 @@ def _owner_proof(conn, cfg, team) -> dict:
             missing.add("base_branch_not_allowed")
         if not code.required_checks:
             missing.add("required_checks")
-        if not code.deploy_workflow:
+        if code.deploy_provider == "vercel":
+            if not code.deploy_project:
+                missing.add("deploy_project")
+            if not code.deploy_scope:
+                missing.add("deploy_scope")
+        elif not code.deploy_workflow:
             missing.add("deploy_workflow")
         if live_url is None:
             missing.add("live_url")
@@ -806,7 +812,7 @@ def _owner_proof(conn, cfg, team) -> dict:
             missing.add("action_mode:merge_pr:auto")
         if policy.support.auto_send_low_risk and action_modes["support_reply"] != "auto":
             missing.add("action_mode:support_reply:auto")
-        if not support["ready"]:
+        if policy.support.enabled and not support["ready"]:
             missing.add("support_source")
         if any(mode == "approval" for mode in action_modes.values()) and not any(
             channel.role == "control" for channel in team.channels
@@ -822,6 +828,9 @@ def _owner_proof(conn, cfg, team) -> dict:
             "auto_ready": code.auto_ready,
             "base_branch": project.base_branch if project is not None else None,
             "blocked_globs": list(code.blocked_globs),
+            "deploy_project": code.deploy_project,
+            "deploy_provider": code.deploy_provider,
+            "deploy_scope": code.deploy_scope,
             "deploy_workflow": code.deploy_workflow,
             "live_smoke": {
                 "paths": list(code.smoke_paths),
