@@ -88,8 +88,9 @@ Setup questions belong in
 | Production signal routing | Poll GitHub, Vercel, Firebase, Supabase, Sentry, PostHog, Fly, uptime, Postgres, OpenAPI, webhooks, and support email. |
 | Durable agent pipeline | Postgres queues, role pipelines, approvals, action records, retries, and operator-visible state. |
 | Safe draft PR loop | Worktree isolation, QA gating, secret scanning, daily caps, retro lessons, and draft PRs by default. |
+| Persistent team ownership | Durable obligations follow code, support, and evidence-backed maintenance through verified real-world completion. |
 | Local engine choice | Use `echo` for smoke tests, then Codex, Claude Code, or Hermes for real work. |
-| Always-on operation | Render launchd or systemd units for `serve`, `up`, `poll`, watchdog, backup, and daily brief jobs. |
+| Always-on operation | Render launchd or systemd units for receivers, worker lanes, polling, ownership, learning, watchdog, and backups. |
 | Agent-friendly install | `AGENTS.md`, `llms.txt`, and an installer skill tell Codex or Claude Code how to inspect, configure, and prove the setup. |
 
 ## How Argus Compares
@@ -97,8 +98,9 @@ Setup questions belong in
 Most open-source agents are **personal assistants that act on your behalf by
 default** (OpenClaw, Hermes, NanoClaw). The one true peer is **Paperclip** -
 also a "company of agents for work." Argus's difference from all of them: it is
-**propose-only and it watches your production**. It reacts to incidents,
-deploys, and errors and proposes fixes - it is not a board you assign agents to.
+**propose-only by default and it watches your production**. It reacts to
+incidents, deploys, and errors and proposes fixes. Explicit, fail-closed policy
+can later grant a team limited staging ownership.
 
 | | **Argus** | Paperclip | OpenClaw | Hermes |
 |---|:---:|:---:|:---:|:---:|
@@ -120,9 +122,10 @@ Argus even **runs Hermes Agent as one of its execution engines** - several of
 these are complementary, not just rivals.
 
 **What Argus does not do, on purpose:** it is not a general personal assistant,
-it does not auto-merge or auto-deploy, it is not a hosted SaaS that holds your
-keys, and it stays out of voice assistants, smart home, and social media. The
-focus is one job done safely: a private agent layer over your software projects.
+it does not auto-merge protected production branches, it is not a hosted SaaS
+that holds your keys, and it stays out of voice assistants, smart home, and
+social media. Staging ownership is opt-in and requires repository, branch,
+check, deploy, and smoke evidence.
 
 See [docs/competitive.md](docs/competitive.md) for the full matrix and roadmap.
 
@@ -216,6 +219,7 @@ and runtime data at `/var/lib/argus` when using it beyond version smoke.
 | Configure Telegram, WhatsApp, CLI, or generic inbound | [docs/inbound.md](docs/inbound.md) |
 | Add Vercel, Sentry, PostHog, Firebase, Supabase, GitHub, uptime, or webhook monitoring | [docs/triage.md](docs/triage.md) |
 | Enable PM draft PRs | [docs/pm.md](docs/pm.md) |
+| Enable persistent team ownership | [docs/ownership.md](docs/ownership.md) |
 | Run always-on workers | [docs/live-onboarding.md](docs/live-onboarding.md) and [docs/operations.md](docs/operations.md) |
 | Update or uninstall Argus | [docs/updating.md](docs/updating.md) |
 | Answer common setup questions | [docs/faq.md](docs/faq.md) |
@@ -277,6 +281,12 @@ argus doctor --deep --json
 argus go-live --mode chat-only --public-url https://argus.example.com/slack
 ```
 
+For each ownership-enabled team, also run the separate policy proof:
+
+```bash
+argus owner prove --team TEAM --json
+```
+
 `argus onboard project` writes only private local artifacts:
 `argus.yaml`, `argus.env.example.generated`, and `argus.onboarding.md`.
 It detects env key names but never copies secret values from `.env`.
@@ -295,6 +305,9 @@ When every configured team must have the provider, use
 channels, repos, and connector dry-runs. `argus go-live` proves operation:
 database migrated, receiver reachable, worker running continuously, channel
 event received, reply sent, and PM smoke completed when PM mode is enabled.
+`argus owner prove` separately proves ownership action modes, branch and check
+policy, staging workflow and smoke target, support transport, and maintenance
+wiring. It does not replace `doctor --deep` or `go-live`.
 
 Do not call a deploy operational while `go-live` reports `configured-only` or
 `blocked`.
@@ -330,6 +343,9 @@ argus retro backlog --team __company__
 argus context commitments
 argus content list
 argus support list --team dev
+argus owner prove --team dev --json
+argus owner list --team dev --status blocked --json
+argus owner cycle --team dev --json
 argus advisor status
 argus calendar list --days 7
 ```
@@ -356,7 +372,10 @@ argus host install --jobs-dir ./jobs --dry-run
 ```
 
 Built-in runtime jobs from `argus launchd render` include `serve`, `up`,
-`poll`, `retro`, `watchdog`, `backup`, and `logrotate`.
+`work-chat`, `work-pipeline`, `poll`, `owner`, `retro`, `memory`, `watchdog`,
+`backup`, and `logrotate`. The `owner` timer runs every 300 seconds. Use
+`argus launchd render --os linux` for the equivalent built-in systemd services
+and timers.
 
 ## Dashboard
 
@@ -406,7 +425,10 @@ build Next.js.
 Argus proposes changes by default. PRs, replies, calendar writes, publishing,
 and other outward actions pass through explicit risk classification and approval
 policy. The runtime fails closed when credentials, routes, or transports are not
-configured.
+configured. Optional ownership can automate only explicitly allowlisted staging
+work. Protected production branches, sensitive support, secrets, destructive
+work, invented maintenance, and ambiguous outward retries remain blocked. See
+[Persistent Team Ownership](docs/ownership.md).
 
 ## Community And Support
 

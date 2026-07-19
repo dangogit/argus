@@ -62,6 +62,7 @@ teams:
 | `company.sources` | Shared signal sources used across teams, such as Sentry, GitHub, Postgres, uptime checks, or webhooks. | API tokens and transport secrets. Reference them through env names. |
 | `retro` | Daily learning authority and optional company auto-change target team. | Secrets, raw incident logs, or project-specific role prompts. |
 | `teams[].project` | Repo path, `github_repo`, branch names, worktree prefix, setup command, test command, connector project IDs, and project-specific PM limits. | Owner-wide defaults that every team should inherit. |
+| `teams[].ownership` | Explicit team responsibility, code release proof, low-risk support policy, and evidence-backed maintenance limits. | Secrets, production credentials, or broad authority that cannot be scoped to one team. |
 | `teams[].roles` | Pipeline role names, role kind, and concise prompts or prompt files in config-directory mode. | Runtime secrets, large knowledge dumps, and temporary incident context. |
 | `teams[].channels` | Control, escalation, owner, or publishing channel destinations for that team. | Global notification policy and credentials for those transports. |
 | `.env` or `ARGUS_ENV_FILES` | `ARGUS_DB_DSN`, model API keys, GitHub tokens, Apps Script keys, webhook secrets, dashboard token, executable paths, and deploy-only values. | Product behavior that should be reviewable in YAML. |
@@ -149,6 +150,43 @@ Keep repo identity in team/project config:
 Use team overrides sparingly. A team should override `notifications`,
 `pipeline`, `project`, or `support` only when it has a real operational
 difference.
+
+## Persistent Ownership
+
+Ownership is a team-level, default-off policy. It keeps an obligation open
+after a request or action finishes until the configured real-world result is
+proven. Start with approval-gated shadow mode, then add staging authority one
+boundary at a time.
+
+The important switches are:
+
+- `ownership.enabled`, default `false`;
+- `ownership.code.auto_ready` and `auto_merge`, both default `false`;
+- `ownership.code.allowed_base_branches`, `required_checks`,
+  `deploy_workflow`, `live_url`, and `smoke_paths`;
+- `ownership.support.auto_send_low_risk`, default `false`, plus
+  `min_confidence` and additive `blocked_categories`;
+- `ownership.maintenance.enabled`, default `false`, plus `interval_hours` and
+  `max_open`;
+- explicit `autonomy.actions` entries for `ready_pr`, `merge_pr`, and
+  `support_reply`.
+
+Automatic merge rejects `main`, `master`, `production`, and `prod` and requires
+at least one required check. A deploy workflow requires a live URL. Mandatory
+blocked code paths and support categories are always retained when custom lists
+are added.
+
+Use the staging-first YAML and full gate reference in [Persistent Team
+Ownership](ownership.md). Then verify the loaded policy without exposing
+secrets:
+
+```bash
+argus owner prove --team TEAM --json
+```
+
+`doctor --deep` proves dependencies and connector access. `owner prove` is a
+separate, read-only proof of ownership policy wiring. Run both before enabling
+the owner timer.
 
 ## MCP Servers
 
@@ -274,7 +312,9 @@ Before enabling live polling or always-on workers:
    maintainer's real timezone.
 6. `argus doctor` passes config and database checks.
 7. A local `echo` run can submit work, execute one loop, and write status rows.
-8. Only then enable real engines, source polling, support inboxes, or host jobs.
+8. For every ownership-enabled team, `argus owner prove --team TEAM --json`
+   returns `"ready": true`.
+9. Only then enable real engines, source polling, support inboxes, or host jobs.
 
 ## Database
 

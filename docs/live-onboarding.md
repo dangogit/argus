@@ -14,8 +14,10 @@ A live Argus install has all of these pieces:
 4. Each project has a control channel, usually one Slack channel per team.
 5. Each project has a `manager` role with a real engine for project-status chat.
 6. PM auto-fix has developer, QA, and optional senior roles plus repo policy.
-7. Always-on jobs are supervised by launchd, systemd, or another process manager.
-8. Public webhooks use a stable URL, not a disposable quick tunnel.
+7. An ownership-enabled project passes its separate policy wiring proof.
+8. Always-on jobs, including the owner cycle, are supervised by launchd,
+   systemd, or another process manager.
+9. Public webhooks use a stable URL, not a disposable quick tunnel.
 
 If only `argus serve` is running, inbound messages land in Postgres but do not
 process until `argus up` runs. That is a smoke test, not live operation.
@@ -31,7 +33,7 @@ write private config, and prove `doctor --deep` plus `go-live`.
 Use this prompt in Codex or Claude Code from the Argus checkout:
 
 ```text
-Read AGENTS.md, docs/configuration.md, docs/slack-live.md, and
+Read AGENTS.md, docs/configuration.md, docs/ownership.md, docs/slack-live.md, and
 docs/live-onboarding.md. Configure a private argus.yaml and .env.local for one
 project first. Keep secrets out of git. Prove echo quickstart, then Slack
 inbound, then a continuous argus up worker. Add a manager role with codex or
@@ -215,6 +217,18 @@ argus doctor --deep --live --json \
 path, base branch, `gh` availability, test command executable, and configured
 connector dry-run status.
 
+For an ownership-enabled team, also run:
+
+```bash
+argus owner prove --team my-project --json
+```
+
+`doctor --deep` proves runtime dependencies and live connector access. `owner
+prove` is read-only and separately proves explicit action modes, branch and
+check policy, staging workflow and smoke target, support transport readiness,
+maintenance policy, and current due or blocked work. It exits nonzero while
+required ownership wiring is missing.
+
 ## 3. Configure Slack Inbound
 
 Follow `docs/slack-live.md` and use one Slack channel per team.
@@ -378,6 +392,18 @@ argus pm pending --notify my-project
 Keep `draft: true` for the first real project. Move to ready PRs only after the
 project has reliable tests and you trust the loop.
 
+### Optional: persistent team ownership
+
+PM can finish a pipeline while the real outcome still waits on a PR, merge,
+staging deploy, smoke check, or customer reply. Persistent ownership records
+that remaining responsibility as an obligation and reconciles it on a timer.
+It is disabled by default.
+
+Follow [Persistent Team Ownership](ownership.md). Start in shadow mode with
+ready, merge, and support action overrides set to `approval`. Prove several
+cycles before enabling automatic ready on a staging branch. Keep production
+merges approval-gated.
+
 ## 7. Make It Always-On
 
 macOS launchd:
@@ -404,8 +430,14 @@ Verify:
 
 ```bash
 argus ready --live
+argus owner prove --team my-project --json
 launchctl list | grep com.argus
 ```
+
+The built-in bundle includes an `owner` timer that runs `argus owner cycle
+--json` every 300 seconds. On Linux, `argus launchd render --os linux` emits the
+matching `argus-owner.service` and `argus-owner.timer` units. The generic
+manifest-based `argus host render` only includes jobs present in `jobs-dir`.
 
 macOS privacy warning: LaunchAgents may not read files under `Desktop`,
 `Documents`, or other protected folders unless the host process has permission.
@@ -438,8 +470,14 @@ verification again.
 Run go-live only after `serve`, `up`, config, DB, and channels are ready:
 
 ```bash
+argus doctor --deep --live --json
+argus owner prove --team my-project --json
 argus go-live --mode chat-only --public-url https://argus.example.com/slack
 ```
+
+`go-live` does not replace the ownership proof. For each ownership-enabled team,
+require both a successful `doctor --deep` dependency check and a successful
+`owner prove` policy wiring check before calling the ownership loop live.
 
 For quick tunnel smoke tests only:
 

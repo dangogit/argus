@@ -47,8 +47,8 @@ def _unit_name(unit: "Unit") -> str:
 def render_systemd(unit: Unit) -> tuple[str, str | None]:
     """Render a Unit as a systemd .service string (+ a .timer string for
     interval units). Mirrors the launchd bundle so Linux gets the same
-    opinionated serve/up/poll/retro/watchdog/backup/logrotate set out of the
-    box, not just a generic host-job renderer."""
+    opinionated serve/up/poll/owner/retro/memory/watchdog/backup/logrotate set
+    out of the box, not just a generic host-job renderer."""
     import shlex
     name = _unit_name(unit)
     # systemd treats '%' as a specifier; escape it as '%%' in env values and the
