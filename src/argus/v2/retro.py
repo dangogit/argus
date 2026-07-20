@@ -222,7 +222,7 @@ def run(conn: psycopg.Connection, cfg, *, retro_day: date | None = None,
     synthesized = synthesize(conn, retro_day=day)
     bridged = bridge_lessons(conn, cfg)
     _enqueue_auto_changes(conn, cfg)
-    _mark_owner_escalations(conn, cfg)
+    _mark_owner_escalations(conn, cfg, alert_day=day)
     return synthesized, bridged
 
 
@@ -276,6 +276,7 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
                 "trigger": item.trigger,
                 "auto_queued": False,
                 "handled": False,
+                "owner_escalation": False,
             })
     if not items:
         return []
@@ -296,6 +297,7 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
             continue
         _id, typ, status, priority, statement, trigger, payload, bridged_at = row
         pl = payload or {}
+        owner_escalation_handled = _owner_escalation_handled(pl, day)
         item.update({
             "type": typ,
             "status": status,
@@ -303,8 +305,11 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
             "statement": statement,
             "trigger": trigger,
             "auto_queued": bool(pl.get("auto_request_id")),
-            "handled": bool(pl.get("auto_request_id") or pl.get("auto_skipped_at")
-                            or pl.get("owner_escalation_required_at") or bridged_at),
+            "owner_escalation": owner_escalation_handled is not None,
+            "handled": (owner_escalation_handled
+                        if owner_escalation_handled is not None
+                        else bool(pl.get("auto_request_id")
+                                  or pl.get("auto_skipped_at") or bridged_at)),
         })
     return sorted(items, key=lambda item: (-int(item["priority"]), item["statement"]))
 
@@ -312,6 +317,20 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
 def company_digest_items(conn: psycopg.Connection, day: date) -> list[dict[str, Any]]:
     """Public accessor for the CEO brief: company-level retro items for a day."""
     return _items_for_day(conn, COMPANY_TEAM_ID, day)
+
+
+def _owner_escalation_handled(payload: dict, day: date) -> bool | None:
+    """Suppress a closure after its creation or latest state-change day."""
+    changed_at = payload.get("owner_escalation_required_at")
+    if not changed_at:
+        return None
+    alert_day = payload.get("owner_escalation_alert_date")
+    if alert_day:
+        return str(alert_day) != day.isoformat()
+    try:
+        return datetime.fromisoformat(str(changed_at)).date() != day
+    except ValueError:
+        return True
 
 
 def _add_section(lines: list[str], title: str, items: list[dict[str, Any]],
@@ -819,7 +838,8 @@ def _mark_auto_skipped(conn: psycopg.Connection, item_id: str,
         )
 
 
-def _mark_owner_escalations(conn: psycopg.Connection, cfg) -> int:
+def _mark_owner_escalations(conn: psycopg.Connection, cfg, *,
+                            alert_day: date | None = None) -> int:
     retro_cfg = getattr(cfg, "retro", None)
     authority = getattr(retro_cfg, "authority", "propose")
     reason = ("retro-authority-not-auto-changes" if authority != "auto-changes"
@@ -870,6 +890,9 @@ def _mark_owner_escalations(conn: psycopg.Connection, cfg) -> int:
                 continue
             escalation = {
                 "owner_escalation_required_at": datetime.now(timezone.utc).isoformat(),
+                "owner_escalation_alert_date": (
+                    alert_day or datetime.now(timezone.utc).date()
+                ).isoformat(),
                 "owner_escalation_reason": item_reason,
                 "owner_escalation_source_evidence_ids": evidence,
                 "owner_escalation_occurrence_count": len(evidence),

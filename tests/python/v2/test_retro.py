@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from argus.v2.config import loader
@@ -280,6 +280,16 @@ def test_owner_escalation_is_not_rewritten(conn, tmp_path):
     assert second_payload == first_payload
 
 
+def test_owner_escalation_alerts_only_on_its_recorded_state_day():
+    payload = {
+        "owner_escalation_required_at": "2026-07-20T06:00:00+00:00",
+        "owner_escalation_alert_date": "2026-07-20",
+    }
+
+    assert retro._owner_escalation_handled(payload, date(2026, 7, 20)) is False
+    assert retro._owner_escalation_handled(payload, date(2026, 7, 21)) is True
+
+
 def test_failed_recurring_auto_change_uses_one_stateful_owner_closure(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 7, 20)
@@ -321,7 +331,23 @@ def test_failed_recurring_auto_change_uses_one_stateful_owner_closure(conn, tmp_
     assert payload["owner_escalation_source_evidence_ids"] == sorted(evidence)
     assert payload["owner_escalation_request_statuses"] == ["failed"]
     assert payload["owner_escalation_state_fingerprint"]
-    assert retro.company_digest_items(conn, day)[0]["handled"] is True
+    assert retro.company_digest_items(conn, day)[0]["handled"] is False
+
+    next_day = day + timedelta(days=1)
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=next_day,
+                 candidates=[{
+                     "type": "process-edit",
+                     "statement": "Escalate recurring findings to one owner-reviewed closure record",
+                     "trigger": "five QA failures while low disk stayed active",
+                     "evidence_run_ids": evidence,
+                     "source_team_ids": ["argus", "general"],
+                     "confidence": 0.9,
+                     "impact": 8,
+                     "theme": "recurring-findings",
+                 }])
+    retro.synthesize(conn, retro_day=next_day)
+    assert retro._mark_owner_escalations(conn, cfg) == 0
+    assert retro.company_digest_items(conn, next_day)[0]["handled"] is True
 
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM requests WHERE fingerprint LIKE 'retro-change:%'")
@@ -332,7 +358,8 @@ def test_failed_recurring_auto_change_uses_one_stateful_owner_closure(conn, tmp_
             "VALUES (%s, 'dev', 'open_pr', 'reversible_internal', 'failed', %s)",
             (request_id, "recurring-findings-state-change"),
         )
-    assert retro._mark_owner_escalations(conn, cfg) == 1
+    assert retro._mark_owner_escalations(conn, cfg, alert_day=next_day) == 1
+    assert retro.company_digest_items(conn, next_day)[0]["handled"] is False
     with conn.cursor() as cur:
         cur.execute(
             "SELECT count(*), payload->>'owner_escalation_matching_action_count' "

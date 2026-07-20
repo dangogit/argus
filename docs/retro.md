@@ -59,8 +59,9 @@ control merge, deploy, outward messages, destructive work, and secrets.
   `process-edit` cannot be self-applied, retro records one owner-reviewed closure
   state on the backlog item instead of leaving it as an unhandled gated fix.
   This includes propose-mode runs, auto-change runs where no PM request was
-  queued, and failed auto-change requests. Unchanged closure state is suppressed;
-  new evidence or request/action status changes refresh the same record.
+  queued, and failed auto-change requests. The closure is alertable on creation;
+  unchanged closure state is suppressed on later runs. New evidence or
+  request/action status changes refresh and re-alert the same record.
   The stored payload includes `owner_escalation_source_evidence_ids`,
   `owner_escalation_fingerprint` (set to `retro-change:<backlog-id>`),
   `owner_escalation_matching_request_count`,

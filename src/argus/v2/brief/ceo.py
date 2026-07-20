@@ -198,7 +198,12 @@ def _retro_lines(conn: psycopg.Connection, *, limit: int = 3) -> list[str]:
         items = retro.company_digest_items(conn, day)
         if items:
             break
-    picked = [i for i in items if i.get("status") == "gated" and i.get("statement")]
+    picked = [
+        item for item in items
+        if item.get("status") == "gated"
+        and item.get("statement")
+        and (not item.get("owner_escalation") or not item.get("handled"))
+    ]
     return [f"- {i['statement']}" for i in picked[:limit]]
 
 
