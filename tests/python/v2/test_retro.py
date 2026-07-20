@@ -280,6 +280,68 @@ def test_owner_escalation_is_not_rewritten(conn, tmp_path):
     assert second_payload == first_payload
 
 
+def test_failed_recurring_auto_change_uses_one_stateful_owner_closure(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 7, 20)
+    evidence = [
+        "retro-change:937df0c7fc1e1dd9d8e1a86c",
+        "retro-change:1805d3739130a90361190deb",
+        "retro-change:7992ca1b7826b200d7dd2c0f",
+        "disk:low:suppressed:8b9cb6a71913",
+        "retro-change:768905b27168a94624c36944",
+        "disk:low:2a969bc5353e",
+        "retro-change:379bcd6641dbe1c5d9870bce",
+    ]
+    retro.record(conn, team_id=retro.COMPANY_TEAM_ID, retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": "Escalate recurring findings to one owner-reviewed closure record",
+        "trigger": "five QA failures while low disk stayed active",
+        "evidence_run_ids": evidence,
+        "source_team_ids": ["argus", "general"],
+        "confidence": 0.9,
+        "impact": 8,
+        "theme": "recurring-findings",
+    }])
+
+    retro.run(conn, cfg, retro_day=day, company_only=True)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET status='failed' WHERE fingerprint LIKE 'retro-change:%'")
+
+    assert retro._mark_owner_escalations(conn, cfg) == 1
+    assert retro._mark_owner_escalations(conn, cfg) == 0
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT payload FROM retro_backlog WHERE team_id=%s",
+            (retro.COMPANY_TEAM_ID,),
+        )
+        payload = cur.fetchone()[0]
+    assert payload["owner_escalation_reason"] == "auto-change-failed"
+    assert payload["owner_escalation_occurrence_count"] == 7
+    assert payload["owner_escalation_source_evidence_ids"] == sorted(evidence)
+    assert payload["owner_escalation_request_statuses"] == ["failed"]
+    assert payload["owner_escalation_state_fingerprint"]
+    assert retro.company_digest_items(conn, day)[0]["handled"] is True
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        request_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO actions "
+            "(request_id, team_id, type, risk, status, idempotency_key) "
+            "VALUES (%s, 'dev', 'open_pr', 'reversible_internal', 'failed', %s)",
+            (request_id, "recurring-findings-state-change"),
+        )
+    assert retro._mark_owner_escalations(conn, cfg) == 1
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*), payload->>'owner_escalation_matching_action_count' "
+            "FROM retro_backlog WHERE team_id=%s GROUP BY payload",
+            (retro.COMPANY_TEAM_ID,),
+        )
+        assert cur.fetchone() == (1, "1")
+
+
 def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)

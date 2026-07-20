@@ -55,10 +55,12 @@ control merge, deploy, outward messages, destructive work, and secrets.
   least `7`, and there are at least 3 evidence ids.
 - Company auto-changes also need the same theme in at least 2 teams, or at
   least 4 total evidence ids.
-- When a gated `skill`, `prompt-edit`, or `process-edit` cannot be self-applied,
-  retro records owner-escalation evidence on the backlog item instead of leaving
-  it as an unhandled gated fix. This includes propose-mode runs and auto-change
-  runs where no PM request was queued.
+- After at least 3 evidence occurrences, when a gated `skill`, `prompt-edit`, or
+  `process-edit` cannot be self-applied, retro records one owner-reviewed closure
+  state on the backlog item instead of leaving it as an unhandled gated fix.
+  This includes propose-mode runs, auto-change runs where no PM request was
+  queued, and failed auto-change requests. Unchanged closure state is suppressed;
+  new evidence or request/action status changes refresh the same record.
   The stored payload includes `owner_escalation_source_evidence_ids`,
   `owner_escalation_fingerprint` (set to `retro-change:<backlog-id>`),
   `owner_escalation_matching_request_count`,

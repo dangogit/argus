@@ -304,7 +304,7 @@ def _items_for_day(conn: psycopg.Connection, team_id: str, day: date) -> list[di
             "trigger": trigger,
             "auto_queued": bool(pl.get("auto_request_id")),
             "handled": bool(pl.get("auto_request_id") or pl.get("auto_skipped_at")
-                            or bridged_at),
+                            or pl.get("owner_escalation_required_at") or bridged_at),
         })
     return sorted(items, key=lambda item: (-int(item["priority"]), item["statement"]))
 
@@ -828,42 +828,66 @@ def _mark_owner_escalations(conn: psycopg.Connection, cfg) -> int:
         cur.execute(
             """
             SELECT b.id::text, b.payload,
-                   (SELECT count(*) FROM requests r
-                    WHERE r.fingerprint = 'retro-change:' || b.id),
-                   (SELECT count(*) FROM actions a
-                    JOIN requests r ON r.id=a.request_id
-                    WHERE r.fingerprint = 'retro-change:' || b.id)
+                   COALESCE((SELECT jsonb_agg(r.status ORDER BY r.status)
+                             FROM requests r
+                             WHERE r.fingerprint = 'retro-change:' || b.id), '[]'),
+                   COALESCE((SELECT jsonb_agg(a.status ORDER BY a.status)
+                             FROM actions a
+                             JOIN requests r ON r.id=a.request_id
+                             WHERE r.fingerprint = 'retro-change:' || b.id), '[]')
             FROM retro_backlog b
             WHERE b.status='gated'
               AND b.type=ANY(%s)
-              AND NOT (b.payload ? 'auto_request_id')
               AND NOT (b.payload ? 'auto_skipped_at')
-              AND NOT (b.payload ? 'owner_escalation_required_at')
             """,
             (list(_AUTO_TYPES),),
         )
         rows = cur.fetchall()
         marked = 0
-        for item_id, payload, request_count, action_count in rows:
+        for item_id, payload, request_statuses, action_statuses in rows:
+            payload = payload or {}
+            evidence = sorted(_evidence_ids(payload))
+            if len(evidence) < 3:
+                continue
+            request_statuses = list(request_statuses or [])
+            action_statuses = list(action_statuses or [])
+            if payload.get("auto_request_id"):
+                if "failed" not in request_statuses:
+                    continue
+                item_reason = "auto-change-failed"
+            else:
+                item_reason = reason
             fingerprint = f"retro-change:{item_id}"
+            state = {
+                "evidence": evidence,
+                "request_statuses": request_statuses,
+                "action_statuses": action_statuses,
+            }
+            state_fingerprint = hashlib.sha256(
+                json.dumps(state, sort_keys=True).encode()
+            ).hexdigest()[:24]
+            if payload.get("owner_escalation_state_fingerprint") == state_fingerprint:
+                continue
             escalation = {
                 "owner_escalation_required_at": datetime.now(timezone.utc).isoformat(),
-                "owner_escalation_reason": reason,
-                "owner_escalation_source_evidence_ids": sorted(
-                    _evidence_ids(payload or {})
-                ),
+                "owner_escalation_reason": item_reason,
+                "owner_escalation_source_evidence_ids": evidence,
+                "owner_escalation_occurrence_count": len(evidence),
                 "owner_escalation_fingerprint": fingerprint,
-                "owner_escalation_matching_request_count": int(request_count),
-                "owner_escalation_matching_action_count": int(action_count),
+                "owner_escalation_matching_request_count": len(request_statuses),
+                "owner_escalation_matching_action_count": len(action_statuses),
+                "owner_escalation_request_statuses": request_statuses,
+                "owner_escalation_action_statuses": action_statuses,
+                "owner_escalation_state_fingerprint": state_fingerprint,
             }
             cur.execute(
                 """
                 UPDATE retro_backlog
                 SET payload = payload || %s::jsonb, updated_at=clock_timestamp()
                 WHERE id=%s
-                  AND NOT (payload ? 'owner_escalation_required_at')
+                  AND payload->>'owner_escalation_state_fingerprint' IS DISTINCT FROM %s
                 """,
-                (Json(escalation), item_id),
+                (Json(escalation), item_id, state_fingerprint),
             )
             marked += int(cur.rowcount)
         return marked
