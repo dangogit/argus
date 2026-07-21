@@ -64,6 +64,64 @@ def test_content_ready_notification_requires_readiness_proof(monkeypatch):
     assert '"publish draft-1"' not in sent[0][1]
 
 
+def test_content_queue_read_path_matches_schema(tmp_path, monkeypatch, conn):
+    # Guards the failure class in the incident report: a content query selecting a
+    # column the migrated schema does not have raises Postgres UndefinedColumn.
+    # Every content read must round-trip against the real migrated schema.
+    _env(monkeypatch, tmp_path)
+    queue_id = state.queue_add("luma", "linkedin", "announce launch")
+    assert state.queue_oldest()["id"] == queue_id
+    assert state.queue_latest(queue_id)["status"] == "queued"
+    assert [row["id"] for row in state.queue_list()] == [queue_id]
+    draft_id = state.register("luma", "linkedin")
+    assert state.latest_draft(draft_id)["status"] == "ready"
+    assert [row["id"] for row in state.draft_list()] == [draft_id]
+
+
+def test_content_drain_expires_stale_queued_briefs(tmp_path, monkeypatch, conn):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("ARGUS_CONTENT_QUEUE_MAX_AGE_DAYS", "7")
+    stale = state.queue_add("luma", "linkedin", "wedged brief")
+    fresh = state.queue_add("luma", "linkedin", "announce launch")
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE content_queue SET created_at = now() - interval '8 days' WHERE id=%s",
+            (stale,),
+        )
+    conn.commit()
+
+    result = drain.run(engine_runner=_engine, notifier=lambda *args: True)
+
+    # The wedged head-of-line brief ages out to a terminal status, so the drain
+    # is free to process the fresh brief instead of stalling on it forever.
+    assert state.queue_latest(stale)["status"] == "dead"
+    assert state.queue_latest(fresh)["status"] == "drafted"
+    assert result.draft_id
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM alerts WHERE fingerprint=%s",
+            (f"content-queue-expired-{stale}",),
+        )
+        assert cur.fetchone()[0] == 1
+
+
+def test_content_blocked_notifies_once_per_transition(tmp_path, monkeypatch, conn):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("ARGUS_CONTENT_DAILY_LIMIT", "0")  # cap 0 => blocked on entry
+    state.queue_add("luma", "linkedin", "announce launch")
+
+    first = drain.run(engine_runner=_engine, notifier=lambda *args: True)
+    second = drain.run(engine_runner=_engine, notifier=lambda *args: True)
+
+    assert first.blocked is True
+    assert first.failed is True
+    assert second.blocked is True
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM alerts WHERE fingerprint LIKE 'content-blocked-%%'")
+        # one alert across two blocked runs: emitted on transition, not every run
+        assert cur.fetchone()[0] == 1
+
+
 def test_content_drain_dead_letters_after_third_failure(tmp_path, monkeypatch, conn):
     _env(monkeypatch, tmp_path)
     queue_id = state.queue_add("luma", "linkedin", "announce launch")
