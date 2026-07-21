@@ -818,6 +818,80 @@ def test_reopen_pr_calls_gh_pr_reopen_and_returns_ref():
     assert ref
 
 
+def test_sync_pr_compares_current_default_branch_before_updating():
+    runner = _fake_runner({
+        ("gh", "repo", "view", "o/r"): json.dumps({
+            "defaultBranchRef": {"name": "main"},
+        }),
+        ("gh", "pr", "view", "73"): json.dumps({
+            "baseRefName": "main",
+            "headRefName": "feature",
+            "state": "OPEN",
+        }),
+        ("gh", "api", "repos/o/r/compare/main...feature"): json.dumps({
+            "ahead_by": 2,
+            "behind_by": 3,
+            "status": "diverged",
+        }),
+    })
+
+    ref = handlers.run("sync_pr", {"number": 73, "repo": "o/r"}, runner=runner)
+
+    report = json.loads(ref)
+    assert report == {
+        "ahead": 2,
+        "base": "main",
+        "behind": 3,
+        "head": "feature",
+        "status": "diverged",
+        "updated": True,
+    }
+    assert runner.calls[-1] == ["gh", "pr", "update-branch", "73", "-R", "o/r"]
+
+
+def test_sync_pr_reports_current_branch_without_pushing():
+    runner = _fake_runner({
+        ("gh", "repo", "view", "o/r"): json.dumps({
+            "defaultBranchRef": {"name": "main"},
+        }),
+        ("gh", "pr", "view", "73"): json.dumps({
+            "baseRefName": "main",
+            "headRefName": "feature",
+            "state": "OPEN",
+        }),
+        ("gh", "api", "repos/o/r/compare/main...feature"): json.dumps({
+            "ahead_by": 1,
+            "behind_by": 0,
+            "status": "ahead",
+        }),
+    })
+
+    report = json.loads(handlers.run(
+        "sync_pr", {"number": 73, "repo": "o/r"}, runner=runner))
+
+    assert report["behind"] == 0
+    assert report["updated"] is False
+    assert not any(call[:3] == ["gh", "pr", "update-branch"] for call in runner.calls)
+
+
+def test_sync_pr_rejects_pr_not_based_on_current_default_branch():
+    runner = _fake_runner({
+        ("gh", "repo", "view", "o/r"): json.dumps({
+            "defaultBranchRef": {"name": "main"},
+        }),
+        ("gh", "pr", "view", "73"): json.dumps({
+            "baseRefName": "staging",
+            "headRefName": "feature",
+            "state": "OPEN",
+        }),
+    })
+
+    with pytest.raises(RuntimeError, match="current default branch main"):
+        handlers.run("sync_pr", {"number": 73, "repo": "o/r"}, runner=runner)
+
+    assert not any(call[:2] == ["gh", "api"] for call in runner.calls)
+
+
 # ---------------------------------------------------------------------------
 # risk_for: server-side risk classification
 # ---------------------------------------------------------------------------
@@ -840,7 +914,7 @@ def test_risk_for_personal_outward_types():
 
 def test_risk_for_irreversible_types():
     from argus.v2.actions import executor
-    for t in ("merge_pr", "deploy"):
+    for t in ("merge_pr", "deploy", "sync_pr"):
         assert executor.risk_for(t) == "irreversible_outward", f"Expected irreversible for {t}"
 
 

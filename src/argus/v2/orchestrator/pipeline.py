@@ -1721,7 +1721,7 @@ def _support_context_manager_prompt(context: dict) -> str:
 
 
 def _manager_capability_prompt(cfg, team_id: str) -> str:
-    direct = {"close_pr", "comment_pr", "reopen_pr"}
+    direct = {"close_pr", "comment_pr", "reopen_pr", "sync_pr"}
     sources = list(getattr(cfg.company, "sources", []) or [])
     try:
         sources.extend(list(getattr(cfg.team(team_id), "sources", []) or []))
@@ -1743,6 +1743,9 @@ def _manager_capability_prompt(cfg, team_id: str) -> str:
     return (
         "CAPABILITY AWARENESS:\n"
         f"Immediate action types advertised for this team: {capabilities}.\n"
+        "For sync_pr, emit only the PR number. Argus resolves the repository and "
+        "current default branch server-side, compares drift at execution time, and "
+        "requires explicit approval before updating the branch. "
         "Project code work is supported through dispatch. Immediate operations not "
         "listed above are unsupported for this Slack agent. Never claim an unsupported "
         "operation succeeded, never silently ignore it, and never turn it into a lesson. "

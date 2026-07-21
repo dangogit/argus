@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 _REAL = {
     "open_pr", "ready_pr", "merge_pr", "deploy", "close_pr", "comment_pr",
-    "reopen_pr",
+    "reopen_pr", "sync_pr",
     "calendar_list", "calendar_get", "calendar_create", "calendar_update",
     "calendar_delete", "email_list", "email_search", "email_read", "email_reply",
     "email_archive", "email_draft", "content_queue", "social_publish",
@@ -47,7 +47,7 @@ _PERSONAL_OUTWARD = frozenset({
     "content_queue", "social_publish",
     "support_reply",
 })
-_IRREVERSIBLE = frozenset({"merge_pr", "deploy"})
+_IRREVERSIBLE = frozenset({"merge_pr", "deploy", "sync_pr"})
 
 
 def risk_for(action_type: str) -> str:
@@ -67,7 +67,7 @@ def risk_for(action_type: str) -> str:
 # (arbitrary command) are deliberately NOT manager-triggerable, they go through
 # the gated pipeline / explicit owner flow, not a free-form chat message.
 _CONVERSE_ALLOWLIST = frozenset({
-    "close_pr", "comment_pr", "reopen_pr",
+    "close_pr", "comment_pr", "reopen_pr", "sync_pr",
 })
 _CONVERSE_PERSONAL_ALLOWLIST = frozenset({
     "remember",
@@ -83,7 +83,7 @@ _LOW_DISK_NOTIFY_DEDUPE_SECONDS = 300
 
 # PR ops whose target repo + number must be set server-side (never trust the
 # model's repo/number: it could otherwise target any repo the gh token reaches).
-_PR_NUMBER_OPS = frozenset({"close_pr", "comment_pr", "reopen_pr"})
+_PR_NUMBER_OPS = frozenset({"close_pr", "comment_pr", "reopen_pr", "sync_pr"})
 
 
 def _team_autonomy(cfg, team_id: str) -> Autonomy:

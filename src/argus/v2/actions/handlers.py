@@ -409,6 +409,42 @@ def run(action_type: str, payload: dict, *, runner: Callable = _default_runner,
         out = runner(["gh", "pr", "reopen", str(payload["number"]),
                       "-R", payload["repo"]])
         return (out or f"reopened:{payload['number']}").strip()
+    if action_type == "sync_pr":
+        repo = payload["repo"]
+        number = str(payload["number"])
+        repo_data = json.loads(runner([
+            "gh", "repo", "view", repo, "--json", "defaultBranchRef",
+        ]))
+        base = str((repo_data.get("defaultBranchRef") or {}).get("name") or "")
+        if not base:
+            raise RuntimeError("sync_pr could not resolve the current default branch")
+        pr = json.loads(runner([
+            "gh", "pr", "view", number, "-R", repo,
+            "--json", "baseRefName,headRefName,state",
+        ]))
+        if pr.get("state") != "OPEN":
+            raise RuntimeError("sync_pr requires an open PR")
+        if pr.get("baseRefName") != base:
+            raise RuntimeError(
+                f"sync_pr requires the PR base to be the current default branch {base}")
+        head = str(pr.get("headRefName") or "")
+        if not head:
+            raise RuntimeError("sync_pr could not resolve the PR head branch")
+        drift = json.loads(runner([
+            "gh", "api", f"repos/{repo}/compare/{base}...{head}",
+        ]))
+        report = {
+            "ahead": int(drift.get("ahead_by") or 0),
+            "base": base,
+            "behind": int(drift.get("behind_by") or 0),
+            "head": head,
+            "status": str(drift.get("status") or "unknown"),
+            "updated": False,
+        }
+        if report["behind"] > 0:
+            runner(["gh", "pr", "update-branch", number, "-R", repo])
+            report["updated"] = True
+        return json.dumps(report, sort_keys=True)
     if action_type.startswith("calendar_"):
         return _calendar(action_type.removeprefix("calendar_"), payload, runner)
     if action_type.startswith("email_"):
