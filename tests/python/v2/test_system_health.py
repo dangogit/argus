@@ -6,6 +6,27 @@ from argus.v2.ingress import events
 from argus.v2.orchestrator import reconcile
 
 
+def _backdate_alert(conn, fingerprint, *, hours):
+    """Age the whatsapp notify-episode row so time-based dedup can be exercised
+    without waiting real hours."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE alerts SET ts = now() - make_interval(hours => %s) "
+            "WHERE fingerprint=%s AND channel='whatsapp'",
+            (hours, fingerprint),
+        )
+    conn.commit()
+
+
+def _health_action_texts(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT payload->>'text' FROM actions "
+            "WHERE idempotency_key LIKE 'system_health:%' ORDER BY created_at"
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 def _cfg_path(tmp_path, *, secret_ref=""):
     secret = f", secret_ref: \"{secret_ref}\"" if secret_ref else ""
     path = tmp_path / "argus.yaml"
@@ -299,6 +320,114 @@ def test_notify_findings_dedupes_low_disk_whatsapp_with_evidence(
             "FROM alerts WHERE fingerprint LIKE 'disk:low:suppressed:%'"
         )
         assert cur.fetchone() == ("log", "disk:low:argus-run")
+
+
+def test_notify_findings_dedupes_same_fingerprint_across_hourly_runs(
+    conn, tmp_path, monkeypatch
+):
+    """A persistent finding must notify once per 24h, not once per hourly
+    watchdog run. Age the first notify 5h and confirm the next run stays silent.
+    Uses a non-disk fingerprint so the 24h regime is proven for ALL findings."""
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="launchd:com.argus.serve:down",
+        message="launchd service down: com.argus.serve",
+    )
+
+    first = system_health.notify_findings(conn, cfg, [finding])
+    _backdate_alert(conn, "launchd:com.argus.serve:down", hours=5)
+    second = system_health.notify_findings(conn, cfg, [finding])
+    conn.commit()
+
+    assert first == 1
+    assert second == 0
+    assert len(_health_action_texts(conn)) == 1
+
+
+def test_notify_findings_escalates_after_24h(conn, tmp_path, monkeypatch):
+    """When the same fingerprint is still reported >24h after the first ping,
+    exactly one new notify fires, clearly marked as an escalation, then it goes
+    silent again for the next 24h."""
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="warn",
+        fingerprint="disk:low:argus-run",
+        message="low disk space under /Users/danielmini: 2.1 GB free",
+    )
+
+    first = system_health.notify_findings(conn, cfg, [finding])
+    _backdate_alert(conn, "disk:low:argus-run", hours=25)
+    second = system_health.notify_findings(conn, cfg, [finding])
+    # right after escalating it must fall silent again within the fresh 24h window
+    third = system_health.notify_findings(conn, cfg, [finding])
+    conn.commit()
+
+    assert first == 1
+    assert second == 1
+    assert third == 0
+    texts = _health_action_texts(conn)
+    assert len(texts) == 2
+    assert "ESCALATION (>24h): " not in texts[0]
+    assert texts[1].startswith("Argus health")
+    assert "ESCALATION (>24h): " in texts[1]
+
+
+def test_notify_findings_recovers_after_absence(conn, tmp_path, monkeypatch):
+    """After a finding stops being reported and then reappears, notify_findings
+    must ping again immediately (a fresh episode), not stay blocked by the old
+    24h window. resolve_absent_findings clears the state for absent findings."""
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="launchd:com.argus.serve:down",
+        message="launchd service down: com.argus.serve",
+    )
+
+    first = system_health.notify_findings(conn, cfg, [finding])
+    # a later watchdog cycle sees the finding gone -> clear its episode state
+    resolved = system_health.resolve_absent_findings(conn, [])
+    # it reappears immediately (well inside 24h); without recovery this is muted
+    second = system_health.notify_findings(conn, cfg, [finding])
+    conn.commit()
+
+    assert first == 1
+    assert resolved == 1
+    assert second == 1
+    texts = _health_action_texts(conn)
+    assert len(texts) == 2
+    assert all("ESCALATION" not in text for text in texts)
+
+
+def test_resolve_absent_findings_keeps_still_present_finding_muted(
+    conn, tmp_path, monkeypatch
+):
+    """A finding still present in the current cycle must NOT be resolved, so its
+    24h suppression stays in force."""
+    path = _cfg_path(tmp_path)
+    monkeypatch.setenv("ARGUS_TEST_SUPPORT_TOKEN", "ok")
+    cfg = loader.load(path)
+    finding = system_health.Finding(
+        severity="error",
+        fingerprint="launchd:com.argus.serve:down",
+        message="launchd service down: com.argus.serve",
+    )
+
+    first = system_health.notify_findings(conn, cfg, [finding])
+    resolved = system_health.resolve_absent_findings(conn, [finding])
+    second = system_health.notify_findings(conn, cfg, [finding])
+    conn.commit()
+
+    assert first == 1
+    assert resolved == 0
+    assert second == 0
+    assert len(_health_action_texts(conn)) == 1
 
 
 def test_health_followup_fix_it_opens_context_request(conn, tmp_path, monkeypatch):
