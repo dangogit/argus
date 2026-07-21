@@ -524,6 +524,12 @@ def test_notify_routes_team_digests_only(conn, tmp_path):
             "confidence": 0.9,
             "impact": 8,
             "theme": "focused-checks",
+        }, {
+            # run() bridges the lesson (hiding it from the digest); this infra
+            # notice is a body section that survives so the digest is not empty.
+            "type": "infra-flag",
+            "statement": f"{team} dashboard reads legacy JSONL",
+            "trigger": "phase c",
         }])
 
     retro.run(conn, cfg, retro_day=day, company_only=True)
@@ -564,3 +570,48 @@ def test_notify_team_filter_skips_company_digest(conn, tmp_path):
     with conn.cursor() as cur:
         cur.execute("SELECT team_id, destination_ref FROM actions WHERE type='notify'")
         assert cur.fetchall() == [("dev", "fake:dev-room")]
+
+
+def test_notify_suppresses_header_only_digest(conn, tmp_path):
+    # dev carries an infra notice (a real body section); luma's only item is a
+    # lesson that gets bridged, leaving nothing but the header. The header-only
+    # digest must not be queued.
+    cfg = _cfg_two_projects_with_channels(tmp_path)
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "infra-flag",
+        "statement": "Dashboard still reads legacy JSONL",
+        "trigger": "phase c",
+    }])
+    retro.record(conn, team_id="luma", retro_day=day, candidates=[{
+        "type": "lesson",
+        "statement": "Luma learned focused checks",
+        "trigger": "qa fail",
+    }])
+    retro.synthesize(conn, retro_day=day)
+    retro.bridge_lessons(conn, cfg)  # luma's lesson becomes handled -> no body
+
+    assert retro.notify(conn, cfg, retro_day=day) == 1
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT team_id FROM actions WHERE type='notify' ORDER BY team_id")
+        assert cur.fetchall() == [("dev",)]
+
+
+def test_notify_logs_when_digest_skipped(conn, tmp_path, caplog):
+    import logging
+    cfg = _cfg_two_projects_with_channels(tmp_path)
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="luma", retro_day=day, candidates=[{
+        "type": "lesson",
+        "statement": "Luma learned focused checks",
+        "trigger": "qa fail",
+    }])
+    retro.synthesize(conn, retro_day=day)
+    retro.bridge_lessons(conn, cfg)
+
+    with caplog.at_level(logging.INFO, logger="argus.retro"):
+        retro.notify(conn, cfg, retro_day=day)
+
+    assert any("luma" in r.getMessage() and "digest skipped: empty" in r.getMessage()
+               for r in caplog.records)
