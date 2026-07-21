@@ -420,6 +420,18 @@ def on_job_done(conn: psycopg.Connection, cfg, job: Job) -> None:
     advisory = getattr(team, "project", None) is None
 
     if role == _stage_role(team, 0):
+        payload = _request_payload(conn, job.event_id)
+        request_text = _request_text(conn, job.event_id)
+        claim = str((result or {}).get("output") or "")
+        incomplete = _incomplete_closure_items(payload, request_text, claim)
+        if incomplete:
+            _loop_back(
+                conn, cfg, job, team, to_role=role,
+                detail=("Incomplete item verdict. Record disposition, verification "
+                        "evidence, environment blocker, and unresolved follow-up for: "
+                        + ", ".join(incomplete)),
+            )
+            return
         # developer: if it investigated and no fix is warranted (ready=false in a
         # project team), close cleanly with the analysis - no qa/senior, no PR,
         # no fabricated change. Otherwise advance to qa.
@@ -1608,6 +1620,32 @@ def _batch_signal_text(source: str, payload: dict) -> str:
         severity = finding.get("severity") or "warn"
         lines.append(f"- id={bug_id} severity={severity}: {title}")
     return "\n".join(lines)
+
+
+def _incomplete_closure_items(payload: dict, request_text: str, claim: str) -> list[str]:
+    """Return batch or corrective-work ids lacking a complete item verdict."""
+    items = []
+    if payload.get("kind") == "bug_batch":
+        items = [str((finding.get("row") or {}).get("id") or "").strip()
+                 for finding in payload.get("rows") or []]
+    elif re.search(r"\bcorrective(?:-work| work)?\b", request_text, re.I):
+        evidence = request_text.partition("Evidence:")[2]
+        items = re.findall(r"[A-Za-z0-9][A-Za-z0-9:_.-]{23,}", evidence)
+
+    required = ("disposition", "evidence", "blocker", "follow-up")
+    records = []
+    for line in (claim or "").splitlines():
+        record = {}
+        for token in line.split():
+            key, separator, value = token.partition("=")
+            if separator and key not in record:
+                record[key] = value
+        records.append(record)
+
+    return [item for item in items if item and not any(
+        record.get("id") == item and all(record.get(field) for field in required)
+        for record in records
+    )]
 
 
 def _config_hash(cfg) -> str:

@@ -146,6 +146,54 @@ def test_add_manager_checkpoints_mentions_manual_qa_followup():
     assert "4564c37904b5c9ab86d539c5" not in snap["checkpoints"]
 
 
+def test_closure_gate_covers_all_supplied_evidence_and_rejects_incomplete_verdicts():
+    evidence = (
+        "retro-change:1805d3739130a90361190deb",
+        "retro-change:937df0c7fc1e1dd9d8e1a86c",
+        "supabase-tadam-agents-bug_reports-batch-85c0cf6ee7e7ae71",
+        "retro-change:379bcd6641dbe1c5d9870bce",
+        "retro-change:21c0007a1c65de6259b3492c",
+        "capability-fix:466c0127-65dc-4429-b8bc-79a4cca65a91",
+        "retro-change:768905b27168a94624c36944",
+        "retro-change:7992ca1b7826b200d7dd2c0f",
+        "retro-change:6711da8567196c4a504e1fbc",
+        "retro-change:0da901e759011fb8053321bf",
+    )
+    request = "Corrective-work closure. Evidence: " + ", ".join(evidence)
+    complete = "\n".join(
+        f"id={item} disposition=fixed evidence=test blocker=none follow-up=none"
+        for item in evidence
+    )
+
+    assert pipeline._incomplete_closure_items({}, request, "") == list(evidence)
+    assert pipeline._incomplete_closure_items({}, request, complete) == []
+    for field in ("disposition", "evidence", "blocker", "follow-up"):
+        incomplete = complete.replace(f" {field}=", f" omitted-{field}=", 1)
+        assert pipeline._incomplete_closure_items({}, request, incomplete) == [evidence[0]]
+
+    unrelated = " ".join(evidence) + " disposition=fixed evidence=test blocker=none follow-up=none"
+    assert pipeline._incomplete_closure_items({}, request, unrelated) == list(evidence)
+
+
+def test_closure_gate_validates_every_bug_batch_item():
+    payload = {"kind": "bug_batch", "rows": [
+        {"row": {"id": "bug-1"}}, {"row": {"id": "bug-2"}},
+    ]}
+    claim = (
+        "id=bug-1 disposition=fixed evidence=test blocker=none follow-up=none\n"
+        "id=bug-2 disposition=deferred evidence=log blocker=network"
+    )
+
+    assert pipeline._incomplete_closure_items(payload, "", claim) == ["bug-2"]
+
+
+def test_closure_gate_does_not_trust_item_id_as_verdict_fields():
+    item = "bug-1 disposition=fixed evidence=test blocker=none follow-up=none"
+    payload = {"kind": "bug_batch", "rows": [{"row": {"id": item}}]}
+
+    assert pipeline._incomplete_closure_items(payload, "", f"id={item}") == [item]
+
+
 def test_add_prompt_hash_is_deterministic():
     a = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
     b = {"prompt": "do the thing", "rules": "rule block", "skills": "skill block"}
