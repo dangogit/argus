@@ -438,6 +438,10 @@ class Team(BaseModel):
 class RetroConfig(BaseModel):
     authority: RetroAuthority = "propose"
     company_change_team: Optional[str] = None
+    # Cap on OPEN retro-originated PM requests (fingerprint 'retro-change:%')
+    # before _enqueue_auto_changes stops opening more, so the review queue
+    # never spirals past what the owner can actually keep up with.
+    max_open_changes: int = 2
 
 
 class HermesConfig(BaseModel):
