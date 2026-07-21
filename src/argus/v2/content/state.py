@@ -228,7 +228,9 @@ def breaker_check(project: str, cap: int) -> None:
             )
             count = int(cur.fetchone()[0])
     if count >= cap:
-        raise ContentBlocked(f"content breaker: {project} reached the daily cap ({count}/{cap})")
+        # Count stays out of the message: notify_blocked fingerprints the
+        # reason text, so a drifting count would defeat transition-only dedup.
+        raise ContentBlocked(f"content breaker: {project} reached the daily cap of {cap}")
 
 
 def breaker_record(project: str) -> None:
