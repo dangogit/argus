@@ -710,6 +710,38 @@ def test_converse_allowlist_permits_close_pr_and_runs_it(conn, cfg_converse, mon
         assert cur.fetchone()[0] == 1
 
 
+def test_converse_sync_pr_is_server_scoped_and_waits_for_approval(
+        conn, cfg_converse, monkeypatch):
+    scripted = ('ARGUS_RESULT: {"action": "answer", "reply": "I will inspect it."}\n'
+                'ARGUS_ACTIONS: [{"type": "sync_pr", "risk": "reversible_internal", '
+                '"payload": {"number": 73, "repo": "attacker/repo"}}]')
+    monkeypatch.setattr(pipeline, "_role_snapshot_extra",
+                        lambda r: {"scripted_output": scripted})
+    from argus.v2.front import front as _front
+    monkeypatch.setattr(_front, "_gh_owner_repo", lambda cfg, t: "dangogit/sample-app")
+
+    _ingest(conn, cfg_converse, key="sync-pr-1"); conn.commit()
+    for _ in range(4):
+        reconcile.route_events(conn, cfg_converse); conn.commit()
+        while worker.run_once(cfg_converse, "w1"):
+            pass
+        from argus.v2.actions import executor
+        executor.process_proposed(conn, cfg_converse); conn.commit()
+        reconcile.sweep_once(conn, cfg_converse); conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT risk, status, payload->>'repo', payload->>'number' "
+                    "FROM actions WHERE type='sync_pr'")
+        row = cur.fetchone()
+        cur.execute("SELECT count(*) FROM approvals ap JOIN actions a "
+                    "ON a.id=ap.action_id WHERE a.type='sync_pr' AND ap.status='pending'")
+        pending = cur.fetchone()[0]
+
+    assert row == ("irreversible_outward", "awaiting_approval",
+                   "dangogit/sample-app", "73")
+    assert pending == 1
+
+
 def test_converse_email_search_replies_with_result_summary(conn, cfg_converse, monkeypatch):
     from argus.v2.config.schema import SourceRef
 
@@ -871,12 +903,17 @@ def test_harden_actions_drops_converse_pr_op_with_bad_number(cfg_project, monkey
                      payload={"number": -5, "repo": "evil/repo"}),
         ActionIntent(type="close_pr", risk="x", idempotency_key="j2:2",
                      payload={"number": 9, "repo": "evil/repo"}),
+        ActionIntent(type="sync_pr", risk="reversible_internal", idempotency_key="j2:3",
+                     payload={"number": 10, "repo": "evil/repo"}),
     ]
     out = _worker._harden_actions(cfg_project, job, acts)
-    # Only the valid one survives, with the server repo (evil/repo overridden).
-    assert len(out) == 1
+    # Only valid PR numbers survive, with the server repo overriding model input.
+    assert len(out) == 2
     assert out[0].payload["number"] == 9
     assert out[0].payload["repo"] == "o/r"
+    assert out[1].type == "sync_pr"
+    assert out[1].risk == "irreversible_outward"
+    assert out[1].payload == {"number": 10, "repo": "o/r"}
 
 
 def test_config_rejects_irreversible_auto(tmp_path):
