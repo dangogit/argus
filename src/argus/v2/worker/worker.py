@@ -200,13 +200,17 @@ def run_once(cfg, worker_id: str, *, include_kinds=None, exclude_kinds=None) -> 
             if run.status == "outage":
                 detail = str((result or {}).get("error") or "engine outage")
                 until = breaker.trip(conn, run.engine, detail[:500])
-                alerts.record(
-                    conn, severity="critical", project="engine",
-                    fingerprint=f"engine-outage-{run.engine}",
-                    message=(f"Engine {run.engine} outage; breaker open until "
-                             f"{until:%Y-%m-%d %H:%M %Z}. Jobs are queued, not "
-                             f"failed. Detail: {detail[:300]}"),
-                    cooldown_seconds=3600)
+                if breaker.is_first_trip(conn, run.engine):
+                    # Notify once per episode, not once per escalation: past
+                    # the first trip the breaker is already open and every
+                    # later escalation is the SAME outage, not new news.
+                    alerts.record(
+                        conn, severity="critical", project="engine",
+                        fingerprint=f"engine-outage-{run.engine}",
+                        message=(f"Engine {run.engine} outage; breaker open until "
+                                 f"{until:%Y-%m-%d %H:%M %Z}. Jobs are queued, not "
+                                 f"failed. Detail: {detail[:300]}"),
+                        cooldown_seconds=3600)
                 if outage_releases < OUTAGE_RELEASE_CAP:
                     _release_for_outage(conn, job, run.engine, until, detail)
                     conn.commit()

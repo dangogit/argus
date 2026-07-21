@@ -1759,6 +1759,10 @@ def cmd_host(args) -> int:
                     config_path=cfg_path,
                     readiness_failed=rc != 0,
                 )
+                # End the notify episode of any finding that has recovered so a
+                # later reappearance pings fresh instead of staying muted by the
+                # old 24h window.
+                system_health.resolve_absent_findings(conn, findings)
                 inserted = system_health.notify_findings(conn, cfg, findings)
                 if inserted:
                     executor.process_proposed(conn, cfg)

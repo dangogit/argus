@@ -55,6 +55,19 @@ def open_until(conn: psycopg.Connection, engine: str) -> datetime | None:
     return row[0] if row else None
 
 
+def is_first_trip(conn: psycopg.Connection, engine: str) -> bool:
+    """True if the engine's breaker row is on its first trip (trip_count==1),
+    i.e. this episode just opened rather than escalating an already-open one.
+    Callers use this to notify once per episode instead of once per
+    escalation: a multi-day outage otherwise re-alerts on every escalation,
+    which lines up almost exactly with MAX_COOLDOWN_SECONDS once the breaker
+    has been open for over an hour."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT trip_count FROM engine_breaker WHERE engine=%s", (engine,))
+        row = cur.fetchone()
+    return row is not None and row[0] == 1
+
+
 def reset(conn: psycopg.Connection, engine: str) -> None:
     """Close the breaker after a successful run on this engine."""
     with conn.cursor() as cur:

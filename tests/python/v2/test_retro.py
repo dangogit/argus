@@ -7,7 +7,11 @@ from argus.v2.ingress import events
 from argus.v2.orchestrator import pipeline
 
 
-def _cfg_two_projects(tmp_path: Path, *, authority: str = "propose"):
+def _cfg_two_projects(tmp_path: Path, *, authority: str = "propose",
+                       max_open_changes: int | None = None):
+    retro_fields = f"authority: {authority}, company_change_team: dev"
+    if max_open_changes is not None:
+        retro_fields += f", max_open_changes: {max_open_changes}"
     y = tmp_path / "argus.yaml"
     y.write_text(
         "company:\n"
@@ -15,7 +19,7 @@ def _cfg_two_projects(tmp_path: Path, *, authority: str = "propose"):
         "  defaults:\n"
         "    engine: { engine: echo }\n"
         "    pipeline: { stages: [developer, qa, senior], max_iters: 2 }\n"
-        f"retro: {{ authority: {authority}, company_change_team: dev }}\n"
+        f"retro: {{ {retro_fields} }}\n"
         "teams:\n"
         "  - name: dev\n"
         "    project: { repo: /tmp/dev, base_branch: main, test_cmd: 'true' }\n"
@@ -309,6 +313,111 @@ def test_auto_changes_enqueue_one_idempotent_pm_request(conn, tmp_path):
     assert event_count == 1
 
 
+def _seed_open_retro_change_requests(conn, cfg, *, team: str, count: int) -> None:
+    """Pre-existing OPEN retro-originated PM requests, standing in for the
+    already-open draft PRs the cap must count against."""
+    for i in range(count):
+        eid = events.ingest_message(conn, cfg, team=team, source="cli",
+                                    dedup_key=f"seed-open-{team}-{i}",
+                                    text=f"seed open retro change {i}")
+        pipeline.open_request(conn, cfg, event_id=eid, team_id=team,
+                              conversation_id=None,
+                              fingerprint=f"retro-change:seed-{team}-{i}")
+
+
+def test_auto_changes_at_cap_queues_zero_new_requests(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")  # default cap = 2
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[
+        {
+            "type": "skill", "statement": "Add focused test checklist skill",
+            "trigger": "same QA miss repeated", "evidence_run_ids": ["a", "b", "c"],
+            "confidence": 0.9, "impact": 8, "theme": "focused-tests",
+        },
+        {
+            "type": "process-edit",
+            "statement": ("Classify Fly warm-pool machines in requested_stop state "
+                          "as expected before dispatching incident triage"),
+            "trigger": "warm pool standby raised a false incident",
+            "evidence_run_ids": ["f1", "f2", "f3"], "confidence": 0.9, "impact": 8,
+            "theme": "fly-warm-pool",
+        },
+    ])
+    retro.synthesize(conn, retro_day=day)
+    _seed_open_retro_change_requests(conn, cfg, team="dev", count=2)
+
+    queued = retro._enqueue_auto_changes(conn, cfg)
+
+    assert queued == 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 2
+
+
+def test_auto_changes_partial_headroom_queues_only_remaining_slots(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes", max_open_changes=2)
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[
+        {
+            "type": "skill", "statement": "Add focused test checklist skill",
+            "trigger": "same QA miss repeated", "evidence_run_ids": ["a", "b", "c"],
+            "confidence": 0.9, "impact": 8, "theme": "focused-tests",
+        },
+        {
+            "type": "process-edit",
+            "statement": ("Classify Fly warm-pool machines in requested_stop state "
+                          "as expected before dispatching incident triage"),
+            "trigger": "warm pool standby raised a false incident",
+            "evidence_run_ids": ["f1", "f2", "f3"], "confidence": 0.9, "impact": 8,
+            "theme": "fly-warm-pool",
+        },
+        {
+            "type": "prompt-edit",
+            "statement": "Add live-traffic smoke check reminder to developer prompt",
+            "trigger": "smoke check repeatedly skipped",
+            "evidence_run_ids": ["s1", "s2", "s3"], "confidence": 0.9, "impact": 8,
+            "theme": "smoke-check",
+        },
+    ])
+    retro.synthesize(conn, retro_day=day)
+    _seed_open_retro_change_requests(conn, cfg, team="dev", count=1)
+
+    queued = retro._enqueue_auto_changes(conn, cfg)
+
+    assert queued == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 2
+
+
+def test_auto_changes_below_cap_queues_every_eligible_item(conn, tmp_path):
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")  # default cap = 2, 0 open
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[
+        {
+            "type": "skill", "statement": "Add focused test checklist skill",
+            "trigger": "same QA miss repeated", "evidence_run_ids": ["a", "b", "c"],
+            "confidence": 0.9, "impact": 8, "theme": "focused-tests",
+        },
+        {
+            "type": "process-edit",
+            "statement": ("Classify Fly warm-pool machines in requested_stop state "
+                          "as expected before dispatching incident triage"),
+            "trigger": "warm pool standby raised a false incident",
+            "evidence_run_ids": ["f1", "f2", "f3"], "confidence": 0.9, "impact": 8,
+            "theme": "fly-warm-pool",
+        },
+    ])
+    retro.synthesize(conn, retro_day=day)
+
+    queued = retro._enqueue_auto_changes(conn, cfg)
+
+    assert queued == 2
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 2
+
+
 def test_auto_changes_dedup_equivalent_task_theme_and_lineage(conn, tmp_path):
     cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
     day = date(2026, 6, 18)
@@ -524,6 +633,12 @@ def test_notify_routes_team_digests_only(conn, tmp_path):
             "confidence": 0.9,
             "impact": 8,
             "theme": "focused-checks",
+        }, {
+            # run() bridges the lesson (hiding it from the digest); this infra
+            # notice is a body section that survives so the digest is not empty.
+            "type": "infra-flag",
+            "statement": f"{team} dashboard reads legacy JSONL",
+            "trigger": "phase c",
         }])
 
     retro.run(conn, cfg, retro_day=day, company_only=True)
@@ -564,3 +679,48 @@ def test_notify_team_filter_skips_company_digest(conn, tmp_path):
     with conn.cursor() as cur:
         cur.execute("SELECT team_id, destination_ref FROM actions WHERE type='notify'")
         assert cur.fetchall() == [("dev", "fake:dev-room")]
+
+
+def test_notify_suppresses_header_only_digest(conn, tmp_path):
+    # dev carries an infra notice (a real body section); luma's only item is a
+    # lesson that gets bridged, leaving nothing but the header. The header-only
+    # digest must not be queued.
+    cfg = _cfg_two_projects_with_channels(tmp_path)
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "infra-flag",
+        "statement": "Dashboard still reads legacy JSONL",
+        "trigger": "phase c",
+    }])
+    retro.record(conn, team_id="luma", retro_day=day, candidates=[{
+        "type": "lesson",
+        "statement": "Luma learned focused checks",
+        "trigger": "qa fail",
+    }])
+    retro.synthesize(conn, retro_day=day)
+    retro.bridge_lessons(conn, cfg)  # luma's lesson becomes handled -> no body
+
+    assert retro.notify(conn, cfg, retro_day=day) == 1
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT team_id FROM actions WHERE type='notify' ORDER BY team_id")
+        assert cur.fetchall() == [("dev",)]
+
+
+def test_notify_logs_when_digest_skipped(conn, tmp_path, caplog):
+    import logging
+    cfg = _cfg_two_projects_with_channels(tmp_path)
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="luma", retro_day=day, candidates=[{
+        "type": "lesson",
+        "statement": "Luma learned focused checks",
+        "trigger": "qa fail",
+    }])
+    retro.synthesize(conn, retro_day=day)
+    retro.bridge_lessons(conn, cfg)
+
+    with caplog.at_level(logging.INFO, logger="argus.retro"):
+        retro.notify(conn, cfg, retro_day=day)
+
+    assert any("luma" in r.getMessage() and "digest skipped: empty" in r.getMessage()
+               for r in caplog.records)

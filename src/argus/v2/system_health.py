@@ -25,7 +25,8 @@ from argus.v2.orchestrator import context_router
 
 _ENV_REF = re.compile(r"^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 _DEFAULT_COOLDOWN_SECONDS = 3600
-_LOW_DISK_NOTIFY_DEDUPE_SECONDS = 300
+_NOTIFY_EPISODE_SECONDS = 86400  # one owner ping per finding per 24h, then escalate
+_ESCALATION_PREFIX = "ESCALATION (>24h): "
 _LAUNCHD_ARGUS_ROW = re.compile(r"^\s*(\d+)\s+\S+\s+(com\.argus\.[^\s]+)\s*$")
 _ARGUS_LAUNCHD_LABEL = re.compile(r"^com\.argus\.[A-Za-z0-9_.-]+$")
 _MEMORY_FREE_PERCENT = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
@@ -378,12 +379,15 @@ def notify_findings(
     if not destination:
         return 0
 
-    new_findings: list[Finding] = []
+    window = _notify_window_seconds(cooldown_seconds)
+    notified: list[tuple[Finding, bool]] = []
     alert_ids: list[str] = []
     for finding in findings:
-        finding_cooldown = _notification_cooldown_seconds(
-            finding, cooldown_seconds
-        )
+        decision = _notify_decision(conn, finding.fingerprint, window)
+        if decision == "suppress":
+            if _is_low_disk_finding(finding):
+                _record_low_disk_suppression(conn, finding, window)
+            continue
         alert_id = alerts.record(
             conn,
             severity=finding.severity,
@@ -392,22 +396,20 @@ def notify_findings(
             message=finding.message,
             channel="whatsapp",
             payload=finding.payload,
-            cooldown_seconds=finding_cooldown,
+            cooldown_seconds=0,
         )
         if alert_id:
-            new_findings.append(finding)
+            notified.append((finding, decision == "escalate"))
             alert_ids.append(alert_id)
-        elif _is_low_disk_finding(finding):
-            _record_low_disk_suppression(conn, finding, finding_cooldown)
-    if not new_findings:
+    if not notified:
         return 0
 
-    text = _format_notification(new_findings)
+    text = _format_notification(notified)
     idem = f"system_health:{alert_ids[0]}"
     action_payload = {
         "text": text,
         "system_health_fingerprints": [
-            finding.fingerprint for finding in new_findings
+            finding.fingerprint for finding, _ in notified
         ],
     }
     with conn.cursor() as cur:
@@ -428,7 +430,7 @@ def notify_findings(
             channel_ref=destination,
             context_type="system_health",
             context_ref=alert_ids[0],
-            summary="; ".join(finding.message for finding in new_findings),
+            summary="; ".join(finding.message for finding, _ in notified),
             payload={
                 "alert_ids": alert_ids,
                 "findings": [
@@ -438,20 +440,96 @@ def notify_findings(
                         "message": finding.message,
                         "payload": finding.payload,
                     }
-                    for finding in new_findings
+                    for finding, _ in notified
                 ],
             },
         )
     return inserted
 
 
-def _notification_cooldown_seconds(
-    finding: Finding,
-    cooldown_seconds: int,
+def resolve_absent_findings(
+    conn: psycopg.Connection,
+    findings: list[Finding],
 ) -> int:
-    if _is_low_disk_finding(finding):
-        return max(int(cooldown_seconds), _LOW_DISK_NOTIFY_DEDUPE_SECONDS)
-    return int(cooldown_seconds)
+    """End the notify episode of any previously-pinged system-health fingerprint
+    that is no longer being reported, so a later reappearance pings fresh.
+
+    The watchdog passes the full current findings list each cycle. For every
+    fingerprint with an active whatsapp notify episode that is absent from that
+    list we record a resolution marker; notify_findings then treats the next
+    occurrence as a new episode (immediate ping, not blocked by the old window).
+    Returns the number of episodes resolved."""
+    present = {finding.fingerprint for finding in findings}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT a.fingerprint
+            FROM alerts a
+            WHERE a.project='general' AND a.channel='whatsapp'
+              AND a.fingerprint NOT LIKE 'sysheal:resolved:%'
+              AND a.ts > COALESCE((
+                  SELECT max(r.ts) FROM alerts r
+                  WHERE r.project='general'
+                    AND r.fingerprint = 'sysheal:resolved:' || a.fingerprint),
+                  'epoch')
+            """
+        )
+        active = [row[0] for row in cur.fetchall()]
+    resolved = 0
+    for fingerprint in active:
+        if fingerprint in present:
+            continue
+        alerts.record(
+            conn,
+            severity="info",
+            project="general",
+            fingerprint=f"sysheal:resolved:{fingerprint}",
+            message=f"system-health finding resolved (absent): {fingerprint}",
+            channel="log",
+            payload={"resolved_fingerprint": fingerprint},
+        )
+        resolved += 1
+    return resolved
+
+
+def _notify_window_seconds(cooldown_seconds: int) -> int:
+    """24h floor for the per-finding notify window. The watchdog runs hourly, so
+    a shorter window re-pings a persistent finding every run (root cause of 109
+    identical low-disk pings in 7 days). Low-disk follows the same regime, so its
+    old _LOW_DISK_NOTIFY_DEDUPE_SECONDS window is subsumed here."""
+    return max(int(cooldown_seconds), _NOTIFY_EPISODE_SECONDS)
+
+
+def _notify_decision(
+    conn: psycopg.Connection,
+    fingerprint: str,
+    window_seconds: int,
+) -> str:
+    """fresh | escalate | suppress for a finding's current notify episode.
+
+    An episode is the newest whatsapp alert row for this fingerprint that is
+    newer than its latest resolution marker (see resolve_absent_findings). No
+    active episode -> a fresh owner ping. An episode older than the window ->
+    one escalation ping (which restarts the window). Otherwise stay silent."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT ts <= now() - make_interval(secs => %s)
+            FROM alerts
+            WHERE project='general' AND fingerprint=%s AND channel='whatsapp'
+              AND ts > COALESCE((
+                  SELECT max(ts) FROM alerts
+                  WHERE project='general'
+                    AND fingerprint = 'sysheal:resolved:' || %s), 'epoch')
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (int(window_seconds), fingerprint, fingerprint),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return "fresh"
+    return "escalate" if row[0] else "suppress"
 
 
 def _is_low_disk_finding(finding: Finding) -> bool:
@@ -579,12 +657,13 @@ def _resolve_present_env_refs(value):
     return value
 
 
-def _format_notification(findings: list[Finding]) -> str:
+def _format_notification(notified: list[tuple[Finding, bool]]) -> str:
     lines = ["Argus health: system issue detected"]
-    for finding in findings[:8]:
-        lines.append(f"- {finding.message}")
-    if len(findings) > 8:
-        lines.append(f"- {len(findings) - 8} more issue(s)")
+    for finding, escalated in notified[:8]:
+        prefix = _ESCALATION_PREFIX if escalated else ""
+        lines.append(f"- {prefix}{finding.message}")
+    if len(notified) > 8:
+        lines.append(f"- {len(notified) - 8} more issue(s)")
     return "\n".join(lines)
 
 

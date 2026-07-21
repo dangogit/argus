@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -16,6 +17,8 @@ from argus.v2.ingress import events
 from argus.v2.knowledge import store as knowledge_store
 from argus.v2.orchestrator import pipeline
 from argus.v2.pm import memory as pm_memory
+
+log = logging.getLogger("argus.retro")
 
 COMPANY_TEAM_ID = "__company__"
 _AUTO_TYPES = frozenset({"skill", "prompt-edit", "process-edit"})
@@ -197,6 +200,8 @@ def notify(conn: psycopg.Connection, cfg, *, retro_day: date | None = None,
                     key=f"retro-digest:{team.name}:{day}",
                     text=text,
                 )
+            else:
+                log.info("%s digest skipped: empty", team.name)
     return count
 
 
@@ -240,6 +245,10 @@ def _team_digest_text(conn: psycopg.Connection, team_id: str, day: date) -> str:
     infra = [item for item in items if item["status"] == "infra-notice"]
     quarantined = [item for item in items if item["status"] == "quarantined"]
     auto_count = sum(1 for item in all_changes if item["auto_queued"])
+    if not (lessons or changes or infra or quarantined or auto_count):
+        # Every candidate for the day was handled/hidden: nothing but the header
+        # would remain, so suppress the digest instead of sending an empty shell.
+        return ""
     lines = ["PM Retro Digest", f"Team: {team_id}", f"Date: {day}"]
     _add_section(lines, "Lessons learned", lessons)
     _add_section(lines, "Improvement candidates", changes)
@@ -659,6 +668,19 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
     retro_cfg = getattr(cfg, "retro", None)
     if getattr(retro_cfg, "authority", "propose") != "auto-changes":
         return 0
+    # Cap the review queue: count OPEN retro-originated requests (not yet
+    # done/failed/cancelled) against retro.max_open_changes and only queue up
+    # to the remaining headroom, so auto-changes can't outpace owner review.
+    cap = getattr(retro_cfg, "max_open_changes", 2)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%' "
+            "AND status NOT IN ('done','failed','cancelled')"
+        )
+        open_count = cur.fetchone()[0]
+    budget = cap - open_count
+    if budget <= 0:
+        return 0
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -673,6 +695,8 @@ def _enqueue_auto_changes(conn: psycopg.Connection, cfg) -> int:
     queued = 0
     handled_tokens: dict[tuple[str, str], list[frozenset[str]]] = {}
     for item_id, team_id, typ, statement, trigger, payload in rows:
+        if queued >= budget:
+            break
         item_id = str(item_id)
         payload = payload or {}
         if payload.get("auto_request_id") or payload.get("auto_skipped_at"):

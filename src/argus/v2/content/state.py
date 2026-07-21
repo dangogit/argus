@@ -11,6 +11,10 @@ from argus.v2 import alerts
 from argus.v2.db import pool
 
 
+class ContentBlocked(RuntimeError):
+    """The daily content breaker cap is reached for a project (production blocked)."""
+
+
 def content_dir() -> Path:
     if os.environ.get("ARGUS_CONTENT_DIR"):
         return Path(os.path.expandvars(os.environ["ARGUS_CONTENT_DIR"])).expanduser()
@@ -224,7 +228,9 @@ def breaker_check(project: str, cap: int) -> None:
             )
             count = int(cur.fetchone()[0])
     if count >= cap:
-        raise RuntimeError(f"content breaker: {project} reached the daily cap ({count}/{cap})")
+        # Count stays out of the message: notify_blocked fingerprints the
+        # reason text, so a drifting count would defeat transition-only dedup.
+        raise ContentBlocked(f"content breaker: {project} reached the daily cap of {cap}")
 
 
 def breaker_record(project: str) -> None:
@@ -235,6 +241,55 @@ def breaker_record(project: str) -> None:
                 (project,),
             )
         conn.commit()
+
+
+# ponytail: 24h window keys the transition to the breaker's own per-day reset,
+# so a still-blocked project re-notifies once the next day starts, not per run.
+_BLOCKED_NOTIFY_COOLDOWN_SECONDS = 24 * 3600
+
+
+def notify_blocked(project: str, reason: str) -> None:
+    """Announce that content production is blocked, once per transition.
+
+    The fingerprint carries the day and a digest of the reason, and the emit runs
+    under a 24h cooldown, so repeat drain runs while the cap stays reached collapse
+    to a single alert; a new day (fresh breaker window) or a materially different
+    reason produces a new fingerprint and thus a new alert."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    alerts.emit(
+        severity="warn",
+        project="content",
+        fingerprint=f"content-blocked-{project}-{today}-{stable_digest(reason)}",
+        message=f"content production blocked for {project}: {reason}",
+        channel="log",
+        cooldown_seconds=_BLOCKED_NOTIFY_COOLDOWN_SECONDS,
+    )
+
+
+def expire_stale_queued(max_age_days: int) -> list[str]:
+    """Dead-letter queued briefs older than max_age_days and return their ids.
+
+    A brief that never drafts (wedged engine, missing inputs) otherwise sits at the
+    head of the queue forever, and since the drain only touches the oldest queued
+    brief per run it holds the whole pipeline hostage. Ageing stale briefs out to a
+    terminal status frees the queue."""
+    if max_age_days <= 0:
+        return []
+    with pool.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE content_queue
+                SET status='dead', updated_at=clock_timestamp()
+                WHERE status='queued'
+                  AND created_at < now() - make_interval(days => %s)
+                RETURNING id
+                """,
+                (int(max_age_days),),
+            )
+            ids = [str(row[0]) for row in cur.fetchall()]
+        conn.commit()
+    return ids
 
 
 def alert_warn(fingerprint: str, message: str) -> None:

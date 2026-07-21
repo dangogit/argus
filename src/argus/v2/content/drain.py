@@ -18,11 +18,19 @@ class DrainResult:
     no_queue: bool = False
     failed: bool = False
     notified: bool = False
+    blocked: bool = False
 
 
 def run(*, engine_runner: pipeline.EngineRunner | None = None,
         image_generator: pipeline.ImageGenerator | None = None,
         notifier: Notifier | None = None) -> DrainResult:
+    max_age = _queue_max_age_days()
+    for expired_id in state.expire_stale_queued(max_age):
+        state.alert_warn(
+            f"content-queue-expired-{expired_id}",
+            f"content drain: expired stale queued brief {expired_id} "
+            f"(older than {max_age}d), freeing the queue",
+        )
     queued = state.queue_oldest()
     if not queued:
         return DrainResult(no_queue=True)
@@ -44,7 +52,10 @@ def run(*, engine_runner: pipeline.EngineRunner | None = None,
             engine_runner=engine_runner,
             image_generator=image_generator,
         )
-    except Exception:
+    except Exception as exc:
+        blocked = isinstance(exc, state.ContentBlocked)
+        if blocked:
+            state.notify_blocked(project, str(exc))
         attempts += 1
         if attempts >= 3:
             state.queue_set_status(queue_id, "dead", attempts)
@@ -54,7 +65,7 @@ def run(*, engine_runner: pipeline.EngineRunner | None = None,
             )
         else:
             state.queue_set_status(queue_id, "queued", attempts)
-        return DrainResult(failed=True)
+        return DrainResult(failed=True, blocked=blocked)
 
     state.queue_set_status(queue_id, "drafted")
     notified = _notify(draft_id, notifier or _default_notifier)
@@ -166,3 +177,10 @@ def _daily_limit() -> int:
         return int(os.environ.get("ARGUS_CONTENT_DAILY_LIMIT", "5"))
     except ValueError:
         return 5
+
+
+def _queue_max_age_days() -> int:
+    try:
+        return int(os.environ.get("ARGUS_CONTENT_QUEUE_MAX_AGE_DAYS", "7"))
+    except ValueError:
+        return 7
