@@ -2,6 +2,7 @@
 items with links, top company lessons, one-line FYI)."""
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from argus.v2.pm import pending
 
 Runner = Callable[[list[str], Path], str]
 
+log = logging.getLogger("argus.brief")
+
 _MAX_PR_LINES = 5
 
 
@@ -28,6 +31,9 @@ class Brief:
     failed_jobs: int
     pending_actions: int
     agent_attention: int = 0
+    # False when the brief has no needs-you items and no material sections, so
+    # notify() can skip an all-healthy shell instead of pinging the owner daily.
+    material: bool = True
 
 
 def build(conn: psycopg.Connection, cfg, *, runner: Runner | None = None,
@@ -56,13 +62,16 @@ def build(conn: psycopg.Connection, cfg, *, runner: Runner | None = None,
     if dash:
         lines.append(f"Dashboard: {dash}")
     return Brief("\n".join(lines).strip(), len(prs), 0, failed_jobs,
-                 pending_actions, len(needs))
+                 pending_actions, len(needs), bool(needs or learned))
 
 
 def notify(conn: psycopg.Connection, cfg, brief: Brief, *,
            key: str | None = None) -> bool:
     dest = _ceo_destination(cfg)
     if not dest:
+        return False
+    if not brief.material:
+        log.info("ceo-brief digest skipped: empty")
         return False
     idem = key or f"ceo-brief:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     with conn.cursor() as cur:

@@ -154,6 +154,29 @@ def test_ceo_notify_inserts_whatsapp_action(conn, tmp_path):
         assert cur.fetchone() == ("whatsapp:ceo@g.us", "hello")
 
 
+def test_ceo_notify_suppresses_empty_brief(conn, tmp_path, caplog):
+    import logging
+    cfg = _cfg(tmp_path)
+    empty = ceo.build(conn, cfg, health_lines=["ok"])
+    with caplog.at_level(logging.INFO, logger="argus.brief"):
+        assert ceo.notify(conn, cfg, empty, key="ceo:empty") is False
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE idempotency_key='ceo:empty'")
+        assert cur.fetchone()[0] == 0
+    assert any("digest skipped: empty" in r.getMessage() for r in caplog.records)
+
+    # a brief with at least one pending item still goes out
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs (team_id, role, kind, status, idempotency_key) "
+            "VALUES ('ceo-brief','manager','pipeline','dead','ceo-empty-dead')")
+    full = ceo.build(conn, cfg, health_lines=["ok"])
+    assert ceo.notify(conn, cfg, full, key="ceo:full") is True
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM actions WHERE idempotency_key='ceo:full'")
+        assert cur.fetchone()[0] == 1
+
+
 def test_ceo_once_per_day_window(tmp_path):
     now = datetime(2026, 6, 18, 9, 5, tzinfo=ZoneInfo("UTC"))
     assert ceo.should_send_once(now=now, timezone="UTC", run_root=tmp_path) is True

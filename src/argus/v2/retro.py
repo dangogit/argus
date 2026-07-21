@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -16,6 +17,8 @@ from argus.v2.ingress import events
 from argus.v2.knowledge import store as knowledge_store
 from argus.v2.orchestrator import pipeline
 from argus.v2.pm import memory as pm_memory
+
+log = logging.getLogger("argus.retro")
 
 COMPANY_TEAM_ID = "__company__"
 _AUTO_TYPES = frozenset({"skill", "prompt-edit", "process-edit"})
@@ -197,6 +200,8 @@ def notify(conn: psycopg.Connection, cfg, *, retro_day: date | None = None,
                     key=f"retro-digest:{team.name}:{day}",
                     text=text,
                 )
+            else:
+                log.info("%s digest skipped: empty", team.name)
     return count
 
 
@@ -240,6 +245,10 @@ def _team_digest_text(conn: psycopg.Connection, team_id: str, day: date) -> str:
     infra = [item for item in items if item["status"] == "infra-notice"]
     quarantined = [item for item in items if item["status"] == "quarantined"]
     auto_count = sum(1 for item in all_changes if item["auto_queued"])
+    if not (lessons or changes or infra or quarantined or auto_count):
+        # Every candidate for the day was handled/hidden: nothing but the header
+        # would remain, so suppress the digest instead of sending an empty shell.
+        return ""
     lines = ["PM Retro Digest", f"Team: {team_id}", f"Date: {day}"]
     _add_section(lines, "Lessons learned", lessons)
     _add_section(lines, "Improvement candidates", changes)
