@@ -48,7 +48,7 @@ personal-assistant camp for reference.
 | Runtime | Postgres + advisory lock + NOTIFY | Embedded/external Postgres (Drizzle) | SQLite / gateway |
 | Multi-agent | builder → QA → senior pipeline | **Named org chart, persistent identities** | subagents (Hermes) |
 | Per-agent budgets | – (no global cap yet) | **monthly/lifetime, warn + hard-stop + incidents** | cost observability only |
-| Human interactions | nonce approval (weak, see below) | **typed: ask/confirm/suggest, idempotency-keyed** | approval cards |
+| Human interactions | typed ask/confirm/suggest, idempotency-keyed (chat-native approve/reject; CLI nonce fallback) | **typed: ask/confirm/suggest, idempotency-keyed** | approval cards |
 | Source-trust defense | retro quarantine only | **trust tier + quarantine + promotion on all content** | varies |
 | Sandbox | git worktree | VM plugin sandbox; K8s/e2b/Daytona/Modal backends | Docker (`--internal` egress in NanoClaw) |
 | Engines | echo/Codex/Claude/Hermes | claude/codex/cursor/gemini/grok/hermes/openclaw | own loop |

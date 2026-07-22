@@ -162,7 +162,10 @@ def process_proposed(
                 else:
                     _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
             else:
-                _require_approval(conn, str(action_id), request_id)
+                _require_approval(conn, str(action_id), request_id, cfg=cfg,
+                                  team_id=row_team_id, action_type=atype,
+                                  destination_ref=destination_ref,
+                                  payload=payload or {})
         handled += 1
     return handled
 
@@ -714,7 +717,11 @@ def _insert_approval(cur, action_id: str, request_id, expires) -> str:
     raise RuntimeError(f"could not allocate a unique approval nonce for action {action_id}")
 
 
-def _require_approval(conn: psycopg.Connection, action_id: str, request_id) -> None:
+def _require_approval(conn: psycopg.Connection, action_id: str, request_id, *,
+                      cfg=None, team_id: str | None = None,
+                      action_type: str | None = None,
+                      destination_ref: str | None = None,
+                      payload: dict | None = None) -> None:
     expires = datetime.now(timezone.utc) + timedelta(hours=24)
     with conn.cursor() as cur:
         # Park the action so the next sweep won't re-pick it (no duplicate
@@ -725,11 +732,30 @@ def _require_approval(conn: psycopg.Connection, action_id: str, request_id) -> N
             "WHERE id=%s AND status='proposed'", (action_id,))
         if cur.rowcount != 1:
             return  # already parked by a concurrent sweep
-        _insert_approval(cur, action_id, request_id, expires)
+        nonce = _insert_approval(cur, action_id, request_id, expires)
         if request_id is not None:
             cur.execute(
                 "UPDATE requests SET status='awaiting_approval', updated_at=now() "
                 "WHERE id=%s AND status='open'", (request_id,))
+    # Typed confirm interaction on the control channel: the owner replies
+    # approve/reject in chat instead of hunting the nonce for the CLI (which
+    # still works and is shown as the fallback).
+    if cfg is None or not team_id:
+        return
+    from argus.v2.orchestrator import interactions
+    control = interactions.control_channel(cfg, team_id)
+    if not control:
+        return
+    summary = str((payload or {}).get("text") or "")[:200]
+    detail = f": {summary}" if summary else ""
+    interactions.open_interaction(
+        conn, team_id=team_id, channel_ref=control, kind="confirm",
+        key=f"approval:{nonce}",
+        prompt=(f"⏸️ Approval needed: {action_type or 'action'} → "
+                f"{destination_ref or 'n/a'}{detail}\n"
+                f"Reply 'approve' or 'reject' (CLI: argus approve {nonce})."),
+        summary=f"approval {action_type or 'action'}",
+        payload={"nonce": nonce}, ttl_hours=24)
 
 
 def _enqueue_open_pr_notify(cur, *, action_id: str, request_id, team_id: str,
