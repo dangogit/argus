@@ -159,8 +159,8 @@ def test_branch_drift_signal_notifies_owner_not_pipeline(conn, tmp_path):
                     "FROM conversation_contexts WHERE team_id='dev'")
         context_type, context_ref, summary = cur.fetchone()
     assert dest == "whatsapp:grp1" and "3 behind" in text
-    assert context_type == "branch_drift"
-    assert context_ref == "DR-1"
+    assert context_type == "interaction"
+    assert context_ref == "drift-notify:DR-1"
     assert "3 behind" in summary
 
 
@@ -207,7 +207,8 @@ def test_branch_drift_followup_do_it_opens_sync_request(conn, tmp_path):
         cur.execute("SELECT payload->>'text' FROM actions WHERE type='reply' "
                     "ORDER BY created_at DESC LIMIT 1")
         reply = cur.fetchone()[0]
-        cur.execute("SELECT status FROM conversation_contexts WHERE context_ref='DR-1'")
+        cur.execute("SELECT status FROM conversation_contexts "
+                    "WHERE context_ref='drift-notify:DR-1'")
         status = cur.fetchone()[0]
 
     assert converse_jobs == 0

@@ -17,6 +17,7 @@ from psycopg.types.json import Json
 from argus.v2 import alerts
 from argus.v2.config import loader
 from argus.v2.orchestrator import bug_dedup
+from argus.v2.orchestrator import interactions
 from argus.v2.orchestrator import status
 from argus.v2.pm import memory as pm_memory
 from argus.v2.pm import scan as pm_scan
@@ -664,12 +665,32 @@ def _no_fix_close(conn: psycopg.Connection, cfg, request_id, analysis: str,
         # channel - deliver() drops it - so the owner never saw the close/blocked
         # note even though the action was marked done.
         dest = _control_destination(conn, cfg, team_id, conv_id)
+        ask_owner = blocked and dest != "cli:local"
+        if ask_owner:
+            text += "\nReply here with guidance and I'll retry with it."
         cur.execute(
             "INSERT INTO actions (request_id, team_id, type, risk, destination_ref, "
             "idempotency_key, payload) VALUES (%s,%s,'notify','reversible_internal',%s,%s,%s) "
             "ON CONFLICT (idempotency_key) DO NOTHING",
             (request_id, team_id, dest, f"nofix:{request_id}",
              psycopg.types.json.Json({"text": text})))
+        if ask_owner:
+            # Typed ask interaction: the owner's next reply becomes guidance and
+            # reopens the request with it (prompt=None: the notify above already
+            # carries the question).
+            cur.execute(
+                "SELECT e.payload->>'text' FROM requests r "
+                "JOIN events e ON e.id=r.event_id WHERE r.id=%s", (request_id,))
+            row = cur.fetchone()
+            original_task = str(row[0] or "") if row else ""
+            interactions.open_interaction(
+                conn, team_id=str(team_id), channel_ref=dest, kind="ask",
+                key=f"unblock:{request_id}", prompt=None,
+                summary=f"guidance for blocked request {request_id}",
+                payload={"request_id": str(request_id), "team_id": str(team_id),
+                         "task": original_task[:1500],
+                         "blocker": str(analysis or "")[:500]},
+                ttl_hours=12)
 
 
 def _advance_or_done(conn: psycopg.Connection, cfg, job: Job, team) -> None:

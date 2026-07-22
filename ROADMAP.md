@@ -35,8 +35,9 @@ see [CHANGELOG.md](CHANGELOG.md) and [docs/competitive.md](docs/competitive.md).
 
 ## Next
 
-- Richer human interactions: typed ask / confirm / suggest, not only approve /
-  reject (the per-team budget half of this item shipped).
+- Richer human interactions (shipped July 2026): typed ask / confirm / suggest
+  landed - chat-native approve/reject, guidance-on-blocked, and suggestion
+  follow-ups. Remaining polish: structured option prompts (pick 1/2/3).
 - MCP P1: a live protocol handshake in `argus doctor` (beyond config validation)
   and caps on untrusted MCP tool output.
 - MCP P2: gated action tools (propose / approve) over MCP, routed through the

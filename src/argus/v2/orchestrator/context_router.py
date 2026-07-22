@@ -112,8 +112,9 @@ def handle_message(conn: psycopg.Connection, cfg, *, team_id: str,
     context = active_context(conn, team_id=team_id, channel_ref=channel_ref)
     if not context:
         return False
-    if context["context_type"] == "branch_drift":
-        return _handle_branch_drift(
+    if context["context_type"] == "interaction":
+        from argus.v2.orchestrator import interactions
+        return interactions.handle_reply(
             conn, cfg, team_id=team_id, channel_ref=channel_ref,
             event_id=event_id, context=context, text=text)
     if context["context_type"] == "system_health":
@@ -311,54 +312,6 @@ def _handle_system_health(conn: psycopg.Connection, cfg, *, team_id: str,
     return True
 
 
-def _handle_branch_drift(conn: psycopg.Connection, cfg, *, team_id: str,
-                         channel_ref: str, event_id: str, context: dict[str, Any],
-                         text: str) -> bool:
-    if not _approves_branch_sync(text):
-        return False
-    task = _branch_sync_task(team_id=team_id, context=context)
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE events SET payload=jsonb_set(payload, '{text}', %s::jsonb) "
-            "WHERE id=%s",
-            (Json(task), event_id),
-        )
-    request_id = pipeline.open_request(
-        conn, cfg, event_id=event_id, team_id=team_id, conversation_id=None,
-        fingerprint=context["context_ref"])
-    resolve_context(conn, context_id=context["id"], status="resolved")
-    reply = "On it, I'll run the branch-sync PR flow."
-    if request_id is None:
-        reply = "Already working on that branch sync."
-    _emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
-                event_id=event_id, text=reply)
-    return True
-
-
-def _approves_branch_sync(text: str) -> bool:
-    cleaned = " ".join((text or "").strip().lower().split())
-    return cleaned in {
-        "do it",
-        "go",
-        "go ahead",
-        "ok",
-        "okay",
-        "yes",
-        "approve",
-        "approved",
-        "sync",
-        "sync it",
-        "run it",
-        "תעשה",
-        "תעשה את זה",
-        "כן",
-        "יאללה",
-        "קדימה",
-        "סנכרן",
-        "תסנכרן",
-    }
-
-
 def _approves_fix(text: str) -> bool:
     cleaned = " ".join((text or "").strip().lower().split())
     return cleaned in {
@@ -428,22 +381,6 @@ def _system_health_task(*, context: dict[str, Any]) -> str:
         "repo or runtime fix needed and verify end to end. Do not merge, deploy, "
         "spend money, or weaken auth boundaries. If the issue is already fixed, "
         "report the current proof instead of changing code."
-    )
-
-
-def _branch_sync_task(*, team_id: str, context: dict[str, Any]) -> str:
-    payload = context.get("payload") or {}
-    summary = context.get("summary") or payload.get("message") or "branch drift detected"
-    base = payload.get("base") or "main"
-    head = payload.get("head") or "current branch"
-    return (
-        f"Owner approved branch drift sync for {team_id}: {summary}. "
-        f"Compare origin/{base} and origin/{head}. Prepare the minimal safe "
-        f"branch-sync PR to reconcile {head} with {base}. Do not merge, deploy, "
-        f"or force-push. Preserve legitimate branch-only commits. If syncing "
-        f"would drop changes, create conflicts, or require choosing a release "
-        f"direction, stop and report the exact blocker. Use git and gh as "
-        f"needed for branch maintenance, then run the narrowest relevant checks."
     )
 
 

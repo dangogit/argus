@@ -13,7 +13,8 @@ from argus.v2.actions import approvals, executor
 from argus.v2.front import front
 from argus.v2.ingress import events as ingress_events
 from argus.v2.ingress.media import run_root
-from argus.v2.orchestrator import budget, context_router, pipeline, respond, status
+from argus.v2.orchestrator import (budget, context_router, interactions,
+                                   pipeline, respond, status)
 from argus.v2.queue import jobs
 from argus.v2.queue.models import ActionIntent, Job
 
@@ -126,40 +127,49 @@ def _is_drift(payload) -> bool:
     return p.get("kind") == "branch_drift" or p.get("source") == "branch_drift"
 
 
-def _team_control_dest(cfg, team_id: str) -> str | None:
-    try:
-        team = cfg.team(team_id)
-    except KeyError:
-        return None
-    for ch in getattr(team, "channels", []) or []:
-        if ch.role == "control" and ch.type != "cli":
-            return f"{ch.type}:{ch.channel_id}"
-    return None
+_team_control_dest = interactions.control_channel
 
 
 def _notify_drift(conn, cfg, team_id: str, payload, dedup_key) -> bool:
-    """Surface a branch-drift signal to the team's control channel (the owner
-    decides whether to sync), instead of dispatching a dev pipeline. Idempotent
-    per drift fingerprint. Returns False if the team has no control channel, so
-    the caller falls through to the normal path."""
+    """Surface a branch-drift signal to the team's control channel as a typed
+    'suggest' interaction (the owner decides whether to sync; a yes-phrase opens
+    the prepared branch-sync request). Idempotent per drift fingerprint. Returns
+    False if the team has no control channel, so the caller falls through to the
+    normal path."""
     dest = _team_control_dest(cfg, team_id)
     if not dest:
         return False
-    msg = (payload or {}).get("message") or "branch drift detected"
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO actions (team_id, type, risk, destination_ref, "
-            "  idempotency_key, payload) "
-            "VALUES (%s,'notify','reversible_internal',%s,%s,%s) "
-            "ON CONFLICT (idempotency_key) DO NOTHING",
-            (team_id, dest, f"drift-notify:{dedup_key}",
-             Json({"text": f"⚠️ {msg}. Sync the branches when ready "
-                           f"(Argus does not auto-merge)."})))
-    context_router.register_context(
-        conn, team_id=team_id, channel_ref=dest, context_type="branch_drift",
-        context_ref=str(dedup_key), summary=msg, payload=dict(payload or {}),
+    p = payload or {}
+    msg = p.get("message") or "branch drift detected"
+    interactions.open_interaction(
+        conn, team_id=team_id, channel_ref=dest, kind="suggest",
+        key=f"drift-notify:{dedup_key}",
+        prompt=(f"⚠️ {msg}. Sync the branches when ready "
+                f"(Argus does not auto-merge)."),
+        summary=msg,
+        payload={
+            "task": _branch_sync_task(team_id=team_id, summary=msg,
+                                      base=p.get("base"), head=p.get("head")),
+            "fingerprint": str(dedup_key),
+            "yes_reply": "On it, I'll run the branch-sync PR flow.",
+            "extra_yes": ["sync", "sync it", "סנכרן", "תסנכרן"],
+        },
         ttl_hours=72)
     return True
+
+
+def _branch_sync_task(*, team_id: str, summary: str, base, head) -> str:
+    base = base or "main"
+    head = head or "current branch"
+    return (
+        f"Owner approved branch drift sync for {team_id}: {summary}. "
+        f"Compare origin/{base} and origin/{head}. Prepare the minimal safe "
+        f"branch-sync PR to reconcile {head} with {base}. Do not merge, deploy, "
+        f"or force-push. Preserve legitimate branch-only commits. If syncing "
+        f"would drop changes, create conflicts, or require choosing a release "
+        f"direction, stop and report the exact blocker. Use git and gh as "
+        f"needed for branch maintenance, then run the narrowest relevant checks."
+    )
 
 
 def _conversational(cfg, team_id: str) -> bool:

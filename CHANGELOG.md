@@ -8,6 +8,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Typed human interactions (`ask` / `confirm` / `suggest`): approval-gated
+  actions now post a confirm prompt to the team control channel, so the owner
+  replies "approve"/"reject" in chat instead of hunting the nonce for the CLI
+  (which still works and is shown as the fallback); a blocked pipeline asks for
+  guidance and the owner's reply reopens the request with it; suggestions (first
+  user: branch-drift sync) open their prepared request on a yes-phrase. Built on
+  the existing conversation-context + outbox machinery; unrelated chat falls
+  through untouched and every interaction is TTL-bound and idempotency-keyed.
+
 - Live progress in chat: when Argus picks up a message it posts an immediate
   receipt, and on edit-capable channels (Slack/Telegram/Discord) that receipt
   becomes a single self-updating status line that advances
