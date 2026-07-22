@@ -127,15 +127,7 @@ def _is_drift(payload) -> bool:
     return p.get("kind") == "branch_drift" or p.get("source") == "branch_drift"
 
 
-def _team_control_dest(cfg, team_id: str) -> str | None:
-    try:
-        team = cfg.team(team_id)
-    except KeyError:
-        return None
-    for ch in getattr(team, "channels", []) or []:
-        if ch.role == "control" and ch.type != "cli":
-            return f"{ch.type}:{ch.channel_id}"
-    return None
+_team_control_dest = interactions.control_channel
 
 
 def _notify_drift(conn, cfg, team_id: str, payload, dedup_key) -> bool:

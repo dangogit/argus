@@ -18,7 +18,6 @@ TTL-bound, so a stale interaction can never hijack chat forever.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 
 import psycopg
@@ -131,8 +130,8 @@ def _handle_confirm(conn, *, team_id, channel_ref, event_id, context, payload,
         reply = "✅ Approved - running it."
     else:
         reply = "❌ Rejected - I won't run it."
-    _emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
-                event_id=event_id, text=reply)
+    context_router._emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
+                               event_id=event_id, text=reply)
     return True
 
 
@@ -141,8 +140,8 @@ def _handle_suggest(conn, cfg, *, team_id, channel_ref, event_id, context,
     from argus.v2.orchestrator import context_router
     if is_no(text):
         context_router.resolve_context(conn, context_id=context["id"], status="expired")
-        _emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
-                    event_id=event_id, text="Okay, dropping that suggestion.")
+        context_router._emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
+                                   event_id=event_id, text="Okay, dropping that suggestion.")
         return True
     if not is_yes(text, extra=payload.get("extra_yes") or ()):
         return False
@@ -155,8 +154,8 @@ def _handle_suggest(conn, cfg, *, team_id, channel_ref, event_id, context,
     reply = str(payload.get("yes_reply") or "On it.")
     if request_id is None:
         reply = "Already working on that."
-    _emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
-                event_id=event_id, text=reply)
+    context_router._emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
+                               event_id=event_id, text=reply)
     return True
 
 
@@ -168,8 +167,8 @@ def _handle_ask(conn, cfg, *, team_id, channel_ref, event_id, context, payload,
     from argus.v2.orchestrator import context_router
     if is_no(text):
         context_router.resolve_context(conn, context_id=context["id"], status="expired")
-        _emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
-                    event_id=event_id, text="Okay, leaving it as is.")
+        context_router._emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
+                                   event_id=event_id, text="Okay, leaving it as is.")
         return True
     guidance = (text or "").strip()
     if not guidance:
@@ -190,8 +189,8 @@ def _handle_ask(conn, cfg, *, team_id, channel_ref, event_id, context, payload,
     reply = "On it - retrying with your guidance."
     if request_id is None:
         reply = "Already retrying that one."
-    _emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
-                event_id=event_id, text=reply)
+    context_router._emit_reply(conn, team_id=team_id, channel_ref=channel_ref,
+                               event_id=event_id, text=reply)
     return True
 
 
@@ -207,15 +206,3 @@ def _open_prepared_request(conn, cfg, *, event_id, team_id, task,
     return pipeline.open_request(
         conn, cfg, event_id=event_id, team_id=team_id, conversation_id=None,
         fingerprint=fingerprint)
-
-
-def _emit_reply(conn, *, team_id, channel_ref, event_id, text) -> None:
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO actions (team_id, type, risk, destination_ref, "
-            "  idempotency_key, payload) "
-            "VALUES (%s,'reply','reversible_internal',%s,%s,%s) "
-            "ON CONFLICT (idempotency_key) DO NOTHING",
-            (team_id, channel_ref, f"interaction-reply:{event_id}:{digest}",
-             Json({"text": text})))
