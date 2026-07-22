@@ -801,8 +801,11 @@ def _auto_change_team(cfg, team_id: str) -> str | None:
 def _request_by_fingerprint(conn: psycopg.Connection, team_id: str,
                             fingerprint: str) -> str | None:
     with conn.cursor() as cur:
+        # Cancelled/failed attempts must not strand the backlog item forever;
+        # only in-flight or shipped (done) requests count as "already exists".
         cur.execute(
-            "SELECT id::text FROM requests WHERE team_id=%s AND fingerprint=%s LIMIT 1",
+            "SELECT id::text FROM requests WHERE team_id=%s AND fingerprint=%s "
+            "AND status NOT IN ('cancelled','failed') LIMIT 1",
             (team_id, fingerprint),
         )
         row = cur.fetchone()

@@ -208,6 +208,7 @@ def equivalent_pm_request(conn: psycopg.Connection, team_id: str, payload: dict,
             WHERE r.team_id=%s
               AND r.fingerprint IS NOT NULL
               AND r.fingerprint <> %s
+              AND r.status NOT IN ('cancelled','failed')
               AND (
                 r.fingerprint LIKE 'retro-change:%%'
                 OR r.fingerprint LIKE 'converse:%%'

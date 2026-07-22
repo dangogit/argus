@@ -724,3 +724,63 @@ def test_notify_logs_when_digest_skipped(conn, tmp_path, caplog):
 
     assert any("luma" in r.getMessage() and "digest skipped: empty" in r.getMessage()
                for r in caplog.records)
+
+
+def test_auto_changes_requeue_after_cancelled_attempt(conn, tmp_path):
+    """A cancelled prior attempt must not permanently strand a gated item:
+    once the owner clears the auto markers, the item queues a fresh request."""
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": ("Classify Fly warm-pool machines in requested_stop state "
+                      "as expected before dispatching incident triage"),
+        "trigger": "warm pool standby raised a false incident",
+        "evidence_run_ids": ["f1", "f2", "f3"], "confidence": 0.9, "impact": 8,
+        "theme": "fly-warm-pool",
+    }])
+    retro.synthesize(conn, retro_day=day)
+    assert retro._enqueue_auto_changes(conn, cfg) == 1
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET status='cancelled' "
+                    "WHERE fingerprint LIKE 'retro-change:%'")
+        cur.execute("UPDATE retro_backlog SET payload = payload - 'auto_request_id' "
+                    "- 'auto_queued_at' WHERE status='gated'")
+
+    assert retro._enqueue_auto_changes(conn, cfg) == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, count(*) FROM requests "
+                    "WHERE fingerprint LIKE 'retro-change:%' GROUP BY 1 ORDER BY 1")
+        assert cur.fetchall() == [("cancelled", 1), ("open", 1)]
+
+
+def test_auto_changes_done_attempt_still_blocks_requeue(conn, tmp_path):
+    """A DONE prior attempt means the change shipped: clearing markers must
+    NOT create a second request; the item is re-marked queued instead."""
+    cfg = _cfg_two_projects(tmp_path, authority="auto-changes")
+    day = date(2026, 6, 18)
+    retro.record(conn, team_id="dev", retro_day=day, candidates=[{
+        "type": "process-edit",
+        "statement": ("Classify Fly warm-pool machines in requested_stop state "
+                      "as expected before dispatching incident triage"),
+        "trigger": "warm pool standby raised a false incident",
+        "evidence_run_ids": ["f1", "f2", "f3"], "confidence": 0.9, "impact": 8,
+        "theme": "fly-warm-pool",
+    }])
+    retro.synthesize(conn, retro_day=day)
+    assert retro._enqueue_auto_changes(conn, cfg) == 1
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE requests SET status='done' "
+                    "WHERE fingerprint LIKE 'retro-change:%'")
+        cur.execute("UPDATE retro_backlog SET payload = payload - 'auto_request_id' "
+                    "- 'auto_queued_at' WHERE status='gated'")
+
+    assert retro._enqueue_auto_changes(conn, cfg) == 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM requests WHERE fingerprint LIKE 'retro-change:%'")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT payload ? 'auto_request_id' FROM retro_backlog "
+                    "WHERE status='gated'")
+        assert cur.fetchone()[0] is True
