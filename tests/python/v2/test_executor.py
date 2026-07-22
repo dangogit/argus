@@ -490,3 +490,112 @@ def test_duplicate_low_disk_whatsapp_notify_suppresses_second_send(
     assert provider_ref.startswith("suppressed:duplicate_low_disk:")
     assert reason == "duplicate_low_disk_notify"
     assert suppressed_fingerprint == "disk:low:argus-run"
+
+
+class _Crash(BaseException):
+    """Simulates the process dying mid provider call (BaseException so the
+    executor's `except Exception` cannot swallow it)."""
+
+
+def _deploy(conn, request_id, *, status="approved", idem="dep-1"):
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO actions (request_id, team_id, type, risk,
+                                    idempotency_key, payload, status)
+               VALUES (%s,'dev','deploy','irreversible_outward',%s,
+                       '{"command":"true"}'::jsonb,%s) RETURNING id""",
+            (request_id, idem, status))
+        return str(cur.fetchone()[0])
+
+
+def _crash_mid_execute(conn, cfg, calls):
+    def crashing(argv, cwd=None):
+        calls.append(argv)
+        raise _Crash()
+
+    try:
+        executor.process_proposed(conn, cfg, runner=crashing)
+        raise AssertionError("crash should propagate")
+    except _Crash:
+        conn.rollback()  # process death: uncommitted txn state is lost
+
+
+def test_real_action_claim_survives_crash_and_never_reruns(conn, cfg):
+    rid = _request(conn, cfg)
+    aid = _deploy(conn, rid)
+    conn.commit()
+    calls = []
+    _crash_mid_execute(conn, cfg, calls)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM actions WHERE id=%s", (aid,))
+        assert cur.fetchone()[0] == "executing"  # claim was durable pre-call
+    assert len(calls) == 1
+
+    executor.process_proposed(conn, cfg)
+    conn.commit()
+    assert len(calls) == 1  # the side effect is never re-run
+
+
+def test_real_action_result_is_durable_before_caller_commit(conn, cfg):
+    rid = _request(conn, cfg)
+    aid = _deploy(conn, rid)
+    conn.commit()
+    executor.process_proposed(conn, cfg, runner=lambda argv, cwd=None: "deployed\n")
+    conn.rollback()  # caller crash after the drain: result must already be durable
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, provider_ref, payload ? 'exec_claimed_at' "
+                    "FROM actions WHERE id=%s", (aid,))
+        assert cur.fetchone() == ("done", "deployed", False)
+
+
+def test_real_action_failure_is_durable_before_caller_commit(conn, cfg):
+    rid = _request(conn, cfg)
+    aid = _deploy(conn, rid)
+    conn.commit()
+
+    def failing(argv, cwd=None):
+        raise RuntimeError("gh exploded")
+
+    executor.process_proposed(conn, cfg, runner=failing)
+    conn.rollback()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, payload->>'error' FROM actions WHERE id=%s", (aid,))
+        assert cur.fetchone() == ("failed", "gh exploded")
+
+
+def test_stuck_executing_recovery_marks_failed_and_alerts(conn, cfg):
+    rid = _request(conn, cfg)
+    aid = _deploy(conn, rid)
+    conn.commit()
+    _crash_mid_execute(conn, cfg, [])
+    with conn.cursor() as cur:  # age the claim past the recovery threshold
+        cur.execute("UPDATE actions SET updated_at=now() - interval '31 minutes' "
+                    "WHERE id=%s", (aid,))
+    conn.commit()
+
+    executor.process_proposed(conn, cfg)  # recovery runs at drain start
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status, payload->>'error' FROM actions WHERE id=%s", (aid,))
+        status, err = cur.fetchone()
+        assert status == "failed"
+        assert "verify" in err
+        cur.execute("SELECT count(*) FROM alerts WHERE fingerprint=%s",
+                    (f"stuck-executing:{aid}",))
+        assert cur.fetchone()[0] == 1
+
+
+def test_stuck_executing_recovery_leaves_fresh_claims_alone(conn, cfg):
+    rid = _request(conn, cfg)
+    aid = _deploy(conn, rid)
+    conn.commit()
+    _crash_mid_execute(conn, cfg, [])
+
+    executor.process_proposed(conn, cfg)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM actions WHERE id=%s", (aid,))
+        assert cur.fetchone()[0] == "executing"  # still inside the grace window

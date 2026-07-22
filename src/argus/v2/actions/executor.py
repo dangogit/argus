@@ -15,10 +15,18 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import psycopg
 from psycopg.types.json import Json
 
+from argus.v2 import alerts
 from argus.v2.actions import handlers as _handlers
 from argus.v2.config.schema import Autonomy
 
 log = logging.getLogger(__name__)
+
+# A committed 'executing' claim older than this is treated as a crashed
+# execution and recovered (failed + alert). Must exceed the longest legitimate
+# provider call; the default runner has no timeout, so a still-running deploy
+# past this window gets a false alert telling the owner to verify - annoying,
+# never destructive.
+_STUCK_EXECUTING_MINUTES = 30
 
 _REAL = {
     "open_pr", "ready_pr", "merge_pr", "deploy", "close_pr", "comment_pr",
@@ -103,6 +111,7 @@ def process_proposed(
     runner: Optional[Callable] = None,
     team_id: str | None = None,
 ) -> int:
+    recover_stuck_executing(conn, team_id=team_id)
     _release_held(conn, team_id=team_id)
     team_filter = "AND team_id=%s" if team_id is not None else ""
     params = (team_id,) if team_id is not None else ()
@@ -122,7 +131,10 @@ def process_proposed(
     ) in rows:
         if status == "approved":
             # Already consumed by an approver; skip the policy gate and execute.
-            _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
+            if atype in _REAL:
+                _execute_committed(conn, str(action_id), cfg=cfg, runner=runner)
+            else:
+                _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
         else:
             risk = _effective_risk(cfg, atype, risk, destination_ref)
             with conn.cursor() as cur:
@@ -145,7 +157,10 @@ def process_proposed(
                 ):
                     handled += 1
                     continue
-                _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
+                if atype in _REAL:
+                    _execute_committed(conn, str(action_id), cfg=cfg, runner=runner)
+                else:
+                    _execute_guarded(conn, str(action_id), cfg=cfg, runner=runner)
             else:
                 _require_approval(conn, str(action_id), request_id)
         handled += 1
@@ -278,6 +293,126 @@ def _execute_guarded(conn: psycopg.Connection, action_id: str, *, cfg=None,
                     "UPDATE actions SET status='failed', "
                     "payload=payload||%s::jsonb, updated_at=now() WHERE id=%s",
                     (Json({"error": str(exc)}), action_id))
+
+
+def _execute_committed(conn: psycopg.Connection, action_id: str, *, cfg=None,
+                       runner: Optional[Callable] = None) -> None:
+    """Two-phase execution for real (side-effectful) actions: durably COMMIT the
+    'executing' claim BEFORE the provider call, CAS-finalize after. A crash
+    after the side effect (gh merge, deploy command) can then never roll the
+    action back to proposed and re-run it on the next sweep - the row stays
+    'executing' and recover_stuck_executing turns it into failed + an alert
+    (verify manually), because whether the side effect happened is unknowable.
+
+    The commits here also commit any earlier writes on this conn mid-sweep;
+    every sweep step is idempotent by design, so that only narrows the caller's
+    crash window instead of breaking atomicity."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE actions SET status='executing', payload=payload||%s::jsonb, "
+            "updated_at=now() WHERE id=%s AND status IN ('proposed','approved')",
+            (Json({"exec_claimed_at":
+                   datetime.now(timezone.utc).isoformat()}), action_id))
+        if cur.rowcount != 1:
+            return  # claimed by a concurrent drainer, or already terminal
+        cur.execute(
+            "SELECT type, payload, provider_ref, destination_ref, team_id, request_id "
+            "FROM actions WHERE id=%s", (action_id,))
+        atype, payload, existing, destination_ref, team_id, request_id = cur.fetchone()
+    conn.commit()  # the claim is durable before any side effect can happen
+    if existing:
+        # Idempotent: already has a provider_ref from a previous execution.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE actions SET status='done', "
+                "payload=payload-'exec_claimed_at', updated_at=now() "
+                "WHERE id=%s AND status='executing'", (action_id,))
+        conn.commit()
+        return
+    try:
+        kwargs = {"runner": runner} if runner is not None else {}
+        if atype == "support_reply":
+            kwargs["conn"] = conn
+        provider_ref = _handlers.run(
+            atype, payload or {}, cfg=cfg, team_id=team_id, **kwargs)
+    except Exception as e:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE actions SET status='failed', "
+                "payload=(payload-'exec_claimed_at')||%s::jsonb, updated_at=now() "
+                "WHERE id=%s AND status='executing'",
+                (Json({"error": str(e)}), action_id))
+            if atype == "set_user_balance":
+                _enqueue_account_result_notify(
+                    cur, action_id=action_id, team_id=team_id,
+                    destination_ref=destination_ref, error=str(e))
+        conn.commit()
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE actions SET status='done', provider_ref=%s, "
+            "payload=payload-'exec_claimed_at', updated_at=now() "
+            "WHERE id=%s AND status='executing'", (provider_ref, action_id))
+        if cur.rowcount == 1:
+            # Post-success hooks: idempotent inserts keyed on this action's id.
+            if atype == "open_pr":
+                _enqueue_open_pr_notify(
+                    cur, action_id=action_id, request_id=request_id,
+                    team_id=team_id, destination_ref=destination_ref,
+                    payload=payload or {}, provider_ref=provider_ref)
+            elif atype in ("email_list", "email_search", "email_read"):
+                _enqueue_email_notify(
+                    cur, action_id=action_id, team_id=team_id,
+                    destination_ref=destination_ref, action_type=atype,
+                    payload=payload or {}, provider_ref=provider_ref)
+            elif atype == "set_user_balance":
+                _enqueue_account_result_notify(
+                    cur, action_id=action_id, team_id=team_id,
+                    destination_ref=destination_ref, provider_ref=provider_ref)
+                context_id = str((payload or {}).get("support_context_id") or "")
+                if context_id:
+                    cur.execute(
+                        "UPDATE conversation_contexts SET status='resolved', "
+                        "updated_at=now() "
+                        "WHERE id=%s AND context_type='support_case'",
+                        (context_id,))
+    conn.commit()
+
+
+def recover_stuck_executing(
+    conn: psycopg.Connection,
+    *,
+    team_id: str | None = None,
+    max_age_minutes: int = _STUCK_EXECUTING_MINUTES,
+) -> int:
+    """Fail (never re-run) committed 'executing' claims whose process died mid
+    provider call. Only claim-committed rows carry exec_claimed_at; a legacy
+    in-txn 'executing' write is never visible here. The side effect may or may
+    not have happened, so the owner gets an alert to verify manually.
+    ponytail: no provider probe (e.g. gh pr view for merge_pr) - add one if
+    these alerts turn out to be frequent enough to be worth auto-resolving."""
+    team_filter = "AND team_id=%s" if team_id is not None else ""
+    params: tuple = (Json({
+        "error": "crashed mid-execution; the provider side effect may have "
+                 "happened - verify manually before retrying",
+    }), max_age_minutes) + ((team_id,) if team_id is not None else ())
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE actions SET status='failed', "
+            "payload=(payload-'exec_claimed_at')||%s::jsonb, updated_at=now() "
+            "WHERE status='executing' AND payload ? 'exec_claimed_at' "
+            "AND updated_at < now() - make_interval(mins => %s) "
+            f"{team_filter} RETURNING id, team_id, type",
+            params)
+        rows = cur.fetchall()
+    for action_id, row_team_id, atype in rows:
+        log.warning("action %s (%s) stuck executing, marked failed", action_id, atype)
+        alerts.record(
+            conn, severity="error", project=str(row_team_id),
+            fingerprint=f"stuck-executing:{action_id}",
+            message=(f"{atype} action {action_id} crashed mid-execution; "
+                     "its side effect may have happened - verify manually"))
+    return len(rows)
 
 
 def _is_transient(exc: BaseException) -> bool:
