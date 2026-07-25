@@ -274,7 +274,8 @@ npm run build
 
 ## Claude Code specifics
 
-guide for Claude Code, Codex, and other coding agents.
+The install, smoke-test, and contribution guide above applies to Claude Code too.
+What follows is the part that is specific to it.
 
 For daily learning work, use `docs/retro.md` as the product contract.
 `argus retro run` owns team and company learning. When `retro.authority` is
