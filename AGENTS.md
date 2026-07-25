@@ -1,5 +1,7 @@
 # Argus Agent Guide
 
+> Canonical agent instruction file for this repo. `CLAUDE.md` is a symlink to it, so Claude Code and Codex read the same rules. Personal defaults live in `~/.agents/OPERATING.md`.
+
 Use this file when working on Argus with Codex, Claude Code, or another coding
 agent.
 
@@ -269,3 +271,18 @@ npm run build
 - Public docs must not use em dashes. Use hyphens.
 - If CI fails before runner steps with billing/spending-limit annotations, it is
   infrastructure, not product failure. Still run local gate before merging.
+
+## Claude Code specifics
+
+guide for Claude Code, Codex, and other coding agents.
+
+For daily learning work, use `docs/retro.md` as the product contract.
+`argus retro run` owns team and company learning. When `retro.authority` is
+`auto-changes`, it can open internal PM requests, but must still respect
+approval gates for merge, deploy, outward messages, secrets, and destructive
+work. It also queues PM digests to project control channels and a CEO retro
+brief to the `ceo-brief` control channel unless run with `--no-notify`.
+
+For the pre-merge browser check of UI changes (the `browser_verify` stage,
+Vercel or Firebase preview, driven on the Codex subscription via hermes), see
+the Browser Verification section in this file and `docs/browser-verify-design.md`.
