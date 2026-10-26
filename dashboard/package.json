@@ -16,7 +16,7 @@
     "react-dom": "19.1.1"
   },
   "devDependencies": {
-    "vitest": "4.1.9"
+    "vitest": "4.1.12"
   },
   "overrides": {
     "postcss": "8.5.15"
